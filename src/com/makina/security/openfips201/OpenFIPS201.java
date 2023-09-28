@@ -79,7 +79,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
   }
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {
-    new OpenFIPS201().register(bArray, (short) (bOffset + 1), bArray[bOffset]);
+    new OpenFIPS201().register(bArray, (short) (bOffset + 1), bArray.length == 0 ? 0 : bArray[bOffset]);
   }
 
   @Override

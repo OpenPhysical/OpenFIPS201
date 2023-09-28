@@ -15,7 +15,7 @@
   <property name="gp.exportjar" value="${gp.home}/${gp.version}.jar"/>
   
   <property name="build.version" value="${VERSION_MAJOR}.${VERSION_MINOR}"/>
-  <property name="build.sourcepath" value="src"/>
+  <property name="build.sourcepath" value="src/com/makina/security/openfips201"/>
   <property name="build.outputpath" value="build/bin"/>
   <property name="build.outputfile" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}.cap"/>
   <property name="build.outputfile_debug" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}-DEBUG.cap"/>
