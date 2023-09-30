@@ -45,7 +45,7 @@ import javacard.framework.Util;
  * <p>The following is out-of-scope in this revision: - Elliptic curve cryptography mechanisms -
  * Virtual contact interface - Secure messaging using Opacity - Biometric on-card comparison (OCC)
  */
-public final class PIV {
+final class PIV {
 
   //
   // The most important constant of all

@@ -8,7 +8,6 @@ import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
-import org.mockito.stubbing.OngoingStubbing;
 
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
