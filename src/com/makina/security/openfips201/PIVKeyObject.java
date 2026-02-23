@@ -144,9 +144,6 @@ abstract class PIVKeyObject extends PIVObject {
       byte role,
       byte attributes)
       throws ISOException {
-
-    PIVKeyObject key;
-
     switch (mechanism) {
       case PIV.ID_ALG_DEFAULT:
       case PIV.ID_ALG_TDEA_3KEY:
@@ -167,10 +164,8 @@ abstract class PIVKeyObject extends PIVObject {
         if ((attributes & ATTR_IMPORTABLE) == (byte) 0) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
-        key =
-            new PIVKeyObjectSYM(
-                id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
-        break;
+        return new PIVKeyObjectSYM(
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
 
       case PIV.ID_ALG_RSA_1024:
       case PIV.ID_ALG_RSA_2048:
@@ -186,10 +181,8 @@ abstract class PIVKeyObject extends PIVObject {
         if ((attributes & ATTR_PERMIT_MUTUAL) != (byte) 0) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
-        key =
-            new PIVKeyObjectRSA(
-                id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
-        break;
+        return new PIVKeyObjectRSA(
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
 
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
@@ -205,16 +198,13 @@ abstract class PIVKeyObject extends PIVObject {
         if ((attributes & ATTR_PERMIT_MUTUAL) != (byte) 0) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
-        key =
-            new PIVKeyObjectECC(
-                id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
-        break;
+        return new PIVKeyObjectECC(
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
 
       default:
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
-        key = null;
+        return null; // Unreachable
     }
-    return key;
   }
 
   boolean match(byte id, byte mechanism) {

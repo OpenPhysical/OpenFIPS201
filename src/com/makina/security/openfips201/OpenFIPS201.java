@@ -31,6 +31,7 @@ import javacard.framework.Applet;
 import javacard.framework.AppletEvent;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacardx.apdu.ExtendedLength;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 
@@ -38,7 +39,7 @@ import org.globalplatform.SecureChannel;
  * The main applet class, which is responsible for handling APDU's and dispatching them to the PIV
  * provider.
  */
-public final class OpenFIPS201 extends Applet implements AppletEvent {
+public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLength {
   /*
    * PERSISTENT applet variables (EEPROM)
    */
@@ -79,7 +80,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
   }
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {
-    new OpenFIPS201().register(bArray, (short) (bOffset + 1), bArray.length == 0 ? 0 : bArray[bOffset]);
+    byte aidLength = (bArray == null || bArray.length == 0) ? (byte) 0 : bArray[bOffset];
+    new OpenFIPS201().register(bArray, (short) (bOffset + 1), aidLength);
   }
 
   @Override
@@ -146,6 +148,40 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
     ECParamsP384.terminate();
   }
 
+  /**
+   * Reads all incoming command data bytes into the APDU buffer.
+   *
+   * <p>This method is required for extended-length or segmented transports where
+   * setIncomingAndReceive() may only return the first block.
+   *
+   * @param apdu The current APDU
+   * @return The fully assembled incoming command data length (Nc)
+   */
+  private static short receiveAllIncomingData(APDU apdu) {
+    short received = apdu.setIncomingAndReceive();
+    short offset = apdu.getOffsetCdata();
+    short totalLength = apdu.getIncomingLength();
+    byte[] buffer = apdu.getBuffer();
+
+    // We require contiguous CDATA in the APDU buffer because downstream handlers parse in-place.
+    if (totalLength > (short) (buffer.length - offset)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+
+    short writeOffset = (short) (offset + received);
+
+    while (received < totalLength) {
+      short block = apdu.receiveBytes(writeOffset);
+      if (block <= ZERO_SHORT) {
+        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      }
+      received += block;
+      writeOffset += block;
+    }
+
+    return received;
+  }
+
   @Override
   public void process(APDU apdu) {
 
@@ -178,7 +214,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
     // We can now safely call setIncomingAndReceive because all other expected commands are
     // either CASE 2 or 4 (command data present).
     //
-    short length = apdu.setIncomingAndReceive();
+    short length = receiveAllIncomingData(apdu);
+    short offset = apdu.getOffsetCdata();
 
     //
     // Process GlobalPlatform Secure Channel unwrapping if relevant to this command
@@ -196,9 +233,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
       SecureChannel secureChannel = GPSystem.getSecureChannel();
       if ((secureChannel.getSecurityLevel() & SC_MASK) == SC_MASK) {
         // Validate and unwrap the APDU, including the header bytes
-        length += ISO7816.OFFSET_CDATA; // Add the header length
+        length += offset; // Add the header length
         length = secureChannel.unwrap(buffer, (short) 0, length);
-        length -= ISO7816.OFFSET_CDATA; // Remove the header length
+        length -= offset; // Remove the header length
         piv.setIsSecureChannel(true);
       }
     }
@@ -240,27 +277,27 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
         break;
 
       case INS_PIV_GET_DATA: // Case 4
-        processPIV_GET_DATA(apdu);
+        processPIV_GET_DATA(apdu, length);
         break;
 
       case INS_PIV_VERIFY: // Case 2
-        processPIV_VERIFY(apdu);
+        processPIV_VERIFY(apdu, length);
         break;
 
       case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
-        processPIV_CHANGE_REFERENCE_DATA(apdu);
+        processPIV_CHANGE_REFERENCE_DATA(apdu, length);
         break;
 
       case INS_PIV_RESET_RETRY_COUNTER: // Case 2
-        processPIV_RESET_RETRY_COUNTER(apdu);
+        processPIV_RESET_RETRY_COUNTER(apdu, length);
         break;
 
       case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
-        processPIV_GENERAL_AUTHENTICATE(apdu);
+        processPIV_GENERAL_AUTHENTICATE(apdu, length);
         break;
 
       case INS_PIV_PUT_DATA: // Case 2
-        processPIV_PUT_DATA(apdu);
+        processPIV_PUT_DATA(apdu, length);
         break;
 
       case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
@@ -301,9 +338,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
 
     // STEP 1 - Call the PIV 'SELECT' command
     short length = secureChannel.processSecurity(apdu);
+    short offset = apdu.getOffsetCdata();
 
     // Send the response
-    apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, length);
+    apdu.setOutgoingAndSend(offset, length);
   }
 
   /**
@@ -347,15 +385,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
    * Process the PIV 'GET DATA' command
    *
    * @param apdu The incoming APDU object
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_GET_DATA(APDU apdu) {
+  private void processPIV_GET_DATA(APDU apdu, short length) {
 
     final byte P1 = (byte) 0x3F;
     final byte P2 = (byte) 0xFF;
     final byte P2_EXTENDED = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
-    short length = (short) (buffer[ISO7816.OFFSET_LC] & 0xFF);
 
     /*
      * PRE-CONDITIONS
@@ -379,10 +417,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
      */
 
     // STEP 1 - Call the PIV 'GET DATA' command
+    short offset = apdu.getOffsetCdata();
     if (extended) {
-      piv.getDataExtended(buffer, ISO7816.OFFSET_CDATA, length);
+      piv.getDataExtended(buffer, offset, length);
     } else {
-      piv.getData(buffer, ISO7816.OFFSET_CDATA);
+      piv.getData(buffer, offset);
     }
 
     // NOTE: If no exception occurred during processing, the ChainBuffer now contains a reference
@@ -396,15 +435,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
    * Processes the PIV 'PUT DATA' command
    *
    * @param apdu The incoming APDU object
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_PUT_DATA(APDU apdu) {
+  private void processPIV_PUT_DATA(APDU apdu, short length) {
 
     final byte CONST_P1 = (byte) 0x3F;
     final byte CONST_P2 = (byte) 0xFF;
     final byte CONST_P2_ADMIN = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
-    short length = (short) (buffer[ISO7816.OFFSET_LC] & 0xFF);
 
     /*
      * PRE-CONDITIONS
@@ -435,10 +474,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
      */
 
     // STEP 1 - Call the applicable PIV 'PUT DATA' command
+    short offset = apdu.getOffsetCdata();
     if (admin) {
-      piv.putDataAdmin(buffer, ISO7816.OFFSET_CDATA, length);
+      piv.putDataAdmin(buffer, offset, length);
     } else {
-      piv.putData(buffer, ISO7816.OFFSET_CDATA, length);
+      piv.putData(buffer, offset, length);
     }
   }
 
@@ -446,14 +486,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
    * Process the PIV 'VERIFY' command
    *
    * @param apdu The incoming APDU object
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_VERIFY(APDU apdu) {
+  private void processPIV_VERIFY(APDU apdu, short length) {
 
     final byte CONST_P1_AUTH = (byte) 0x00;
     final byte CONST_P1_RESET = (byte) 0xFF;
 
     byte[] buffer = apdu.getBuffer();
-    short length = (short) (buffer[ISO7816.OFFSET_LC] & 0xFF);
 
     /*
      * PRE-CONDITIONS
@@ -493,9 +533,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
     // CASE 3 - If P1='00', and Lc and the command data field are present, then the authentication
     //          data in the command data field shall be compared against the reference data
     //          associated with the key reference [...]
+    short offset = apdu.getOffsetCdata();
     if (buffer[ISO7816.OFFSET_P1] == CONST_P1_AUTH && length != ZERO_SHORT) {
       // Verify using the key reference supplied in P2
-      piv.verify(buffer[ISO7816.OFFSET_P2], buffer, ISO7816.OFFSET_CDATA, length);
+      piv.verify(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
       return;
     }
 
@@ -507,14 +548,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
    * Process the PIV 'CHANGE REFERENCE DATA' command
    *
    * @param apdu The incoming APDU object
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_CHANGE_REFERENCE_DATA(APDU apdu) {
+  private void processPIV_CHANGE_REFERENCE_DATA(APDU apdu, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
     final byte CONST_P1_ADMIN = (byte) 0xFF;
 
     byte[] buffer = apdu.getBuffer();
-    short length = (short) (buffer[ISO7816.OFFSET_LC] & 0xFF);
 
     /*
      * PRE-CONDITIONS
@@ -545,13 +586,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
      */
 
     // STEP 1 - Call the appropriate method
+    short offset = apdu.getOffsetCdata();
     if (isStandard) {
       // CASE 1 - If the value of P2 is one of our standard PIN references, we handle this according
       // the SP800-73-4
-      piv.changeReferenceData(buffer[ISO7816.OFFSET_P2], buffer, ISO7816.OFFSET_CDATA, length);
+      piv.changeReferenceData(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
     } else {
       // CASE 2 - Otherwise, we pass it to the administrative command handler
-      piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], buffer, ISO7816.OFFSET_CDATA, length);
+      piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
     }
   }
 
@@ -559,14 +601,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
    * Process the PIV 'RESET RETRY COUNTER' command
    *
    * @param apdu The incoming APDU object
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_RESET_RETRY_COUNTER(APDU apdu) {
+  private void processPIV_RESET_RETRY_COUNTER(APDU apdu, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
     final byte CONST_LC = (byte) 0x10;
 
     byte[] buffer = apdu.getBuffer();
-    short length = (short) (buffer[ISO7816.OFFSET_LC] & 0xFF);
 
     /*
      * PRE-CONDITIONS
@@ -586,18 +628,19 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
      * EXECUTION STEPS
      */
 
-    piv.resetRetryCounter(buffer[ISO7816.OFFSET_P2], buffer, ISO7816.OFFSET_CDATA, length);
+    short offset = apdu.getOffsetCdata();
+    piv.resetRetryCounter(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
   }
 
   /**
    * Process the PIV 'GENERAL AUTHENTICATE' command
    *
    * @param apdu The incoming APDU object
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_GENERAL_AUTHENTICATE(APDU apdu) {
+  private void processPIV_GENERAL_AUTHENTICATE(APDU apdu, short length) {
 
     byte[] buffer = apdu.getBuffer();
-    short length = (short) (buffer[ISO7816.OFFSET_LC] & 0xFF);
 
     /*
      * PRE-CONDITIONS
@@ -610,7 +653,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
      */
 
     // STEP 1 - Call the PIV GENERAL AUTHENTICATE method
-    length = piv.generalAuthenticate(buffer, ISO7816.OFFSET_CDATA, length);
+    short offset = apdu.getOffsetCdata();
+    length = piv.generalAuthenticate(buffer, offset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response, if any
     if (length > 0) piv.processOutgoing(apdu);
@@ -649,7 +693,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent {
      */
 
     // STEP 1 - Call the PIV GENERATE ASYMMETRIC KEY command
-    piv.generateAsymmetricKeyPair(buffer, ISO7816.OFFSET_CDATA);
+    short offset = apdu.getOffsetCdata();
+    piv.generateAsymmetricKeyPair(buffer, offset);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
     piv.processOutgoing(apdu);
