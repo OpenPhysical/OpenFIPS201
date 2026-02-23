@@ -1,0 +1,10 @@
+<ivysettings>
+  <settings defaultResolver="chained"/>
+
+  <resolvers>
+    <chain name="chained">
+      <ibiblio name="javacard.pro" m2compatible="true" root="https://javacard.pro/maven/"/>
+      <ibiblio name="central" m2compatible="true"/>
+    </chain>
+  </resolvers>
+</ivysettings>
