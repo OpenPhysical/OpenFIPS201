@@ -18,6 +18,8 @@
 
     <dependency org="org.junit.jupiter" name="junit-jupiter-engine" rev="5.8.1" conf="test-runtime->default"/>
     <dependency org="org.junit.platform" name="junit-platform-launcher" rev="1.8.1" conf="test-runtime->default"/>
-    <dependency org="org.slf4j" name="slf4j-simple" rev="2.0.17" conf="test-runtime->default"/>
+    <dependency org="org.junit.platform" name="junit-platform-console" rev="1.8.1" conf="test-runtime->default"/>
+    <dependency org="org.slf4j" name="slf4j-nop" rev="2.0.17" conf="test-runtime->default"/>
+    <dependency org="org.jacoco" name="org.jacoco.ant" rev="0.8.12" conf="test-runtime->default"/>
   </dependencies>
 </ivy-module>
