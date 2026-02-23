@@ -1927,10 +1927,11 @@ final class PIV {
       // the key reference later.
       offset += key.encrypt(scratch, offset, length, authenticationContext, OFFSET_AUTH_CHALLENGE);
     } catch (Exception e) {
+      authenticateReset();
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+
       // Presume that we have a problem with the input data, instead of throwing 6F00.
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      return ZERO; // Keep static analyser happy
     }
 
     // Update the TLV offset value
@@ -3044,20 +3045,12 @@ final class PIV {
       throws ISOException {
 
     final byte CONST_TAG_SEQUENCE = (byte) 0x30;
+    final byte mechanism = buffer[ISO7816.OFFSET_P1];
 
     // The PIV Card Application may allow the reference data associated with other key references
     // to be changed by the PIV Card Application CHANGE REFERENCE DATA, if PIV Card Application will
     // only perform the command with other key references if the requirements specified in Section
     // 2.9.2 of FIPS 201-2 are satisfied.
-
-    //
-    // SECURITY PRE-CONDITION
-    //
-
-    // The command must have been sent over SCP with CEnc+CMac
-    if (!cspPIV.getIsSecureChannel()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
 
     //
     // COMMAND CHAIN HANDLING
@@ -3078,6 +3071,11 @@ final class PIV {
     // SPECIAL CASE 1 - LOCAL PIN
     //
     if (id == ID_CVM_LOCAL_PIN) {
+      // Administrative PIN updates are a pre-personalisation operation and remain SCP-only.
+      if (!cspPIV.getIsSecureChannel()) {
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      }
+
       // NOTE:
       // We deliberately ignore the value of CONFIG_PIN_ENABLE_LOCAL here as there may be a good
       // reason for setting a pre-defined PIN value with the anticipation of enabling it later
@@ -3100,6 +3098,11 @@ final class PIV {
     // SPECIAL CASE 2 - PUK
     //
     if (id == ID_CVM_PUK) {
+      // Administrative PUK updates are a pre-personalisation operation and remain SCP-only.
+      if (!cspPIV.getIsSecureChannel()) {
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      }
+
       // NOTES:
       // - We deliberately ignore the value of CONFIG_PUK_ENABLED here as there may be a good
       //   reason for setting a pre-defined PUK value with the anticipation of enabling it later
@@ -3111,8 +3114,18 @@ final class PIV {
       return; // Done
     }
 
+    // PRE-CONDITION 1 - Management key updates MUST use explicit PIV algorithm identifiers.
+    // This keeps 9B updates aligned with PIV symmetric mechanisms and avoids "default" ambiguity.
+    if (id == PIVObject.DEFAULT_ADMIN_KEY
+        && mechanism != ID_ALG_TDEA_3KEY
+        && mechanism != ID_ALG_AES_128
+        && mechanism != ID_ALG_AES_192
+        && mechanism != ID_ALG_AES_256) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
     // PRE-CONDITION 1 - The key reference and mechanism MUST point to an existing key
-    PIVKeyObject key = cspPIV.selectKey(id, buffer[ISO7816.OFFSET_P1]);
+    PIVKeyObject key = cspPIV.selectKey(id, mechanism);
     if (key == null) {
       // If any key reference value is specified that is not supported by the card, the PIV Card
       // Application shall return the status word '6A 88'.
@@ -3120,7 +3133,14 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    // PRE-CONDITION 2 - The key object MUST have the ATTR_IMPORTABLE attribute
+    // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
+    // This allows either SCP or prior successful authentication with the key's admin key.
+    if (!cspPIV.checkAccessModeAdmin(key)) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      return; // Keep static analyser happy
+    }
+
+    // PRE-CONDITION 3 - The key object MUST have the ATTR_IMPORTABLE attribute
     if (!key.hasAttribute(PIVKeyObject.ATTR_IMPORTABLE)) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
@@ -3130,20 +3150,23 @@ final class PIV {
     TLVReader reader = TLVReader.getInstance();
     reader.init(scratch, ZERO, length);
 
-    // PRE-CONDITION 3 - The parent tag MUST be of type SEQUENCE
+    // PRE-CONDITION 4 - The parent tag MUST be of type SEQUENCE
     if (!reader.match(CONST_TAG_SEQUENCE)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
     }
 
-    // PRE-CONDITION 4 - The SEQUENCE length MUST be smaller than the APDU data length
+    // PRE-CONDITION 5 - The SEQUENCE length MUST be smaller than the APDU data length
     if (reader.getLength() > length) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
     }
 
     // Move to the child tag
-    reader.moveInto();
+    if (!reader.moveInto()) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return; // Keep static analyser happy
+    }
 
     //
     // EXECUTION STEPS
@@ -3151,6 +3174,15 @@ final class PIV {
 
     // STEP 1 - Update the relevant key element
     key.updateElement(reader.getTag(), scratch, reader.getDataOffset(), reader.getLength());
+
+    // STEP 2 - Reject malformed payloads containing multiple key update elements.
+    if (reader.moveNext()) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return; // Keep static analyser happy
+    }
+
+    // STEP 3 - Clear any prior key-authenticated session after a key value change.
+    cspPIV.clearAuthenticatedKey();
   }
 
   private short processGetVersion(TLVWriter writer) {
