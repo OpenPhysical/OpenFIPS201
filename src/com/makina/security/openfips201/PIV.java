@@ -3172,8 +3172,11 @@ final class PIV {
     // EXECUTION STEPS
     //
 
-    // STEP 1 - Update the relevant key element
-    key.updateElement(reader.getTag(), scratch, reader.getDataOffset(), reader.getLength());
+    // STEP 1 - Capture the key element to update.
+    // We defer mutation until cardinality validation so malformed payloads fail atomically.
+    byte elementTag = reader.getTag();
+    short elementOffset = reader.getDataOffset();
+    short elementLength = reader.getLength();
 
     // STEP 2 - Reject malformed payloads containing multiple key update elements.
     if (reader.moveNext()) {
@@ -3181,7 +3184,10 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    // STEP 3 - Clear any prior key-authenticated session after a key value change.
+    // STEP 3 - Update the relevant key element.
+    key.updateElement(elementTag, scratch, elementOffset, elementLength);
+
+    // STEP 4 - Clear any prior key-authenticated session after a key value change.
     cspPIV.clearAuthenticatedKey();
   }
 

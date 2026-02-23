@@ -138,6 +138,119 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
   }
 
   @Test
+  void managementKeyChangeRejectsMalformedSequenceWithoutMutatingKey() {
+    byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x12);
+    byte[] candidateKey = keyMaterial(ALG_AES_128, (byte) 0x22);
+
+    provisionManagementKeyOverScp(ALG_AES_128, initialKey);
+    authenticateManagementKey(ALG_AES_128, initialKey);
+
+    // Payload must be SEQUENCE(0x30) wrapping one key element.
+    ResponseAPDU malformed =
+        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, candidateKey);
+    assertSw(ISO7816.SW_WRONG_DATA, malformed, "Non-SEQUENCE payload must be rejected");
+
+    reconnectAndSelect();
+    assertEquals(
+        0x9000,
+        authenticateManagementKeyAndReturnSw(ALG_AES_128, initialKey),
+        "Malformed update must not change the management key");
+    assertNotEquals(
+        0x9000,
+        authenticateManagementKeyAndReturnSw(ALG_AES_128, candidateKey),
+        "Candidate key must not be accepted when update was rejected");
+  }
+
+  @Test
+  void managementKeyChangeRejectsMultiElementPayloadWithoutMutatingKey() {
+    byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x13);
+    byte[] candidateKey = keyMaterial(ALG_AES_128, (byte) 0x23);
+
+    provisionManagementKeyOverScp(ALG_AES_128, initialKey);
+    authenticateManagementKey(ALG_AES_128, initialKey);
+
+    // Only one key element is valid in CHANGE REFERENCE DATA for a key object.
+    byte[] malformedMultiElement =
+        concat(
+            keyUpdateData(candidateKey),
+            new byte[] {(byte) 0x81, (byte) 0x00});
+    byte[] wrapped =
+        concat(
+            new byte[] {(byte) 0x30, (byte) malformedMultiElement.length},
+            malformedMultiElement);
+    ResponseAPDU response =
+        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, wrapped);
+    assertSw(ISO7816.SW_WRONG_DATA, response, "Extra elements must be rejected");
+
+    reconnectAndSelect();
+    assertEquals(
+        0x9000,
+        authenticateManagementKeyAndReturnSw(ALG_AES_128, initialKey),
+        "Rejected multi-element payload must not update key material");
+    assertNotEquals(
+        0x9000,
+        authenticateManagementKeyAndReturnSw(ALG_AES_128, candidateKey),
+        "Candidate key must not authenticate when payload was rejected");
+  }
+
+  @Test
+  void managementKeyChangeClearsAuthenticatedSessionAfterSuccessfulRotation() {
+    byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x14);
+    byte[] rotatedKey = keyMaterial(ALG_AES_128, (byte) 0x24);
+    byte[] rotatedAgainKey = keyMaterial(ALG_AES_128, (byte) 0x34);
+
+    provisionManagementKeyOverScp(ALG_AES_128, initialKey);
+    authenticateManagementKey(ALG_AES_128, initialKey);
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey)),
+        "Initial authenticated rotation should succeed");
+
+    // Rotation must clear key-authenticated state. A second rotation requires re-authentication.
+    ResponseAPDU secondRotationWithoutAuth =
+        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedAgainKey));
+    assertSw(
+        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+        secondRotationWithoutAuth,
+        "Authenticated key session must be cleared after successful key change");
+  }
+
+  @Test
+  void failedExternalAuthenticateResponseCannotAuthorizeManagementKeyChange() {
+    byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x15);
+    byte[] rotatedKey = keyMaterial(ALG_AES_128, (byte) 0x25);
+
+    provisionManagementKeyOverScp(ALG_AES_128, initialKey);
+    assertSw(0x9000, selectApplet(), "SELECT before failed external authenticate flow");
+
+    ResponseAPDU challenge =
+        transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
+    assertSw(0x9000, challenge, "Challenge request should succeed");
+
+    byte[] plaintextChallenge = extractChallenge(challenge.getData(), challengeLengthForAlgorithm(ALG_AES_128));
+    byte[] encryptedChallenge = encryptChallengeWithManagementKey(ALG_AES_128, initialKey, plaintextChallenge);
+    encryptedChallenge[0] ^= (byte) 0x01; // Deliberately corrupt one byte.
+
+    byte[] badResponse =
+        concat(
+            new byte[] {(byte) 0x7C, (byte) (encryptedChallenge.length + 2), (byte) 0x82, (byte) encryptedChallenge.length},
+            encryptedChallenge);
+    ResponseAPDU authResponse =
+        transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, badResponse);
+    assertSw(
+        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+        authResponse,
+        "Mismatched challenge response must not authenticate the management key");
+
+    ResponseAPDU rotation =
+        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey));
+    assertSw(
+        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+        rotation,
+        "Failed external authenticate must not grant authorization for management key update");
+  }
+
+  @Test
   void pivAlgorithmIdentifier03WorksForManagementKeyChange() {
     assertManagementKeyRotationWorksWithoutScp(ALG_3DES);
   }
