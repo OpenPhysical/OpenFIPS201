@@ -4,8 +4,11 @@ import com.licel.jcardsim.smartcardio.CardSimulator;
 import com.licel.jcardsim.utils.AIDUtil;
 import com.makina.security.openfips201.OpenFIPS201;
 import javacard.framework.AID;
+import javacard.framework.ISO7816;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
@@ -21,26 +24,6 @@ class OpenFIPS201Test {
      * AID for the OpenFIPS201 applet
      */
     private static final AID OF201_AID = AIDUtil.create("A000000308000010000100");
-
-    /**
-     * AID for the OpenFIPS201 applet as a byte array
-     */
-    private static final byte[] OF201_AID_BYTES = new byte[] { (byte)0xA0, (byte)0x00, (byte)0x00, (byte)0x03, (byte)0x08, (byte)0x00, (byte)0x00, (byte)0x10 ,(byte)0x00, (byte)0x01, (byte)0x00};
-
-    /**
-     *     Install Info:
-     *     [Le] [AID]
-     *     [Le] [Control Information]
-     *     [Le] [Applet Data]
-     */
-    private static final byte[] OF201_INSTALL_PARAMS = new byte[] {
-            // AID and Length
-            (byte)0x0B, (byte)0xA0, (byte)0x00, (byte)0x00, (byte)0x03, (byte)0x08, (byte)0x00, (byte)0x00, (byte)0x10, (byte)0x00, (byte)0x01, (byte)0x00,
-            // Control Information and Length
-            (byte)0x00, (byte)0x00,
-            // Applet Data and Length
-            (byte)0x00, (byte)0x00
-    };
 
     public static byte[] hexStringToByteArray(String s) {
         // Remove spaces
@@ -59,12 +42,14 @@ class OpenFIPS201Test {
         return bytes;
     }
 
+    private void initSimulator() {
+        simulator = new CardSimulator();
+        simulator.installApplet(OF201_AID, OpenFIPS201.class, new byte[0]);
+    }
 
-    @org.junit.jupiter.api.BeforeEach
+    @BeforeEach
     void setUp() {
-            simulator = new CardSimulator();
-            simulator.installApplet(OF201_AID, OpenFIPS201.class, OF201_INSTALL_PARAMS, (short)0, (byte)OF201_INSTALL_PARAMS.length);
-
+        initSimulator();
     }
 
     /**
@@ -82,6 +67,7 @@ class OpenFIPS201Test {
     /**
      * Test that the bug in the applet is fixed
      */
+    @Tag("slow")
     @org.junit.jupiter.api.Test
     void testAbortedTransactionsSucceed() {
         try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
@@ -186,5 +172,54 @@ class OpenFIPS201Test {
             // Verify that the last two bytes of the response are 0x9000
             assertArrayEquals(new byte[]{(byte) 0x90, (byte) 0x00}, new byte[]{signResponseAPDU.getBytes()[signResponseAPDU.getBytes().length - 2], signResponseAPDU.getBytes()[signResponseAPDU.getBytes().length - 1]});
         }
+    }
+
+    @org.junit.jupiter.api.Test
+    void testSecureChannelUsesUnwrappedLengthInPivHandlers() {
+        try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
+            SecureChannel mockedSecureChannel = Mockito.mock(SecureChannel.class);
+
+            Mockito.when(mockedSecureChannel.getSecurityLevel())
+                    .thenReturn((byte) (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
+            Mockito.when(GPSystem.getSecureChannel()).thenReturn(mockedSecureChannel);
+
+            // Simulate SCP unwrap shrinking the payload by 4 bytes (wrapped metadata removed).
+            Mockito.when(mockedSecureChannel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+                    .thenAnswer(invocation -> (short) (((short) invocation.getArgument(2)) - 4));
+
+            byte[] dataBytes = simulator.selectAppletWithResult(OF201_AID);
+            assertArrayEquals(new byte[]{(byte) 0x90, (byte) 0x00}, new byte[]{dataBytes[dataBytes.length - 2], dataBytes[dataBytes.length - 1]});
+
+            byte[] resetRetryCounterWrapped = hexStringToByteArray(
+                    "E4 2C 00 80 14 " +
+                            "31 32 33 34 35 36 37 38 " + // PUK guess
+                            "31 32 33 34 35 36 37 38 " + // New PIN
+                            "AA BB CC DD");              // Wrapped overhead
+
+            ResponseAPDU response = simulator.transmitCommand(new CommandAPDU(resetRetryCounterWrapped));
+
+            // Regression guard: if handlers use getIncomingLength(), this returns SW_WRONG_DATA (6A80).
+            assertNotEquals(ISO7816.SW_WRONG_DATA, response.getSW());
+            Mockito.verify(mockedSecureChannel, Mockito.atLeastOnce())
+                    .unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort());
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void testExtendedLengthCommandOverBufferIsRejected() {
+        byte[] dataBytes = simulator.selectAppletWithResult(OF201_AID);
+        assertArrayEquals(new byte[]{(byte) 0x90, (byte) 0x00}, new byte[]{dataBytes[dataBytes.length - 2], dataBytes[dataBytes.length - 1]});
+
+        byte[] oversizedPayload = new byte[300];
+        for (int i = 0; i < oversizedPayload.length; i++) {
+            oversizedPayload[i] = (byte) i;
+        }
+
+        // RESET RETRY COUNTER with Nc=300 forces receiveAllIncomingData() to reject
+        // because APDU buffer cannot hold contiguous CDATA at this size.
+        CommandAPDU oversized = new CommandAPDU(0x00, 0x2C, 0x00, 0x80, oversizedPayload, 0);
+        ResponseAPDU response = simulator.transmitCommand(oversized);
+
+        assertEquals(ISO7816.SW_WRONG_LENGTH, response.getSW());
     }
 }

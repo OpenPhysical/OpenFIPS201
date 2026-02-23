@@ -21,10 +21,81 @@
   <property name="build.outputfile_debug" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}-DEBUG.cap"/>
   <property name="docs.outputpath" value="build/docs"/>
   <property name="docs.classpath" value="${BUILD_SDK}/lib/api_classic-3.0.4.jar;${gp.exportjar}"/>
+  <property name="test.sourcepath" value="src/dev/mistial/tests"/>
+  <property name="test.outputpath" value="build/test-bin"/>
+  <property name="test.reportpath" value="build/test-reports"/>
+  <property name="m2.home" value="${user.home}/.m2/repository"/>
+
+  <path id="test.compile.classpath">
+    <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.4.jar"/>
+    <pathelement location="${gp.exportjar}"/>
+    <pathelement location="tools/jcardengine-26.02.15.jar"/>
+    <pathelement location="tools/globalplatformpro-26.02.11.jar"/>
+    <pathelement location="tools/apdu4j-core-26.01.12.jar"/>
+    <pathelement location="tools/capfile-25.12.01.jar"/>
+    <pathelement location="tools/tlv-26.02.11.jar"/>
+    <pathelement location="tools/slf4j-api-2.0.17.jar"/>
+    <pathelement location="tools/byte-buddy-1.18.4.jar"/>
+    <pathelement location="tools/asm-9.9.1.jar"/>
+    <pathelement location="tools/asm-tree-9.9.1.jar"/>
+    <pathelement location="tools/asm-commons-9.9.1.jar"/>
+    <pathelement location="tools/bcpkix-jdk18on-1.83.jar"/>
+    <pathelement location="tools/bcprov-jdk18on-1.83.jar"/>
+    <pathelement location="tools/bcutil-jdk18on-1.83.jar"/>
+    <pathelement location="tools/jackson-annotations-2.20.jar"/>
+    <pathelement location="tools/jackson-core-2.20.1.jar"/>
+    <pathelement location="tools/jackson-databind-2.20.1.jar"/>
+    <pathelement location="tools/jackson-dataformat-yaml-2.20.1.jar"/>
+    <pathelement location="tools/snakeyaml-2.5.jar"/>
+    <pathelement location="tools/mockito-core-5.21.0.jar"/>
+    <pathelement location="tools/byte-buddy-agent-1.18.4.jar"/>
+    <pathelement location="tools/objenesis-3.3.jar"/>
+    <pathelement location="${m2.home}/org/junit/jupiter/junit-jupiter-api/5.8.1/junit-jupiter-api-5.8.1.jar"/>
+    <pathelement location="${m2.home}/org/junit/platform/junit-platform-commons/1.8.1/junit-platform-commons-1.8.1.jar"/>
+    <pathelement location="${m2.home}/org/opentest4j/opentest4j/1.2.0/opentest4j-1.2.0.jar"/>
+    <pathelement location="${m2.home}/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar"/>
+  </path>
+
+  <path id="test.runtime.classpath">
+    <pathelement location="${test.outputpath}"/>
+    <!-- Runtime must use JCardEngine's JavaCard implementation, not SDK stubs. -->
+    <pathelement location="tools/jcardengine-26.02.15.jar"/>
+    <pathelement location="${gp.exportjar}"/>
+    <pathelement location="tools/globalplatformpro-26.02.11.jar"/>
+    <pathelement location="tools/apdu4j-core-26.01.12.jar"/>
+    <pathelement location="tools/capfile-25.12.01.jar"/>
+    <pathelement location="tools/tlv-26.02.11.jar"/>
+    <pathelement location="tools/slf4j-api-2.0.17.jar"/>
+    <pathelement location="tools/byte-buddy-1.18.4.jar"/>
+    <pathelement location="tools/asm-9.9.1.jar"/>
+    <pathelement location="tools/asm-tree-9.9.1.jar"/>
+    <pathelement location="tools/asm-commons-9.9.1.jar"/>
+    <pathelement location="tools/bcpkix-jdk18on-1.83.jar"/>
+    <pathelement location="tools/bcprov-jdk18on-1.83.jar"/>
+    <pathelement location="tools/bcutil-jdk18on-1.83.jar"/>
+    <pathelement location="tools/jackson-annotations-2.20.jar"/>
+    <pathelement location="tools/jackson-core-2.20.1.jar"/>
+    <pathelement location="tools/jackson-databind-2.20.1.jar"/>
+    <pathelement location="tools/jackson-dataformat-yaml-2.20.1.jar"/>
+    <pathelement location="tools/snakeyaml-2.5.jar"/>
+    <pathelement location="tools/mockito-core-5.21.0.jar"/>
+    <pathelement location="tools/byte-buddy-agent-1.18.4.jar"/>
+    <pathelement location="tools/objenesis-3.3.jar"/>
+    <pathelement location="${m2.home}/org/junit/jupiter/junit-jupiter-api/5.8.1/junit-jupiter-api-5.8.1.jar"/>
+    <pathelement location="${m2.home}/org/junit/platform/junit-platform-commons/1.8.1/junit-platform-commons-1.8.1.jar"/>
+    <pathelement location="${m2.home}/org/opentest4j/opentest4j/1.2.0/opentest4j-1.2.0.jar"/>
+    <pathelement location="${m2.home}/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar"/>
+    <pathelement location="tools/slf4j-simple-2.0.17.jar"/>
+    <pathelement location="${m2.home}/org/junit/jupiter/junit-jupiter-engine/5.8.1/junit-jupiter-engine-5.8.1.jar"/>
+    <pathelement location="${m2.home}/org/junit/platform/junit-platform-engine/1.8.1/junit-platform-engine-1.8.1.jar"/>
+    <pathelement location="${m2.home}/org/junit/platform/junit-platform-launcher/1.8.1/junit-platform-launcher-1.8.1.jar"/>
+  </path>
 
   <target name="clean">
     <delete dir="${build.outputpath}"/>
     <delete dir="${docs.outputpath}"/>
+    <delete dir="${test.outputpath}"/>
+    <delete dir="${test.reportpath}"/>
   </target>
 
   <target name="compile" depends="clean">
@@ -49,6 +120,51 @@
         <include name="**" />
       </fileset>
     </javadoc>
+  </target>
+
+  <target name="test-compile">
+    <mkdir dir="${test.outputpath}" />
+
+    <javac srcdir="${build.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath refid="test.compile.classpath"/>
+    </javac>
+
+    <javac srcdir="${test.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath>
+        <path refid="test.compile.classpath"/>
+        <pathelement location="${test.outputpath}"/>
+      </classpath>
+    </javac>
+  </target>
+
+  <target name="test" depends="test-compile">
+    <mkdir dir="${test.reportpath}" />
+
+    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow">
+      <classpath refid="test.runtime.classpath"/>
+      <testclasses outputdir="${test.reportpath}">
+        <fileset dir="${test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <target name="test-all" depends="test-compile">
+    <mkdir dir="${test.reportpath}" />
+
+    <junitlauncher printSummary="true" haltOnFailure="true">
+      <classpath refid="test.runtime.classpath"/>
+      <testclasses outputdir="${test.reportpath}">
+        <fileset dir="${test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
   </target>
 
   <target name="all" depends="clean,compile,doc"/>
