@@ -1,3 +1,10 @@
+> [!IMPORTANT]
+> This revision (and latest official release) of OpenFIPS201 is [v1.10.2](https://github.com/makinako/OpenFIPS201/releases/tag/v1.10.2). Although this works fine for many people, it has not been updated for a while due to the work on the FIPS 140-3 certified [v2.0.0 FIPS](https://github.com/makinako/OpenFIPS201/tree/release/v2-0-0-fips) code base. 
+>
+> Once final feedback is received from NIST and our lab, we will formally release the v2.0.0 version (in both FIPS and NON-FIPS Approved modes as separate binaries).  *Note that the [v2.0.1-jc304](https://github.com/makinako/OpenFIPS201/tree/release/v2-0-1-jc304) branch is a patch to support JC3.0.4 cards and is not a later/better code base as the version # suggests*.
+> 
+> Thank you for your patience and of course feel free to play around with the new version!
+
 # OpenFIPS201 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 This project has been commissioned and funded by the Australian Department of Defence, to provide an open source implementation of the card application for the NIST Personal Identity Verification (PIV) standard as specified by [NIST FIPS PUB 201-2](https://en.wikipedia.org/wiki/FIPS_201) and [NIST SP 800-73-4](http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73-4.pdf). 
