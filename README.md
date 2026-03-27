@@ -1,3 +1,10 @@
+> [!IMPORTANT]
+> This revision (and latest official release) of OpenFIPS201 is [v1.10.2](https://github.com/makinako/OpenFIPS201/releases/tag/v1.10.2). Although this works fine for many people, it has not been updated for a while due to the work on the FIPS 140-3 certified [v2.0.0 FIPS](https://github.com/makinako/OpenFIPS201/tree/release/v2-0-0-fips) code base. 
+>
+> Once final feedback is received from NIST and our lab, we will formally release the v2.0.0 version (in both FIPS and NON-FIPS Approved modes as separate binaries).  *Note that the [v2.0.1-jc304](https://github.com/makinako/OpenFIPS201/tree/release/v2-0-1-jc304) branch is a patch to support JC3.0.4 cards and is not a later/better code base as the version # suggests*.
+> 
+> Thank you for your patience and of course feel free to play around with the new version!
+
 # OpenFIPS201 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 This project has been commissioned and funded by the Australian Department of Defence, to provide an open source implementation of the card application for the NIST Personal Identity Verification (PIV) standard as specified by [NIST FIPS PUB 201-2](https://en.wikipedia.org/wiki/FIPS_201) and [NIST SP 800-73-4](http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73-4.pdf). 
@@ -14,7 +21,7 @@ This project has been commissioned and funded by the Australian Department of De
   * Biometric On-Card Comparison (OCC)
 
 To get started, please head on over to the [OpenFIPS201 Wiki](https://openfips201.atlassian.net/wiki/spaces/OD/overview)
-The latest binary release is: [OpenFIPS201 v1.10.0](#ref)
+The latest binary release is: [OpenFIPS201 v1.10.2](https://github.com/makinako/OpenFIPS201/releases/tag/v1.10.2)
 
 **Want to get in touch?**
 
@@ -27,6 +34,31 @@ To contact the author directly, email kim@makina.com.au
 * [Apache Ant](https://ant.apache.org/) by the [Apache Foundation](https://www.apache.org/)
 * [Ant-JavaCard](https://github.com/martinpaljak/ant-javacard) by [Martin Paljak](https://github.com/martinpaljak)
 * [Google Java Format](https://github.com/google/google-java-format) by [Google](https://github.com/google)
+
+----
+
+
+
+### UPDATE 31st August 2022 - OpenFIPS201 v1.10.2 Release
+
+This is a bug-fix release for OpenFIPS201. The following bugs have been addressed:
+
+#### Bugs
+
+* [OF-132](https://openfips201.atlassian.net/browse/OF-132) Applet doesn't install on JCardSim
+* [OF-130](https://openfips201.atlassian.net/browse/OF-130) Applet does not uninstall unless the package is also deleted
+* [OF-127](https://openfips201.atlassian.net/browse/OF-127) retriesContact and retriesContactless for PIN/PUK should be limited to 15
+* [OF-122](https://openfips201.atlassian.net/browse/OF-122) Applet does not permit contact and contactless retries to be the same value
+* [OF-119](https://openfips201.atlassian.net/browse/OF-119) RESET RETRY COUNTER not checking intermediate PUK value
+* [OF-118](https://openfips201.atlassian.net/browse/OF-118) Contactless intermediate retries incorrectly evaluated
+
+#### Notes
+
+* Access to the OpenFIPS201 JIRA is currently restricted, if you wish to have access please contact kim@openfips201.org.
+* Documentation relating to OpenFIPS201 can be found [here](https://openfips201.atlassian.net/wiki/spaces/OD/overview).
+* [Discussions](https://github.com/makinako/OpenFIPS201/discussions) have been enabled, we welcome any feedback you have or let us know how you're using OpenFIPS201!
+
+
 
 ----
 
