@@ -18,7 +18,7 @@ The original upstream README is preserved at
 ## Relationship to Upstream
 
 The upstream project is maintained at
-[Mistial-Dev/OpenFIPS201](https://github.com/Mistial-Dev/OpenFIPS201/tree/master).
+[makinako/OpenFIPS201](https://github.com/makinako/OpenFIPS201/tree/master).
 This repository is a downstream fork used by OpenPhysical to integrate and test
 changes before they are proposed upstream or carried as OpenPhysical-specific
 maintenance.
