@@ -1,0 +1,25 @@
+<ivy-module version="2.0">
+  <info organisation="dev.mistial" module="openfips201-build"/>
+
+  <configurations>
+    <conf name="test-compile" visibility="public"/>
+    <conf name="test-runtime" visibility="public" extends="test-compile"/>
+  </configurations>
+
+  <dependencies>
+    <dependency org="org.junit.jupiter" name="junit-jupiter-api" rev="6.1.0" conf="test-compile->default"/>
+    <dependency org="org.mockito" name="mockito-core" rev="5.23.0" conf="test-compile->default"/>
+    <dependency org="org.bouncycastle" name="bcpkix-jdk18on" rev="1.84" conf="test-compile->default"/>
+    <dependency org="org.bouncycastle" name="bcprov-jdk18on" rev="1.84" conf="test-compile->default"/>
+    <dependency org="org.bouncycastle" name="bcutil-jdk18on" rev="1.84" conf="test-compile->default"/>
+    <dependency org="org.ow2.asm" name="asm" rev="9.10.1" conf="test-compile->default"/>
+    <dependency org="org.ow2.asm" name="asm-tree" rev="9.10.1" conf="test-compile->default"/>
+    <dependency org="org.ow2.asm" name="asm-commons" rev="9.10.1" conf="test-compile->default"/>
+
+    <dependency org="org.junit.jupiter" name="junit-jupiter-engine" rev="6.1.0" conf="test-runtime->default"/>
+    <dependency org="org.junit.platform" name="junit-platform-launcher" rev="6.1.0" conf="test-runtime->default"/>
+    <dependency org="org.junit.platform" name="junit-platform-console" rev="6.1.0" conf="test-runtime->default"/>
+    <dependency org="org.slf4j" name="slf4j-nop" rev="2.0.18" conf="test-runtime->default"/>
+    <dependency org="org.jacoco" name="org.jacoco.ant" rev="0.8.15" conf="test-runtime->default"/>
+  </dependencies>
+</ivy-module>

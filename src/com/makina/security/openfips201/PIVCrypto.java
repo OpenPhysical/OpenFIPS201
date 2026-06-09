@@ -29,9 +29,7 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.security.AESKey;
 import javacard.security.CryptoException;
-import javacard.security.DESKey;
 import javacard.security.ECPrivateKey;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
@@ -277,14 +275,25 @@ final class PIVCrypto {
 
     Cipher cipher = null;
 
-    // If the mechanism was incorrect, or the cipher was not instantiated then fail
-    if (theKey instanceof AESKey) {
-      cipher = cspAES;
-    } else if (theKey instanceof DESKey) {
-      cipher = cspTDEA;
-    } else {
-      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
-      return (short) 0;
+    // Select by concrete key type, not key-interface checks.
+    // A key object may implement multiple key interfaces, which makes interface dispatch
+    // ambiguous and can route a valid key to the wrong cipher.
+    switch (theKey.getType()) {
+      case KeyBuilder.TYPE_DES:
+      case KeyBuilder.TYPE_DES_TRANSIENT_DESELECT:
+      case KeyBuilder.TYPE_DES_TRANSIENT_RESET:
+        cipher = cspTDEA;
+        break;
+
+      case KeyBuilder.TYPE_AES:
+      case KeyBuilder.TYPE_AES_TRANSIENT_DESELECT:
+      case KeyBuilder.TYPE_AES_TRANSIENT_RESET:
+        cipher = cspAES;
+        break;
+
+      default:
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+        return (short) 0;
     }
 
     cipher.init(theKey, Cipher.MODE_ENCRYPT);

@@ -317,14 +317,17 @@ final class Config {
   //
   // Defaults and Limits
   //
-  static final byte LIMIT_PIN_MIN_LENGTH = (byte) 4;
-  static final byte LIMIT_PIN_MAX_LENGTH = (byte) 16;
-  static final byte LIMIT_PIN_MAX_RETRIES = (byte) 15;
+  // SP 800-73-5 PIN presentation rules constrain significant PIN length to 6-8 bytes.
+  static final byte LIMIT_PIN_MIN_LENGTH = (byte) 6;
+  static final byte LIMIT_PIN_MAX_LENGTH = (byte) 8;
+  // SP 800-73-5 caps PIN retry counters at 10.
+  static final byte LIMIT_PIN_MAX_RETRIES = (byte) 10;
   static final byte LIMIT_PIN_HISTORY = (byte) 12;
 
   static final byte LIMIT_PUK_MIN_LENGTH = (byte) 6;
   static final byte LIMIT_PUK_MAX_LENGTH = (byte) 16;
-  static final byte LIMIT_PUK_MAX_RETRIES = (byte) 15;
+  // SP 800-73-5 caps PUK retry counters at 10.
+  static final byte LIMIT_PUK_MAX_RETRIES = (byte) 10;
 
   private static final byte DEFAULT_PIN_ENABLE_LOCAL = TLV.TRUE;
   private static final byte DEFAULT_PIN_MIN_LENGTH = (byte) 6;

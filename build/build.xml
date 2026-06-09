@@ -1,30 +1,104 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project name="OpenFIPS201 PIV Applet" default="all" basedir="..">
+<project name="OpenFIPS201 PIV Applet" xmlns:ivy="antlib:org.apache.ivy.ant" xmlns:jacoco="antlib:org.jacoco.ant" default="all" basedir="..">
 
   <property name="VERSION_MAJOR" value="1"/>
   <property name="VERSION_MINOR" value="10"/>
-  <property name="VERSION_REVISION" value="2"/>
+  <property name="VERSION_REVISION" value="openphy-r1"/>
   <property name="SDK_BASE" value="tools/sdk"/>
   <property name="BUILD_SDK" value="${SDK_BASE}/jc310"/>
-  <property name="TARGET_SDK" value="${SDK_BASE}/jc304"/>
+  <property name="TARGET_SDK" value="3.0.5"/>
 
-  <property name="gp.version" value="gp221"/>
+  <!-- Use class-only GP API jar by default for JDK11+ compatibility. -->
+  <property name="gp.version" value="gp211"/>
 
   <property name="jc.home" value="${BUILD_SDK}"/>
   <property name="gp.home" value="${basedir}/tools/sdk/${gp.version}"/>
   <property name="gp.exportjar" value="${gp.home}/${gp.version}.jar"/>
   
   <property name="build.version" value="${VERSION_MAJOR}.${VERSION_MINOR}"/>
-  <property name="build.sourcepath" value="src"/>
+  <property name="build.sourcepath" value="src/com/makina/security/openfips201"/>
   <property name="build.outputpath" value="build/bin"/>
   <property name="build.outputfile" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}.cap"/>
   <property name="build.outputfile_debug" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}-DEBUG.cap"/>
   <property name="docs.outputpath" value="build/docs"/>
-  <property name="docs.classpath" value="${BUILD_SDK}/lib/api_classic-3.0.4.jar;${gp.exportjar}"/>
+  <property name="docs.classpath" value="${BUILD_SDK}/lib/api_classic-3.0.5.jar;${gp.exportjar}"/>
+  <property name="test.sourcepath" value="src/dev/mistial/tests"/>
+  <property name="test.outputpath" value="build/test-bin"/>
+  <property name="test.reportpath" value="build/test-reports"/>
+  <property name="coverage.outputpath" value="build/coverage"/>
+  <property name="coverage.execfile" value="${coverage.outputpath}/jacoco.exec"/>
+  <property name="coverage.xmlfile" value="${coverage.outputpath}/jacoco.xml"/>
+  <property name="coverage.htmlpath" value="${coverage.outputpath}/html"/>
+  <property name="coverage.minimum.openfips201.line" value="0.80"/>
+  <property name="deps.outputpath" value="build/lib"/>
+  <property name="ivy.version" value="2.5.3"/>
+  <property name="ivy.bootstrap.dir" value="build/ivy"/>
+  <property name="ivy.default.ivy.user.dir" location="build/ivy2"/>
+  <property name="ivy.jar" value="${ivy.bootstrap.dir}/ivy-${ivy.version}.jar"/>
+  <property name="ivy.settings.file" value="build/ivysettings.xml"/>
+  <property name="ivy.module.file" value="build/ivy.xml"/>
+
+  <path id="test.compile.classpath">
+    <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
+    <pathelement location="${gp.exportjar}"/>
+    <pathelement location="tools/jcardengine-26.06.04.jar"/>
+    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
+    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
+    <pathelement location="tools/capfile-26.05.15.jar"/>
+    <pathelement location="tools/tlv-26.06.04.jar"/>
+    <fileset dir="${deps.outputpath}">
+      <include name="*.jar"/>
+    </fileset>
+  </path>
+
+  <path id="test.runtime.classpath">
+    <pathelement location="${test.outputpath}"/>
+    <pathelement location="${gp.exportjar}"/>
+    <pathelement location="tools/jcardengine-26.06.04.jar"/>
+    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
+    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
+    <pathelement location="tools/capfile-26.05.15.jar"/>
+    <pathelement location="tools/tlv-26.06.04.jar"/>
+    <fileset dir="${deps.outputpath}">
+      <include name="*.jar"/>
+    </fileset>
+  </path>
+  <path id="jacoco.ant.classpath">
+    <fileset dir="${deps.outputpath}">
+      <include name="org.jacoco.ant-*.jar"/>
+      <include name="org.jacoco.core-*.jar"/>
+      <include name="org.jacoco.report-*.jar"/>
+      <include name="org.jacoco.agent-*.jar"/>
+      <include name="asm-*.jar"/>
+    </fileset>
+  </path>
+
+  <target name="bootstrap-ivy">
+    <mkdir dir="${ivy.bootstrap.dir}" />
+    <get src="https://repo1.maven.org/maven2/org/apache/ivy/ivy/${ivy.version}/ivy-${ivy.version}.jar"
+         dest="${ivy.jar}"
+         skipexisting="true" />
+  </target>
+
+  <target name="resolve-test-deps" depends="bootstrap-ivy">
+    <mkdir dir="${deps.outputpath}" />
+    <taskdef uri="antlib:org.apache.ivy.ant"
+             resource="org/apache/ivy/ant/antlib.xml"
+             classpath="${ivy.jar}" />
+    <ivy:settings id="openfips201.ivy.settings" file="${ivy.settings.file}" />
+    <ivy:resolve file="${ivy.module.file}" settingsRef="openfips201.ivy.settings" />
+    <ivy:retrieve pattern="${deps.outputpath}/[artifact]-[revision].[ext]"
+                  conf="test-compile,test-runtime"
+                  sync="true"
+                  settingsRef="openfips201.ivy.settings" />
+  </target>
 
   <target name="clean">
     <delete dir="${build.outputpath}"/>
     <delete dir="${docs.outputpath}"/>
+    <delete dir="${test.outputpath}"/>
+    <delete dir="${test.reportpath}"/>
+    <delete dir="${coverage.outputpath}"/>
   </target>
 
   <target name="compile" depends="clean">
@@ -49,6 +123,96 @@
         <include name="**" />
       </fileset>
     </javadoc>
+  </target>
+
+  <target name="test-compile" depends="resolve-test-deps">
+    <delete dir="${test.outputpath}" />
+    <mkdir dir="${test.outputpath}" />
+
+    <javac srcdir="${build.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath refid="test.compile.classpath"/>
+    </javac>
+
+    <javac srcdir="${test.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath>
+        <path refid="test.compile.classpath"/>
+        <pathelement location="${test.outputpath}"/>
+      </classpath>
+    </javac>
+  </target>
+
+  <target name="test" depends="test-compile">
+    <mkdir dir="${test.reportpath}" />
+
+    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow">
+      <classpath refid="test.runtime.classpath"/>
+      <testclasses outputdir="${test.reportpath}">
+        <fileset dir="${test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <target name="test-all" depends="test-compile">
+    <mkdir dir="${test.reportpath}" />
+
+    <junitlauncher printSummary="true" haltOnFailure="true">
+      <classpath refid="test.runtime.classpath"/>
+      <testclasses outputdir="${test.reportpath}">
+        <fileset dir="${test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <target name="coverage" depends="test-compile">
+    <mkdir dir="${test.reportpath}" />
+    <mkdir dir="${coverage.outputpath}" />
+
+    <taskdef uri="antlib:org.jacoco.ant"
+             resource="org/jacoco/ant/antlib.xml"
+             classpathref="jacoco.ant.classpath" />
+
+    <jacoco:agent property="jacoco.agent.vmparam"
+                  destfile="${coverage.execfile}"
+                  append="false" />
+
+    <java classname="org.junit.platform.console.ConsoleLauncher" fork="true" failonerror="true">
+      <classpath refid="test.runtime.classpath"/>
+      <jvmarg value="${jacoco.agent.vmparam}" />
+      <arg value="--disable-banner" />
+      <arg value="--exclude-tag" />
+      <arg value="slow" />
+      <arg value="--select-package" />
+      <arg value="dev.mistial.tests.openfips201" />
+    </java>
+
+    <jacoco:report>
+      <executiondata>
+        <file file="${coverage.execfile}" />
+      </executiondata>
+      <structure name="OpenFIPS201">
+        <classfiles>
+          <fileset dir="${test.outputpath}">
+            <include name="com/makina/security/openfips201/*.class" />
+          </fileset>
+        </classfiles>
+        <sourcefiles encoding="windows-1252">
+          <fileset dir="${build.sourcepath}">
+            <include name="**/*.java" />
+          </fileset>
+        </sourcefiles>
+      </structure>
+      <xml destfile="${coverage.xmlfile}" />
+      <html destdir="${coverage.htmlpath}" />
+    </jacoco:report>
+
   </target>
 
   <target name="all" depends="clean,compile,doc"/>

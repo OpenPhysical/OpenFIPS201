@@ -45,14 +45,8 @@ import javacard.framework.PINException;
  */
 final class PIVOwnerPIN implements PIVPIN {
 
-  /*
-   * Defines the highest possible try limit, which is derived
-   * from the fact that the SW12 value for an incorrect PIN only
-   * permits the remaining attempts to be stored in a nibble.
-   */
-  public static final byte HARD_PIN_TRY_LIMIT = (byte) 15;
-
   private final OwnerPIN myPIN;
+  private final byte myHardTryLimit;
   private byte mySoftTryLimit;
 
   /**
@@ -63,6 +57,7 @@ final class PIVOwnerPIN implements PIVPIN {
    */
   PIVOwnerPIN(byte tryLimit, byte maxPINSize) throws PINException {
     myPIN = new OwnerPIN(tryLimit, maxPINSize);
+    myHardTryLimit = tryLimit;
 
     // Initialise our soft try limit to the initial hard limit
     mySoftTryLimit = tryLimit;
@@ -71,7 +66,7 @@ final class PIVOwnerPIN implements PIVPIN {
   @Override
   public byte getTriesRemaining() {
     byte retries = myPIN.getTriesRemaining();
-    byte delta = (byte) (HARD_PIN_TRY_LIMIT - mySoftTryLimit);
+    byte delta = (byte) (myHardTryLimit - mySoftTryLimit);
 
     // NOTE:
     // - It should never be the case that retries gets under the delta value, because if it has
@@ -119,7 +114,7 @@ final class PIVOwnerPIN implements PIVPIN {
   }
 
   public void setTryLimit(byte limit) {
-    if (limit < 0 || limit > HARD_PIN_TRY_LIMIT) {
+    if (limit < 0 || limit > myHardTryLimit) {
       PINException.throwIt(PINException.ILLEGAL_VALUE);
     } else {
       mySoftTryLimit = limit;
