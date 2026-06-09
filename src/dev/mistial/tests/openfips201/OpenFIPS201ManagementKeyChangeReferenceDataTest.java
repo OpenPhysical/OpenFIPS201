@@ -349,7 +349,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
   }
 
   private void reconnectAndSelect() {
-    if (session != null && !session.isClosed()) {
+    if (session != null) {
       session.close();
     }
     session = engine.connect();

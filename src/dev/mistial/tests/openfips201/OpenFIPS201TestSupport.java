@@ -1,10 +1,10 @@
 package dev.mistial.tests.openfips201;
 
 import com.makina.security.openfips201.OpenFIPS201;
+import apdu4j.core.BIBO;
 import javacard.framework.AID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import pro.javacard.engine.EngineSession;
 import pro.javacard.engine.JavaCardEngine;
 
 import javax.smartcardio.CommandAPDU;
@@ -28,7 +28,7 @@ abstract class OpenFIPS201TestSupport {
       new AID(OPENFIPS201_AID_BYTES, (short) 0, (byte) OPENFIPS201_AID_BYTES.length);
 
   protected JavaCardEngine engine;
-  protected EngineSession session;
+  protected BIBO session;
 
   @BeforeEach
   void setUpCard() {
@@ -39,7 +39,7 @@ abstract class OpenFIPS201TestSupport {
 
   @AfterEach
   void tearDownCard() {
-    if (session != null && !session.isClosed()) {
+    if (session != null) {
       session.close();
     }
   }
@@ -55,7 +55,7 @@ abstract class OpenFIPS201TestSupport {
   }
 
   protected ResponseAPDU transmit(CommandAPDU command) {
-    return new ResponseAPDU(session.transmitCommand(command.getBytes()));
+    return new ResponseAPDU(session.transceive(command.getBytes()));
   }
 
   protected ResponseAPDU transmit(int cla, int ins, int p1, int p2) {

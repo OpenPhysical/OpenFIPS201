@@ -41,11 +41,11 @@
   <path id="test.compile.classpath">
     <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
     <pathelement location="${gp.exportjar}"/>
-    <pathelement location="tools/jcardengine-26.02.15.jar"/>
-    <pathelement location="tools/globalplatformpro-26.02.11.jar"/>
-    <pathelement location="tools/apdu4j-core-26.01.12.jar"/>
-    <pathelement location="tools/capfile-25.12.01.jar"/>
-    <pathelement location="tools/tlv-26.02.11.jar"/>
+    <pathelement location="tools/jcardengine-26.06.04.jar"/>
+    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
+    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
+    <pathelement location="tools/capfile-26.05.15.jar"/>
+    <pathelement location="tools/tlv-26.06.04.jar"/>
     <fileset dir="${deps.outputpath}">
       <include name="*.jar"/>
     </fileset>
@@ -54,11 +54,11 @@
   <path id="test.runtime.classpath">
     <pathelement location="${test.outputpath}"/>
     <pathelement location="${gp.exportjar}"/>
-    <pathelement location="tools/jcardengine-26.02.15.jar"/>
-    <pathelement location="tools/globalplatformpro-26.02.11.jar"/>
-    <pathelement location="tools/apdu4j-core-26.01.12.jar"/>
-    <pathelement location="tools/capfile-25.12.01.jar"/>
-    <pathelement location="tools/tlv-26.02.11.jar"/>
+    <pathelement location="tools/jcardengine-26.06.04.jar"/>
+    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
+    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
+    <pathelement location="tools/capfile-26.05.15.jar"/>
+    <pathelement location="tools/tlv-26.06.04.jar"/>
     <fileset dir="${deps.outputpath}">
       <include name="*.jar"/>
     </fileset>
