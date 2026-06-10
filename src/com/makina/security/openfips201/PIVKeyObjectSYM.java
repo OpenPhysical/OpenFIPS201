@@ -38,8 +38,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
 
   // The only element that can be updated in a symmetric key
   static final byte ELEMENT_KEY = (byte) 0x80;
-  // Clear any key material from this object
-  static final byte ELEMENT_KEY_CLEAR = (byte) 0xFF;
+  // Clear any key material from this object (same wire tag as the common ELEMENT_CLEAR)
+  static final byte ELEMENT_KEY_CLEAR = ELEMENT_CLEAR;
   private SecretKey key;
 
   PIVKeyObjectSYM(
@@ -141,6 +141,7 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       key = null;
       runGc();
     }
+    clearOrigin();
   }
 
   boolean isInitialised() {

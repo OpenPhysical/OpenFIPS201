@@ -208,10 +208,4 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
     assertEquals(8, retriesAfterSecond, "Second wrong PUK should consume one additional retry");
   }
 
-  private static byte[] concat(byte[] left, byte[] right) {
-    byte[] out = new byte[left.length + right.length];
-    System.arraycopy(left, 0, out, 0, left.length);
-    System.arraycopy(right, 0, out, left.length, right.length);
-    return out;
-  }
 }

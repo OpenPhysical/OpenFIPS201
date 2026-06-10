@@ -29,15 +29,19 @@ GitHub renders the documentation directory consistently.
 
 ## OpenPhysical Changes
 
-This fork currently includes the following notable changes beyond the upstream
+This fork includes the following notable changes beyond the upstream
 baseline:
 
 - Expanded APDU conformance tests using JCardEngine.
-- Additional unhappy-path coverage for PIV management operations.
-- Regression coverage for secure channel and extended APDU handling.
+- Additional negative-path coverage for PIV management operations.
+- Test coverage for secure channel and extended APDU handling.
 - Enforcement of SP 800-73-5 retry counter and PIN length requirements.
 - PIV-style `CHANGE REFERENCE DATA` support for the management key.
 - Symmetric cipher selection by management key type for `GENERAL AUTHENTICATE`.
+- Full one-to-three byte PIV data object identifiers for GET DATA, PUT DATA,
+  create, and delete operations.
+- PIV-style attestation authority support with host provisioning tooling for
+  SCP03/SCP02-protected F9 import and issuer certificate publication.
 - Java Card 3.0.5 build targeting with a JDK 11-compatible Ant toolchain.
 - Ivy-based test dependency resolution and removal of stale checked-in test
   dependency jars.
@@ -47,8 +51,10 @@ baseline:
 ## Repository Layout
 
 - `src/com/makina/security/openfips201/` contains the Java Card applet source.
-- `src/dev/mistial/tests/openfips201/` contains the JCardEngine-based regression
-  and conformance tests.
+- `src/dev/mistial/tests/openfips201/` contains the JCardEngine-based conformance
+  and behavior tests.
+- `src/dev/mistial/tools/openfips201/` contains host-side utilities, including
+  attestation provisioning tooling.
 - `build/` contains the Ant build, Ivy dependency metadata, and generated build
   output.
 - `tools/` contains checked-in build tools and Java Card test harness jars that

@@ -439,13 +439,6 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     return key;
   }
 
-  private static byte[] concat(byte[] prefix, byte[] suffix) {
-    byte[] output = new byte[prefix.length + suffix.length];
-    System.arraycopy(prefix, 0, output, 0, prefix.length);
-    System.arraycopy(suffix, 0, output, prefix.length, suffix.length);
-    return output;
-  }
-
   private static byte toOddParity(byte value) {
     int upperSevenBits = value & 0xFE;
     int ones = Integer.bitCount(upperSevenBits);

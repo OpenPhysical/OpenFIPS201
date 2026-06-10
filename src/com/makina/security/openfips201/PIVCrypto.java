@@ -31,6 +31,7 @@ import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
+import javacard.security.ECPublicKey;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
@@ -340,6 +341,38 @@ final class PIVCrypto {
 
     signer.init(theKey, Signature.MODE_SIGN);
     return signer.signPreComputedHash(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static boolean doVerify(
+      ECPublicKey theKey,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] signature,
+      short signatureOffset,
+      short signatureLength) {
+    Signature verifier = null;
+
+    switch (inLength) {
+      case MessageDigest.LENGTH_SHA_256:
+        verifier = cspECCSHA256;
+        break;
+      case MessageDigest.LENGTH_SHA_384:
+        verifier = cspECCSHA384;
+        break;
+      default:
+        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        return false;
+    }
+
+    verifier.init(theKey, Signature.MODE_VERIFY);
+    return verifier.verifyPreComputedHash(
+        inBuffer, inOffset, inLength, signature, signatureOffset, signatureLength);
+  }
+
+  static short doSha256(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   /**

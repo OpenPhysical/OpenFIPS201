@@ -269,6 +269,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       privateKey.clearKey();
       privateKey = null;
     }
+    clearOrigin();
   }
 
   /** Set ECC domain parameters. */
@@ -336,4 +337,60 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       throws ISOException {
     return PIVCrypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
+
+  boolean verify(
+      byte[] hash,
+      short hashOffset,
+      short hashLength,
+      byte[] signature,
+      short signatureOffset,
+      short signatureLength)
+      throws ISOException {
+    return PIVCrypto.doVerify(
+        publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
+  }
+
+  @Override
+  short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {
+    if (publicKey == null || !publicKey.isInitialized()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0x00;
+    }
+
+    DERWriter writer = DERWriter.getNestedInstance();
+    writer.init(outBuffer, outOffset);
+    writer.begin((byte) 0x30);
+    writer.begin((byte) 0x30);
+    writer.writeTlv((byte) 0x06, OID_EC_PUBLIC_KEY, (short) 0x00, (short) OID_EC_PUBLIC_KEY.length);
+    if (getMechanism() == PIV.ID_ALG_ECC_P256) {
+      writer.writeTlv((byte) 0x06, OID_PRIME256V1, (short) 0x00, (short) OID_PRIME256V1.length);
+    } else {
+      writer.writeTlv((byte) 0x06, OID_SECP384R1, (short) 0x00, (short) OID_SECP384R1.length);
+    }
+    writer.end();
+    writer.write((byte) 0x03);
+    writer.writeLength((short) (marshaledPubKeyLen + 1));
+    writer.write((byte) 0x00);
+    short pointOffset = writer.getOffset();
+    writer.setOffset((short) (pointOffset + publicKey.getW(outBuffer, pointOffset)));
+    writer.end();
+    return (short) (writer.getOffset() - outOffset);
+  }
+
+  private static final byte[] OID_EC_PUBLIC_KEY = {
+    (byte) 0x2A, (byte) 0x86, (byte) 0x48, (byte) 0xCE, (byte) 0x3D, (byte) 0x02, (byte) 0x01
+  };
+  private static final byte[] OID_PRIME256V1 = {
+    (byte) 0x2A,
+    (byte) 0x86,
+    (byte) 0x48,
+    (byte) 0xCE,
+    (byte) 0x3D,
+    (byte) 0x03,
+    (byte) 0x01,
+    (byte) 0x07
+  };
+  private static final byte[] OID_SECP384R1 = {
+    (byte) 0x2B, (byte) 0x81, (byte) 0x04, (byte) 0x00, (byte) 0x22
+  };
 }

@@ -1,12 +1,8 @@
 package dev.mistial.tests.openfips201;
 
 import javacard.framework.ISO7816;
-import org.globalplatform.GPSystem;
-import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
@@ -202,31 +198,53 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     authenticateManagementKey(managementKey);
 
     ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C025FC1"));
-    assertSw(PIV_SW_REFERENCE_NOT_FOUND, response, "Normal-object PUT DATA requires 5C length=3");
+    assertSw(ISO7816.SW_WRONG_DATA, response, "PUT DATA should reject a tag-list without DATA");
   }
 
   @Test
-  void putDataRejectsMalformedNormalTagListPrefixByteOne() {
+  void putDataSupportsCustomThreeByteObjectIdentifier() {
     byte[] managementKey = keyMaterialAes128((byte) 0x75);
+    byte[] customId = hex("00C15A");
 
     provisionManagementKeyOverScp(managementKey);
-    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    createDataObjectOverScp(customId, KEY_REF_CARD_MANAGEMENT);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C0300C15A530101"));
-    assertSw(ISO7816.SW_FILE_NOT_FOUND, response, "Normal-object PUT DATA requires tag prefix byte 0x5F");
+    byte[] objectBody = hex("5303A1A2A3");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, concat(tagList(customId), objectBody)),
+        "PUT DATA should accept a non-5FC1 three-byte object identifier");
+
+    ResponseAPDU readBack = getData(customId);
+    assertSw(0x9000, readBack, "GET DATA should find the exact custom three-byte identifier");
+    assertArrayEquals(objectBody, readBack.getData(), "Custom object content should round-trip");
+
+    assertSw(
+        ISO7816.SW_FILE_NOT_FOUND,
+        getDataNormal(DATA_ID_NORMAL),
+        "Custom 00C15A object must not alias standard 5FC15A");
   }
 
   @Test
-  void putDataRejectsMalformedNormalTagListPrefixByteTwo() {
+  void putDataSupportsYubiKeyCompatibleAttestationIssuerCertificateObject() {
     byte[] managementKey = keyMaterialAes128((byte) 0x76);
+    byte[] attestationIssuerObjectId = hex("5FFF01");
 
     provisionManagementKeyOverScp(managementKey);
-    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    createDataObjectOverScp(attestationIssuerObjectId, KEY_REF_CARD_MANAGEMENT);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035F005A530101"));
-    assertSw(ISO7816.SW_FILE_NOT_FOUND, response, "Normal-object PUT DATA requires tag prefix byte 0xC1");
+    byte[] issuerCertObject = hex("5308700101710100FE00");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, concat(tagList(attestationIssuerObjectId), issuerCertObject)),
+        "PUT DATA should accept the YubiKey-compatible attestation issuer certificate object");
+
+    ResponseAPDU readBack = getData(attestationIssuerObjectId);
+    assertSw(0x9000, readBack, "GET DATA should read object 5FFF01");
+    assertArrayEquals(
+        issuerCertObject, readBack.getData(), "Attestation issuer certificate object should round-trip");
   }
 
   @Test
@@ -426,19 +444,32 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   private void createDataObjectOverScp(final byte id, final byte adminKey) {
+    if (id == DATA_ID_DISCOVERY) {
+      createDataObjectOverScp(new byte[] {id}, adminKey);
+    } else if (id == DATA_ID_BIOMETRIC_GROUP) {
+      createDataObjectOverScp(hex("7F61"), adminKey);
+    } else {
+      createDataObjectOverScp(new byte[] {(byte) 0x5F, (byte) 0xC1, id}, adminKey);
+    }
+  }
+
+  private void createDataObjectOverScp(final byte[] id, final byte adminKey) {
     withMockedScp(
         new Runnable() {
           @Override
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before SCP data-object create");
+            byte[] idTlv = tlv((byte) 0x8B, id);
             byte[] createObjectRequest =
-                new byte[] {
-                  (byte) 0x64, (byte) 0x0C,
-                  (byte) 0x8B, (byte) 0x01, id,
-                  (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
-                  (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
-                  (byte) 0x91, (byte) 0x01, adminKey
-                };
+                tlv(
+                    (byte) 0x64,
+                    concat(
+                        idTlv,
+                        new byte[] {
+                          (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
+                          (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
+                          (byte) 0x91, (byte) 0x01, adminKey
+                        }));
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0x00, createObjectRequest),
@@ -471,6 +502,10 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     return transmit(0x00, 0xCB, 0x3F, 0xFF, normalTagList(id));
   }
 
+  private ResponseAPDU getData(byte[] id) {
+    return transmit(0x00, 0xCB, 0x3F, 0xFF, tagList(id));
+  }
+
   private ResponseAPDU getDataBiometricGroup() {
     return transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C027F61"));
   }
@@ -481,6 +516,10 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
   private static byte[] normalTagList(byte id) {
     return new byte[] {(byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, id};
+  }
+
+  private static byte[] tagList(byte[] id) {
+    return tlv((byte) 0x5C, id);
   }
 
   private static byte[] keyUpdateData(byte[] keyBytes) {
@@ -514,25 +553,6 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     } catch (Exception e) {
       throw new IllegalStateException("Failed to encrypt challenge", e);
     }
-  }
-
-  private void withMockedScp(Runnable action) {
-    try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
-      SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
-      Mockito.when(secureChannel.getSecurityLevel())
-          .thenReturn((byte) (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
-      Mockito.when(secureChannel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-          .thenAnswer(invocation -> (short) invocation.getArgument(2));
-      Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
-      action.run();
-    }
-  }
-
-  private static byte[] concat(byte[] prefix, byte[] suffix) {
-    byte[] output = new byte[prefix.length + suffix.length];
-    System.arraycopy(prefix, 0, output, 0, prefix.length);
-    System.arraycopy(suffix, 0, output, prefix.length, suffix.length);
-    return output;
   }
 
   // Local copy of PIV.SW_REFERENCE_NOT_FOUND (package-private in production code).

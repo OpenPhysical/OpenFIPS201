@@ -265,6 +265,19 @@ final class PIVSecurityProvider {
     }
   }
 
+  void clearKeyMaterialExcept(byte retainedId) {
+    PIVKeyObject key = firstKey;
+    while (key != null) {
+      if (key.getId() != retainedId) {
+        key.clear();
+      }
+      key = (PIVKeyObject) key.nextObject;
+    }
+    // Keep linked-list definitions in place; only sensitive material and authenticated key state
+    // are cleared so provisioning profiles do not need to recreate object metadata.
+    clearAuthenticatedKey();
+  }
+
   /**
    * Validates the current security conditions for administering the specified object.
    *

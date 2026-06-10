@@ -26,7 +26,10 @@
 
 package com.makina.security.openfips201;
 
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
+import javacard.framework.Util;
 
 /** Provides common functionality for all PIV objects (data and security) */
 abstract class PIVObject {
@@ -76,6 +79,10 @@ abstract class PIVObject {
   PIVObject nextObject;
   protected final byte[] header;
 
+  // Data objects are addressed by 1-3 byte PIV object identifiers.  Key objects still use
+  // single-byte key references, so HEADER_ID remains the final byte for legacy callers.
+  protected final byte[] idBytes;
+
   /**
    * Constructs an instance of the base PIVObject object.
    *
@@ -89,6 +96,8 @@ abstract class PIVObject {
       byte id, byte modeContact, byte modeContactless, byte adminKey, short extendedHeaders) {
 
     header = new byte[(short) (LENGTH_HEADER + extendedHeaders)];
+    idBytes = new byte[(short) 0x03];
+    idBytes[(short) 0x02] = id;
 
     // If the administrative key is not specified, use the default (9B) key.
     if (adminKey == (byte) 0) {
@@ -101,6 +110,39 @@ abstract class PIVObject {
     header[HEADER_ADMIN_KEY] = adminKey;
   }
 
+  protected PIVObject(
+      byte[] idBuffer,
+      short idOffset,
+      short idLength,
+      byte modeContact,
+      byte modeContactless,
+      byte adminKey,
+      short extendedHeaders) {
+
+    header = new byte[(short) (LENGTH_HEADER + extendedHeaders)];
+    idBytes = new byte[(short) 0x03];
+    setId(idBuffer, idOffset, idLength);
+
+    // If the administrative key is not specified, use the default (9B) key.
+    if (adminKey == (byte) 0) {
+      adminKey = PIVObject.DEFAULT_ADMIN_KEY;
+    }
+
+    header[HEADER_ID] = idBytes[(short) 0x02];
+    header[HEADER_MODE_CONTACT] = modeContact;
+    header[HEADER_MODE_CONTACTLESS] = modeContactless;
+    header[HEADER_ADMIN_KEY] = adminKey;
+  }
+
+  private void setId(byte[] idBuffer, short idOffset, short idLength) {
+    if (idLength < (short) 0x01 || idLength > (short) 0x03) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    short destination = (short) (idBytes.length - idLength);
+    Util.arrayCopyNonAtomic(idBuffer, idOffset, idBytes, destination, idLength);
+  }
+
   /**
    * Compares the requested identifier value to the current object's id
    *
@@ -109,6 +151,20 @@ abstract class PIVObject {
    */
   boolean match(byte id) {
     return (header[HEADER_ID] == id);
+  }
+
+  boolean match(byte[] idBuffer, short idOffset, short idLength) {
+    if (idLength < (short) 0x01 || idLength > (short) 0x03) {
+      return false;
+    }
+
+    // Short forms such as "7E" are compared against the right-aligned ID, but they must not alias
+    // an object whose stored leading bytes are non-zero, such as "5F FF 7E".
+    short compareOffset = (short) (idBytes.length - idLength);
+    for (short i = (short) 0x00; i < compareOffset; i++) {
+      if (idBytes[i] != (byte) 0x00) return false;
+    }
+    return Util.arrayCompare(idBytes, compareOffset, idBuffer, idOffset, idLength) == (byte) 0x00;
   }
 
   /**

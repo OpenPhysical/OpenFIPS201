@@ -38,6 +38,10 @@ import org.globalplatform.SecureChannel;
 /**
  * The main applet class, which is responsible for handling APDU's and dispatching them to the PIV
  * provider.
+ *
+ * <p>The applet also exposes INS F9 ATTEST for generated-key attestation. The command has no
+ * request body, requires P2=00, and returns a DER X.509 certificate through the standard outgoing
+ * response chaining path.
  */
 public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLength {
   /*
@@ -63,6 +67,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
   private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
   private static final byte INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR = (byte) 0x47;
+  // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key.
+  private static final byte INS_PIV_ATTEST = (byte) 0xF9;
   // Helper constants
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
@@ -135,14 +141,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
   @Override
   public void uninstall() {
-  	//
-  	// NOTE:
-  	// - Get rid of all static instances that would prevent GP from deleting the applet instance 
-  	//   without also deleting the corresponding package
-  	// - TODO: Change TLVReader and TLVWriter to an instance
-  	// - TODO: Change ECParams to public final const arrays, there's no need to instantiate.
+    // Release package-level singleton references so cards that enforce object reachability can
+    // delete this applet instance and package cleanly.
     TLVReader.terminate();
     TLVWriter.terminate();
+    DERWriter.terminate();
     PIVCrypto.terminate();
     ECParamsP256.terminate();
     ECParamsP384.terminate();
@@ -226,7 +229,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // 3) The current command indicates it is transmitting a SCP protected command
     // 4) The command unwrap method successfully completed
 
-    // Always default to false for secure channel until proven otherwise
+    // Default to no secure channel until the APDU unwrap confirms one.
     piv.setIsSecureChannel(false);
 
     if (apdu.isSecureMessagingCLA()) {
@@ -302,6 +305,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
       case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
         processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
+        break;
+
+      case INS_PIV_ATTEST:
+        processPIV_ATTEST(apdu, length);
         break;
 
       default:
@@ -697,6 +704,23 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.generateAsymmetricKeyPair(buffer, offset);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
+    piv.processOutgoing(apdu);
+  }
+
+  private void processPIV_ATTEST(APDU apdu, short length) {
+    byte[] buffer = apdu.getBuffer();
+
+    if (buffer[ISO7816.OFFSET_P2] != (byte) 0x00) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    // ATTEST is a no-body command. Reject unexpected command data after any SCP unwrap instead of
+    // silently ignoring it.
+    if (length != ZERO_SHORT) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+
+    piv.attest(buffer[ISO7816.OFFSET_P1]);
     piv.processOutgoing(apdu);
   }
 }

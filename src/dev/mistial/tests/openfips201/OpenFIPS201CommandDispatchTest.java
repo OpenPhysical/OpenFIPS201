@@ -1,13 +1,16 @@
 package dev.mistial.tests.openfips201;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-
-import javax.smartcardio.ResponseAPDU;
-import java.util.concurrent.TimeUnit;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+import javacard.framework.APDU;
+import javax.smartcardio.ResponseAPDU;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 
 /**
  * Focused tests for APDU command routing and front-door preconditions in {@code OpenFIPS201}.
@@ -25,6 +28,16 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
     // jcardsim/JCardEngine may model SELECT response data differently; command-level success is
     // the stable invariant we require in CI.
     assertEquals(0x9000, response.getSW(), "SELECT must complete successfully");
+  }
+
+  @Test
+  void appletSelectionAllowsContactlessByDefault() {
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless should succeed by default");
+    }
   }
 
   @Test
@@ -78,13 +91,24 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
     byte[] data = response.getData();
     assertTrue(data.length > 2, "GET DATA EXTENDED should return response data");
     assertEquals((byte) 0x53, data[0], "Extended GET DATA response should use tag 0x53");
+
+    int outerOffset = contentOffset(data, 0);
+    int outerEnd = outerOffset + derLength(data, 1);
+    assertEquals(
+        "OpenFIPS201-OpenPhysical",
+        new String(tlvValue(data, outerOffset, outerEnd, 0x80), StandardCharsets.US_ASCII),
+        "GET VERSION application name should identify this fork");
+    assertEquals((byte) 0x00, singleByteTlvValue(data, outerOffset, outerEnd, 0x81));
+    assertEquals((byte) 0x01, singleByteTlvValue(data, outerOffset, outerEnd, 0x82));
+    assertEquals((byte) 0x00, singleByteTlvValue(data, outerOffset, outerEnd, 0x83));
   }
 
   @Test
   void getDataExtendedRejectsUnknownIdentifier() {
     assertSw(0x9000, selectApplet(), "SELECT before GET DATA EXTENDED checks");
     ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0x00, hex("5C032F1234"), 0);
-    assertSw(0x6A82, response, "Unknown extended data object identifier should return FILE_NOT_FOUND");
+    assertSw(
+        0x6A82, response, "Unknown extended data object identifier should return FILE_NOT_FOUND");
   }
 
   @Test
@@ -116,8 +140,57 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   void generalAuthenticateRejectsInvalidKeyReference() {
     assertSw(0x9000, selectApplet(), "SELECT before GENERAL AUTHENTICATE checks");
 
-    // Unknown key reference should fail deterministically with INCORRECT_P1P2.
+    // SP 800-73-4 Part 2, 3.2.4: any key reference value not supported by the card shall return
+    // status word '6A 88'.
     ResponseAPDU response = transmit(0x00, 0x87, 0x11, 0x01, hex("7C00"));
-    assertSw(0x6A86, response, "GENERAL AUTHENTICATE with invalid key reference should fail");
+    assertSw(0x6A88, response, "GENERAL AUTHENTICATE with invalid key reference must return 6A88");
+  }
+
+  @Test
+  void generalAuthenticateTreatsAttestationAuthorityAsNotFound() {
+    assertSw(0x9000, selectApplet(), "SELECT before GENERAL AUTHENTICATE checks");
+
+    // F9 must be indistinguishable from a nonexistent key so GENERAL AUTHENTICATE does not leak
+    // whether an attestation authority is provisioned.
+    ResponseAPDU response = transmit(0x00, 0x87, 0x11, 0xF9, hex("7C00"));
+    assertSw(0x6A88, response, "GENERAL AUTHENTICATE with P2=F9 must look like key-not-found");
+  }
+
+  @Test
+  void attestRejectsCommandData() {
+    assertSw(0x9000, selectApplet(), "SELECT before ATTEST length check");
+
+    ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x00, hex("00"));
+    assertSw(0x6700, response, "ATTEST is a no-body command and must reject nonzero Lc");
+  }
+
+  @Test
+  void attestRejectsNonZeroP2() {
+    assertSw(0x9000, selectApplet(), "SELECT before ATTEST P2 check");
+
+    ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x01);
+    assertSw(0x6A86, response, "ATTEST requires P2=0x00");
+  }
+
+  private static byte singleByteTlvValue(byte[] data, int offset, int end, int tag) {
+    byte[] value = tlvValue(data, offset, end, tag);
+    assertEquals(1, value.length, "Expected one-byte GET VERSION field");
+    return value[0];
+  }
+
+  private static byte[] tlvValue(byte[] data, int offset, int end, int tag) {
+    while (offset < end) {
+      int currentTag = data[offset++] & 0xFF;
+      int lengthOffset = offset;
+      int valueOffset = contentOffset(data, offset - 1);
+      int length = derLength(data, lengthOffset);
+      if (currentTag == tag) {
+        byte[] value = new byte[length];
+        System.arraycopy(data, valueOffset, value, 0, length);
+        return value;
+      }
+      offset = valueOffset + length;
+    }
+    throw new IllegalArgumentException("Tag not found: " + String.format("0x%02X", tag));
   }
 }
