@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project name="OpenFIPS201 PIV Applet" xmlns:ivy="antlib:org.apache.ivy.ant" xmlns:jacoco="antlib:org.jacoco.ant" default="all" basedir="..">
 
-  <property name="VERSION_MAJOR" value="1"/>
-  <property name="VERSION_MINOR" value="10"/>
-  <property name="VERSION_REVISION" value="openphy-r1"/>
+  <property name="VERSION_MAJOR" value="0"/>
+  <property name="VERSION_MINOR" value="1"/>
+  <property name="VERSION_REVISION" value="OP"/>
   <property name="SDK_BASE" value="tools/sdk"/>
   <property name="BUILD_SDK" value="${SDK_BASE}/jc310"/>
   <property name="TARGET_SDK" value="3.0.5"/>
@@ -18,12 +18,15 @@
   <property name="build.version" value="${VERSION_MAJOR}.${VERSION_MINOR}"/>
   <property name="build.sourcepath" value="src/com/makina/security/openfips201"/>
   <property name="build.outputpath" value="build/bin"/>
-  <property name="build.outputfile" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}.cap"/>
-  <property name="build.outputfile_debug" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}-DEBUG.cap"/>
+  <property name="build.outputfile" value="OpenFIPS201-${VERSION_REVISION}-${VERSION_MAJOR}.${VERSION_MINOR}.cap"/>
+  <property name="build.outputfile_debug" value="OpenFIPS201-${VERSION_REVISION}-${VERSION_MAJOR}.${VERSION_MINOR}-DEBUG.cap"/>
   <property name="docs.outputpath" value="build/docs"/>
   <property name="docs.classpath" value="${BUILD_SDK}/lib/api_classic-3.0.5.jar;${gp.exportjar}"/>
   <property name="test.sourcepath" value="src/dev/mistial/tests"/>
+  <property name="tool.sourcepath" value="src/dev/mistial/tools"/>
+  <property name="tool.test.sourcepath" value="src/dev/mistial/tool-tests"/>
   <property name="test.outputpath" value="build/test-bin"/>
+  <property name="tool.outputpath" value="build/tool-bin"/>
   <property name="test.reportpath" value="build/test-reports"/>
   <property name="coverage.outputpath" value="build/coverage"/>
   <property name="coverage.execfile" value="${coverage.outputpath}/jacoco.exec"/>
@@ -51,8 +54,24 @@
     </fileset>
   </path>
 
+  <path id="tool.compile.classpath">
+    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
+    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
+    <pathelement location="tools/capfile-26.05.15.jar"/>
+    <pathelement location="tools/tlv-26.06.04.jar"/>
+    <fileset dir="${deps.outputpath}">
+      <include name="*.jar"/>
+    </fileset>
+  </path>
+
+  <path id="tool.runtime.classpath">
+    <pathelement location="${tool.outputpath}"/>
+    <path refid="tool.compile.classpath"/>
+  </path>
+
   <path id="test.runtime.classpath">
     <pathelement location="${test.outputpath}"/>
+    <pathelement location="${tool.outputpath}"/>
     <pathelement location="${gp.exportjar}"/>
     <pathelement location="tools/jcardengine-26.06.04.jar"/>
     <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
@@ -88,7 +107,7 @@
     <ivy:settings id="openfips201.ivy.settings" file="${ivy.settings.file}" />
     <ivy:resolve file="${ivy.module.file}" settingsRef="openfips201.ivy.settings" />
     <ivy:retrieve pattern="${deps.outputpath}/[artifact]-[revision].[ext]"
-                  conf="test-compile,test-runtime"
+                  conf="test-compile,test-runtime,tool-compile,tool-runtime"
                   sync="true"
                   settingsRef="openfips201.ivy.settings" />
   </target>
@@ -97,6 +116,7 @@
     <delete dir="${build.outputpath}"/>
     <delete dir="${docs.outputpath}"/>
     <delete dir="${test.outputpath}"/>
+    <delete dir="${tool.outputpath}"/>
     <delete dir="${test.reportpath}"/>
     <delete dir="${coverage.outputpath}"/>
   </target>
@@ -125,7 +145,7 @@
     </javadoc>
   </target>
 
-  <target name="test-compile" depends="resolve-test-deps">
+  <target name="test-compile" depends="resolve-test-deps,tool-compile">
     <delete dir="${test.outputpath}" />
     <mkdir dir="${test.outputpath}" />
 
@@ -136,9 +156,33 @@
     <javac srcdir="${test.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
       <classpath>
         <path refid="test.compile.classpath"/>
+        <pathelement location="${tool.outputpath}"/>
         <pathelement location="${test.outputpath}"/>
       </classpath>
     </javac>
+
+    <javac srcdir="${tool.test.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath>
+        <path refid="test.compile.classpath"/>
+        <pathelement location="${tool.outputpath}"/>
+        <pathelement location="${test.outputpath}"/>
+      </classpath>
+    </javac>
+  </target>
+
+  <target name="tool-compile" depends="resolve-test-deps">
+    <delete dir="${tool.outputpath}" />
+    <mkdir dir="${tool.outputpath}" />
+    <javac srcdir="${tool.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath refid="tool.compile.classpath"/>
+    </javac>
+  </target>
+
+  <target name="attestation-tool" depends="tool-compile">
+    <java classname="dev.mistial.tools.openfips201.attestation.AttestationTool" fork="true">
+      <classpath refid="tool.runtime.classpath"/>
+      <arg line="${args}"/>
+    </java>
   </target>
 
   <target name="test" depends="test-compile">
@@ -191,6 +235,8 @@
       <arg value="slow" />
       <arg value="--select-package" />
       <arg value="dev.mistial.tests.openfips201" />
+      <arg value="--select-package" />
+      <arg value="dev.mistial.tools.openfips201.attestation" />
     </java>
 
     <jacoco:report>

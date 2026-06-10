@@ -110,6 +110,9 @@ bin/*
 *.iml
 .metadata
 
+# Local developer environment
+.envrc
+
 .jcop
 
 vendor_libs/*

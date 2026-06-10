@@ -164,6 +164,8 @@ final class PIV {
   private final PIVSecurityProvider cspPIV;
   // PERSISTENT - Configuration Store
   private final Config config;
+  // PERSISTENT - Attestation authority state
+  private final PIVAttestation attestation;
   // PERSISTENT - Data Store
   private PIVDataObject firstDataObject;
 
@@ -171,6 +173,9 @@ final class PIV {
   private final byte[] scratch;
   // TRANSIENT - Holds any authentication related intermediary state
   private final byte[] authenticationContext;
+  // TRANSIENT - Response buffer for attestation certificates. Allocated once per applet
+  // selection (CLEAR_ON_DESELECT) and reused for all attestations in the session.
+  private byte[] attestationResponse;
 
   /** Constructor */
   PIV() {
@@ -193,9 +198,15 @@ final class PIV {
     // Create our PIV Security Provider
     cspPIV = new PIVSecurityProvider();
 
+    // Attestation profile state (subject/validity are persistent; response buffer allocated
+    // on demand in attest()).
+    attestation = new PIVAttestation();
+
     // Create our TLV objects (we don't care about the result, this is just to allocate)
     TLVReader.getInstance();
     TLVWriter.getInstance();
+    DERWriter.getInstance();
+    DERWriter.getNestedInstance();
 
     // NOTE:
     // - Javacard does not specify the behaviour of an OwnerPIN that has not ever been
@@ -368,16 +379,6 @@ final class PIV {
 
     final byte CONST_TAG = (byte) 0x5C;
 
-    final byte CONST_TAG_DISCOVERY = (byte) 0x7E;
-    final byte CONST_TAG_BIOMETRIC_1 = (byte) 0x7F;
-    final byte CONST_TAG_BIOMETRIC_2 = (byte) 0x61;
-    final byte CONST_TAG_NORMAL_1 = (byte) 0x5F;
-    final byte CONST_TAG_NORMAL_2 = (byte) 0xC1;
-
-    final short CONST_LEN_DISCOVERY = (short) 0x01;
-    final short CONST_LEN_BIOMETRIC = (short) 0x02;
-    final short CONST_LEN_NORMAL = (short) 0x03;
-
     //
     // PRE-CONDITIONS
     //
@@ -390,55 +391,16 @@ final class PIV {
 
     //
     // Retrieve the data object TAG identifier
-    // NOTE: All objects in the datastore have had their tag reduced to one byte, which is
-    //		 always the least significant byte of the tag.
+    // NOTE: Data objects retain up to 3 identifier bytes. Shorter identifiers are normalized by
+    // left-padding with zeroes when the object is created and when it is looked up.
     //
 
-    byte id = 0;
-
-    switch (buffer[offset]) {
-
-        //
-        // SPECIAL CASE 1 - DISCOVERY OBJECT
-        //
-      case CONST_LEN_DISCOVERY:
-        offset++; // Move to the 1st byte of the tag
-        if (buffer[offset] != CONST_TAG_DISCOVERY) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        id = CONST_TAG_DISCOVERY; // Store it as our object ID
-        break;
-
-        //
-        // SPECIAL CASE 2 - BIOMETRIC INFORMATION TEMPLATE
-        //
-      case CONST_LEN_BIOMETRIC:
-        offset++; // Move to the 1st byte of the tag
-        if (buffer[offset] != CONST_TAG_BIOMETRIC_1)
-          ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        offset++; // Move to the 2nd byte
-        if (buffer[offset] != CONST_TAG_BIOMETRIC_2)
-          ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        id = CONST_TAG_BIOMETRIC_2; // Store it as our object ID
-        break;
-
-        //
-        // ALL OTHER OBJECTS
-        //
-      case CONST_LEN_NORMAL:
-        offset++; // Move to the 1st byte of the tag
-        if (buffer[offset] != CONST_TAG_NORMAL_1) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        offset++; // Move to the 2nd byte
-        if (buffer[offset] != CONST_TAG_NORMAL_2) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-
-        offset++; // Move to the 3rd byte
-        id = buffer[offset]; // Store it as our object ID
-        break;
-
-      default:
-        // Unsupported length supplied
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    short idLength = (short) (buffer[offset++] & 0xFF);
+    if (idLength < (short) 0x01 || idLength > (short) 0x03) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    PIVDataObject object = findDataObject(id);
+    PIVDataObject object = findDataObject(buffer, offset, idLength);
     if (object == null) {
       ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       return ZERO; // Keep static analyser happy
@@ -452,7 +414,7 @@ final class PIV {
     // PRE-CONDITION 3 - The requested object must be initialised with data
     // NOTE: The special discovery object is not included in this check as it is generated
     // for each call.
-    if (id != ID_DATA_DISCOVERY && !object.isInitialised()) {
+    if (!isDiscoveryDataObject(buffer, offset, idLength) && !object.isInitialised()) {
 
       // 4.1.1 Data Object Content
       // Before the card is issued, data objects that are created but not used shall be set to
@@ -481,7 +443,7 @@ final class PIV {
     //
     short length;
     byte[] data;
-    if (id == ID_DATA_DISCOVERY) {
+    if (isDiscoveryDataObject(buffer, offset, idLength)) {
       length = buildDiscoveryObject(scratch, ZERO);
       data = scratch;
     } else {
@@ -512,8 +474,6 @@ final class PIV {
     final byte CONST_TAG_DISCOVERY = (byte) 0x7E;
     final byte CONST_TAG_BIOMETRIC_1 = (byte) 0x7F;
     final byte CONST_TAG_BIOMETRIC_2 = (byte) 0x61;
-    final byte CONST_TAG_NORMAL_1 = (byte) 0x5F;
-    final byte CONST_TAG_NORMAL_2 = (byte) 0xC1;
 
     final short CONST_LEN_NORMAL = (short) 0x03;
 
@@ -529,10 +489,11 @@ final class PIV {
 
     //
     // Retrieve the data object TAG identifier
-    // NOTE: All objects in the datastore have had their tag reduced to one byte, which is
-    //		 always the least significant byte of the tag.
+    // NOTE: Data objects retain up to 3 identifier bytes. The tag-list form therefore accepts
+    // custom namespaces such as 5F FF 01 instead of only the standard 5F C1 xx namespace.
     //
-    byte id = 0;
+    short idOffset = offset;
+    short idLength = (short) 0x00;
 
     switch (buffer[offset]) {
 
@@ -540,7 +501,7 @@ final class PIV {
         // SPECIAL OBJECT - Discovery Object
         //
       case CONST_TAG_DISCOVERY:
-        id = CONST_TAG_DISCOVERY;
+        idLength = (short) 0x01;
         break;
 
         //
@@ -550,27 +511,27 @@ final class PIV {
         if (buffer[(short) (offset + 1)] != CONST_TAG_BIOMETRIC_2) {
           ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
         }
-        id = CONST_TAG_BIOMETRIC_2; // Store it as our object ID
+        idLength = (short) 0x02;
         break;
 
         //
-        // All other objects
+        // Tag-list form: 5C len <1-3 byte object identifier> 53 len <object bytes>
         //
       case CONST_TAG:
         offset++; // Move to the length byte
-        if (buffer[offset] != CONST_LEN_NORMAL) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+        idLength = (short) (buffer[offset] & 0xFF);
+        if (idLength < (short) 0x01 || idLength > CONST_LEN_NORMAL) {
+          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+        }
 
         offset++; // Move to the first tag data byte
-        if (buffer[offset] != CONST_TAG_NORMAL_1) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-
-        offset++; // Move to the second tag data byte
-        if (buffer[offset] != CONST_TAG_NORMAL_2) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-
-        offset++; // Move to the third tag data byte (which is our identifier)
-        id = buffer[offset]; // Store it as our object ID
+        idOffset = offset;
+        offset += idLength;
+        if ((short) (offset - initialOffset) >= length) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        }
 
         // PRE-CONDITION 2 - For other objects, the 'DATA' tag must be present in the buffer
-        offset++; // Move to the DATA tag
         if (buffer[offset] != CONST_DATA) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return; // Keep static analyser happy
@@ -585,7 +546,7 @@ final class PIV {
     // The offset now holds the correct position for writing the object, including the DATA tag
 
     // PRE-CONDITION 3 - The tag supplied in the 'TAG LIST' element must exist in the data store
-    PIVDataObject object = findDataObject(id);
+    PIVDataObject object = findDataObject(buffer, idOffset, idLength);
     if (object == null) {
       ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       return; // Keep static analyser happy
@@ -1299,15 +1260,16 @@ final class PIV {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The key reference and mechanism must point to an existing key
+    // PRE-CONDITION 1 - The key reference and mechanism must point to an existing key.
+    // F9 is the attestation authority and is not valid for GENERAL AUTHENTICATE operations; it is
+    // deliberately handled as 'not found' so its presence is not observable through this command.
     PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[ISO7816.OFFSET_P1]);
-
-    if (key == null) {
+    if (key == null || buffer[ISO7816.OFFSET_P2] == PIVAttestation.ID_KEY_ATTESTATION) {
       // If any key reference value is specified that is not supported by the card, the PIV Card
       // Application shall return the status word '6A 88'.
       cspPIV.setPINAlways(false); // Clear the PIN ALWAYS flag
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
       return ZERO; // Keep compiler happy
     }
 
@@ -2272,13 +2234,18 @@ final class PIV {
     // RSA public exponent is now fixed to 65537 (Section 3.1 PIV Cryptographic Keys).
     // ECC keys have no parameter.
 
-    // PRE-CONDITION 4A - The key reference and mechanism must exist (key test)
+    // PRE-CONDITION 4A - F9 is the imported attestation authority and must never be generated.
+    if (buffer[ISO7816.OFFSET_P2] == PIVAttestation.ID_KEY_ATTESTATION) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    // PRE-CONDITION 4B - The key reference and mechanism must exist (key test)
     if (!cspPIV.keyExists(buffer[ISO7816.OFFSET_P2])) {
       // The key reference is bad
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // PRE-CONDITION 4B - The key reference and mechanism must exist (mechanism test)
+    // PRE-CONDITION 4C - The key reference and mechanism must exist (mechanism test)
     PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[offset]);
     if (key == null) {
       // NOTE: The error message we return here is different dependant on whether the key is bad
@@ -2305,6 +2272,7 @@ final class PIV {
     // STEP 1 - Generate the key pair
     PIVKeyObjectPKI keyPair = (PIVKeyObjectPKI) key;
     short length = keyPair.generate(scratch, ZERO);
+    keyPair.markGenerated();
 
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
@@ -2553,26 +2521,14 @@ final class PIV {
       return;
     }
 
-    //
-    // IMPLEMENTATION NOTE:
-    // We are progressing through to supporting multi-byte definition of data objects, so until
-    // this is fully completed, we will accept 1-3 byte length identifiers and just use the final
-    // byte as the identifier. This means if you pass through '5FC101' and '6FC101' it will fail
-    // until we support the 3-bytes internally.
-    //
-
-    // PRE-CONDITION 2 - The 'ID' tag have length between 1 and 3
-    short idLength = reader.getLength();
-    if (idLength < (short) 1 || idLength > (short) 3) {
+    // PRE-CONDITION 2 - The 'ID' tag MUST have length between 1 and 3
+    short objectIdLength = reader.getLength();
+    if (objectIdLength < (short) 1 || objectIdLength > (short) 3) {
       ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
       return;
     }
 
-    // Use the last byte of the value as the identifier
-    short offset = reader.getDataOffset();
-    offset += reader.getLength();
-    offset--;
-    byte id = scratch[offset];
+    short idOffset = reader.getDataOffset();
     reader.moveNext();
 
     // PRE-CONDITION 3 - The 'MODE CONTACT' tag MUST be present
@@ -2619,10 +2575,12 @@ final class PIV {
       reader.moveNext();
     }
 
-    // PRE-CONDITION 9 - The object referenced by 'id' value must not exist in the data store.
+    // PRE-CONDITION 9 - The object referenced by the full ID value must not exist in the data
+    // store.
     PIVObject obj = firstDataObject;
     while (obj != null) {
-      if (obj.getId() == id) ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      if (obj.match(scratch, idOffset, objectIdLength))
+        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
       obj = obj.nextObject;
     }
 
@@ -2631,7 +2589,9 @@ final class PIV {
     //
 
     // STEP 1 - Create our new key
-    PIVDataObject dataObject = new PIVDataObject(id, modeContact, modeContactless, adminKey);
+    PIVDataObject dataObject =
+        new PIVDataObject(
+            scratch, idOffset, objectIdLength, modeContact, modeContactless, adminKey);
 
     // STEP 2 - Add it to our linked list
     // NOTE: If this is the first key added, just set our firstKey. Otherwise add it to the head
@@ -2658,33 +2618,21 @@ final class PIV {
       return;
     }
 
-    //
-    // IMPLEMENTATION NOTE:
-    // We are progressing through to supporting multi-byte definition of data objects, so until
-    // this is fully completed, we will accept 1-3 byte length identifiers and just use the final
-    // byte as the identifier. This means if you pass through '5FC101' and '6FC101' it will fail
-    // until we support the 3-bytes internally.
-    //
-
-    // PRE-CONDITION 2 - The 'ID' tag have length between 1 and 3
-    short idLength = reader.getLength();
-    if (idLength < (short) 1 || idLength > (short) 3) {
+    // PRE-CONDITION 2 - The 'ID' tag MUST have length between 1 and 3
+    short objectIdLength = reader.getLength();
+    if (objectIdLength < (short) 1 || objectIdLength > (short) 3) {
       ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
       return;
     }
 
-    // Use the last byte of the value as the identifier
-    short offset = reader.getDataOffset();
-    offset += reader.getLength();
-    offset--;
-    byte id = scratch[offset];
+    short idOffset = reader.getDataOffset();
     reader.moveNext();
 
-    // PRE-CONDITION 7 - The object referenced by 'id' value MUST exist in the data store.
+    // PRE-CONDITION 7 - The object referenced by the full ID value MUST exist in the data store.
     PIVObject obj = firstDataObject;
     boolean objectFound = false;
     while (obj != null) {
-      if (obj.getId() == id) objectFound = true;
+      if (obj.match(scratch, idOffset, objectIdLength)) objectFound = true;
       obj = obj.nextObject;
     }
     if (!objectFound) {
@@ -2812,6 +2760,18 @@ final class PIV {
     byte keyAttribute = reader.toByte();
     reader.moveNext();
 
+    // F9 is reserved for the attestation authority. It is still created through the normal
+    // key-object definition path, but its shape is fixed so provisioning can use CHANGE REFERENCE
+    // DATA without introducing an attestation-specific import APDU.
+    if (id == PIVAttestation.ID_KEY_ATTESTATION
+        && (modeContact != PIVObject.ACCESS_MODE_NEVER
+            || modeContactless != PIVObject.ACCESS_MODE_NEVER
+            || keyMechanism != ID_ALG_ECC_P256
+            || keyRole != PIVKeyObject.ROLE_SIGN
+            || keyAttribute != PIVKeyObject.ATTR_IMPORTABLE)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
     if (config.readFlag(Config.OPTION_RESTRICT_SINGLE_KEY)) {
       // PRE-CONDITION 16A - If CONFIG.RESTRICT_SINGLE_KEY is set, the key referenced by the
       // 'id' and 'mechanism' pair MUST NOT exist in the key store.
@@ -2863,6 +2823,10 @@ final class PIV {
     byte id = reader.toByte();
     reader.moveNext();
 
+    if (id == PIVAttestation.ID_KEY_ATTESTATION) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
     // PRE-CONDITION 3 - The 'KEY MECHANISM' tag MUST be present
     if (!reader.match(CONST_TAG_KEY_MECHANISM)) {
       ISOException.throwIt(PIV.SW_PUT_DATA_KEY_MECHANISM_MISSING);
@@ -2893,6 +2857,21 @@ final class PIV {
 
     // TODO - Implement key deletion
     ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+  }
+
+  /**
+   * Clears the value of every defined data object without deleting the object definitions.
+   *
+   * <p>This is used when committing a new attestation authority. The object directory remains
+   * personalized, but certificate and data contents from the previous trust root are removed before
+   * the new authority is marked active.
+   */
+  private void clearDataObjects() {
+    PIVDataObject object = firstDataObject;
+    while (object != null) {
+      object.clear();
+      object = (PIVDataObject) object.nextObject;
+    }
   }
 
   /**
@@ -3133,6 +3112,14 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
+    // F9 carries the authority private scalar and issuer profile. A prior management-key
+    // authentication may authorize ordinary key rotation, but it must not downgrade authority
+    // import to plaintext.
+    if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION && !cspPIV.getIsSecureChannel()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      return; // Keep static analyser happy
+    }
+
     // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
     // This allows either SCP or prior successful authentication with the key's admin key.
     if (!cspPIV.checkAccessModeAdmin(key)) {
@@ -3185,11 +3172,116 @@ final class PIV {
     }
 
     // STEP 3 - Update the relevant key element.
-    key.updateElement(elementTag, scratch, elementOffset, elementLength);
+    if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION
+        && (elementTag == PIVAttestation.ELEMENT_SUBJECT
+            || elementTag == PIVAttestation.ELEMENT_VALIDITY)) {
+      attestation.updateElement(elementTag, scratch, elementOffset, elementLength);
+    } else {
+      key.updateElement(elementTag, scratch, elementOffset, elementLength);
+      if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION) {
+        if (elementTag == PIVKeyObject.ELEMENT_CLEAR) {
+          attestation.clearProfile();
+        } else {
+          attestation.noteKeyElementUpdated(elementTag);
+        }
+      }
+    }
+    key.markImported();
+
+    if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION) {
+      if (!(key instanceof PIVKeyObjectECC)) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+      PIVKeyObjectECC authority = (PIVKeyObjectECC) key;
+      if (!attestation.isAuthorityActive() && attestation.isAuthorityReadyToCommit(authority)) {
+        attestation.validateAuthority(authority, scratch);
+        // Committing a new authority changes the card's trust root. Keep object definitions, but
+        // clear data contents and non-F9 key material tied to the prior authority.
+        clearDataObjects();
+        cspPIV.clearKeyMaterialExcept(PIVAttestation.ID_KEY_ATTESTATION);
+        attestation.markAuthorityActive();
+      }
+    }
 
     // STEP 4 - Clear any prior key-authenticated session after a key value change.
     cspPIV.clearAuthenticatedKey();
   }
+
+  /**
+   * Builds an attestation certificate for an on-card generated key.
+   *
+   * <p>Pre-conditions:
+   *
+   * <p>- {@code slot} must be one of the standard PIV authentication/signature/key-management slots
+   * or retired key-management slots.
+   *
+   * <p>- F9 must be an active imported P-256 attestation authority.
+   *
+   * <p>- The target key must exist, be generated on-card, and satisfy its configured contact or
+   * contactless access policy. This intentionally makes ATTEST obey the same interface restrictions
+   * as ordinary object use, even though some vendor implementations expose attestation
+   * unauthenticated.
+   *
+   * <p>Status words: {@code 6A86} for invalid attestation slots, {@code 6985} when the authority or
+   * target state is incomplete, {@code 6A88} when the target key does not exist, and {@code 6982}
+   * when target access policy is not satisfied.
+   *
+   * @param slot The PIV key reference to attest
+   */
+  void attest(byte slot) {
+    if (!isAttestableSlot(slot)) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    PIVKeyObjectECC authority =
+        (PIVKeyObjectECC) cspPIV.selectKey(PIVAttestation.ID_KEY_ATTESTATION, ID_ALG_ECC_P256);
+    if (authority == null || !attestation.isAuthorityActive()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    PIVKeyObjectPKI target = selectAttestableTarget(slot);
+    if (target == null) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+    }
+    if (!cspPIV.checkAccessModeObject(target)) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+
+    // PIVAttestation enforces generated-key origin. Imported keys may be valid PIV keys, but the
+    // applet cannot truthfully attest that it generated or protected their origin.
+    if (attestationResponse == null) {
+      attestationResponse = PIVAttestation.allocateResponseBuffer();
+    }
+    short length =
+        attestation.buildCertificate(authority, target, slot, scratch, attestationResponse, ZERO);
+    chainBuffer.setOutgoing(attestationResponse, ZERO, length, true);
+  }
+
+  private PIVKeyObjectPKI selectAttestableTarget(byte slot) {
+    for (byte i = (byte) 0x00; i < ATTESTABLE_KEY_MECHANISMS.length; i++) {
+      PIVKeyObject target = cspPIV.selectKey(slot, ATTESTABLE_KEY_MECHANISMS[i]);
+      if (target instanceof PIVKeyObjectPKI) return (PIVKeyObjectPKI) target;
+    }
+    return null;
+  }
+
+  /**
+   * Returns true for PIV slots that may carry generated PKI keys eligible for attestation.
+   *
+   * <p>F9 is deliberately excluded because it is the attestation authority itself, not an
+   * attestable target.
+   */
+  private static boolean isAttestableSlot(byte slot) {
+    if (slot == (byte) 0x9A || slot == (byte) 0x9C || slot == (byte) 0x9D || slot == (byte) 0x9E) {
+      return true;
+    }
+    return slot >= (byte) 0x82 && slot <= (byte) 0x95;
+  }
+
+  // Attestable mechanisms must provide SubjectPublicKeyInfo emission and key-origin tracking.
+  private static final byte[] ATTESTABLE_KEY_MECHANISMS = {
+    ID_ALG_RSA_1024, ID_ALG_RSA_2048, ID_ALG_ECC_P256, ID_ALG_ECC_P384
+  };
 
   private short processGetVersion(TLVWriter writer) {
 
@@ -3364,16 +3456,18 @@ final class PIV {
   /**
    * Searches for a data object within the local data store
    *
-   * @param id The data object to find
+   * @param idBuffer The buffer containing the requested object identifier
+   * @param idOffset The offset of the identifier in the buffer
+   * @param idLength The length of the identifier, from 1 to 3 bytes
    * @return The relevant data object instance, or null if none was found.
    */
-  private PIVDataObject findDataObject(byte id) {
+  private PIVDataObject findDataObject(byte[] idBuffer, short idOffset, short idLength) {
 
     PIVDataObject data = firstDataObject;
 
     // Traverse the linked list
     while (data != null) {
-      if (data.match(id)) {
+      if (data.match(idBuffer, idOffset, idLength)) {
         return data;
       }
 
@@ -3381,5 +3475,15 @@ final class PIV {
     }
 
     return null;
+  }
+
+  private static boolean isDiscoveryDataObject(byte[] idBuffer, short idOffset, short idLength) {
+    if (idLength < (short) 0x01 || idLength > (short) 0x03) return false;
+
+    short leading = (short) (idLength - (short) 0x01);
+    for (short i = (short) 0x00; i < leading; i++) {
+      if (idBuffer[(short) (idOffset + i)] != (byte) 0x00) return false;
+    }
+    return idBuffer[(short) (idOffset + leading)] == ID_DATA_DISCOVERY;
   }
 }

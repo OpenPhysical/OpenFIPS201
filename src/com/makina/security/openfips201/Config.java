@@ -42,11 +42,14 @@ final class Config {
   // a release.
   //
   static final byte[] APPLICATION_NAME =
-      new byte[] {'O', 'p', 'e', 'n', 'F', 'I', 'P', 'S', '2', '0', '1'};
-  static final short LENGTH_APPLICATION_NAME = (short) 11;
-  static final byte VERSION_MAJOR = (byte) 1;
-  static final byte VERSION_MINOR = (byte) 10;
-  static final byte VERSION_REVISION = (byte) 2;
+      new byte[] {
+        'O', 'p', 'e', 'n', 'F', 'I', 'P', 'S', '2', '0', '1', '-', 'O', 'p', 'e', 'n', 'P', 'h',
+        'y', 's', 'i', 'c', 'a', 'l'
+      };
+  static final short LENGTH_APPLICATION_NAME = (short) 24;
+  static final byte VERSION_MAJOR = (byte) 0;
+  static final byte VERSION_MINOR = (byte) 1;
+  static final byte VERSION_REVISION = (byte) 0;
   static final byte VERSION_DEBUG = (byte) 0; // If set to 1, this build is considered DEBUG
 
   ///////////////////////////////////////////////////////////////////////////

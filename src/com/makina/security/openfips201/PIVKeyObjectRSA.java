@@ -29,6 +29,7 @@ package com.makina.security.openfips201;
 import javacard.framework.CardRuntimeException;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.Util;
 import javacard.security.KeyBuilder;
 import javacard.security.KeyPair;
 import javacard.security.RSAPrivateKey;
@@ -148,12 +149,13 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   void clear() {
     if (publicKey != null) {
       publicKey.clearKey();
-      privateKey = null;
+      publicKey = null;
     }
     if (privateKey != null) {
       privateKey.clearKey();
       privateKey = null;
     }
+    clearOrigin();
 
     runGc();
   }
@@ -311,4 +313,80 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
         return (short) 0; // Keep compiler happy
     }
   }
+
+  @Override
+  short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {
+    if (publicKey == null || !publicKey.isInitialized()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0x00;
+    }
+
+    DERWriter writer = DERWriter.getNestedInstance();
+    writer.init(outBuffer, outOffset);
+    writer.begin((byte) 0x30);
+    writer.begin((byte) 0x30);
+    writer.writeTlv(
+        (byte) 0x06, OID_RSA_ENCRYPTION, (short) 0x00, (short) OID_RSA_ENCRYPTION.length);
+    writer.write((byte) 0x05);
+    writer.write((byte) 0x00);
+    writer.end();
+
+    short bitStringLengthOffset;
+    short rsaPublicKeyStart;
+    writer.write((byte) 0x03);
+    bitStringLengthOffset = writer.getOffset();
+    writer.writeLength((short) 0x00);
+    writer.write((byte) 0x00);
+    rsaPublicKeyStart = writer.getOffset();
+
+    writer.begin((byte) 0x30);
+    // RSAPublicKey writes directly into the output buffer. Leave room for the INTEGER tag,
+    // maximum DER length, and optional positive-integer prefix before encoding from that buffer.
+    short modulusOffset = (short) (writer.getOffset() + 0x05);
+    short modulusLength = publicKey.getModulus(outBuffer, modulusOffset);
+    writer.writePositiveInteger(outBuffer, modulusOffset, modulusLength);
+    short exponentOffset = (short) (writer.getOffset() + 0x05);
+    short exponentLength = publicKey.getExponent(outBuffer, exponentOffset);
+    writer.writePositiveInteger(outBuffer, exponentOffset, exponentLength);
+    writer.end();
+
+    short end = writer.getOffset();
+    short bitStringContentLength = (short) (end - rsaPublicKeyStart + 1);
+    short lengthBytes = encodedLengthSize(bitStringContentLength);
+    short oldContentOffset = (short) (bitStringLengthOffset + 1);
+    short newContentOffset = (short) (bitStringLengthOffset + lengthBytes);
+    if (newContentOffset != oldContentOffset) {
+      Util.arrayCopyNonAtomic(
+          outBuffer,
+          oldContentOffset,
+          outBuffer,
+          newContentOffset,
+          (short) (end - oldContentOffset));
+      end += (short) (newContentOffset - oldContentOffset);
+      writer.setOffset(end);
+    }
+    writer.setOffset(bitStringLengthOffset);
+    writer.writeLength(bitStringContentLength);
+    writer.setOffset(end);
+    writer.end();
+    return (short) (writer.getOffset() - outOffset);
+  }
+
+  private static short encodedLengthSize(short length) {
+    if (length < (short) 0x80) return (short) 0x01;
+    if (length < (short) 0x0100) return (short) 0x02;
+    return (short) 0x03;
+  }
+
+  private static final byte[] OID_RSA_ENCRYPTION = {
+    (byte) 0x2A,
+    (byte) 0x86,
+    (byte) 0x48,
+    (byte) 0x86,
+    (byte) 0xF7,
+    (byte) 0x0D,
+    (byte) 0x01,
+    (byte) 0x01,
+    (byte) 0x01
+  };
 }

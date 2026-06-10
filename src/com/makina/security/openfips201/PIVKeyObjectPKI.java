@@ -75,4 +75,13 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
    * @return The length of the generated key
    */
   abstract short generate(byte[] outBuffer, short outOffset);
+
+  /**
+   * Writes the public key as an X.509 SubjectPublicKeyInfo structure.
+   *
+   * @param outBuffer the output buffer
+   * @param outOffset the starting output offset
+   * @return length of the DER SubjectPublicKeyInfo
+   */
+  abstract short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset);
 }

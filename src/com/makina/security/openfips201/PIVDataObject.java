@@ -49,6 +49,16 @@ final class PIVDataObject extends PIVObject {
     super(id, modeContact, modeContactless, adminKey, (byte) 0);
   }
 
+  PIVDataObject(
+      byte[] idBuffer,
+      short idOffset,
+      short idLength,
+      byte modeContact,
+      byte modeContactless,
+      byte adminKey) {
+    super(idBuffer, idOffset, idLength, modeContact, modeContactless, adminKey, (byte) 0);
+  }
+
   /**
    * @return the number of bytes allocated in content which may be less than content.length
    */
