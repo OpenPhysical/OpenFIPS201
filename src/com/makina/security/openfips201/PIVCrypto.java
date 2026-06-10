@@ -30,6 +30,7 @@ import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.security.CryptoException;
+import javacard.security.AESKey;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
 import javacard.security.KeyAgreement;
@@ -72,6 +73,7 @@ final class PIVCrypto {
   private static Cipher cspTDEA;
   private static Cipher cspRSA;
   private static Cipher cspAES;
+  private static Cipher cspAESCBC;
 
   private static MessageDigest cspSHA256;
   private static MessageDigest cspSHA384;
@@ -80,6 +82,7 @@ final class PIVCrypto {
 
   private static Signature cspECCSHA256;
   private static Signature cspECCSHA384;
+  private static Signature cspAESCMAC;
 
   private static RandomData cspRNG;
 
@@ -87,10 +90,12 @@ final class PIVCrypto {
     cspRNG = null;
     cspTDEA = null;
     cspAES = null;
+    cspAESCBC = null;
     cspRSA = null;
     cspECDH = null;
     cspECCSHA256 = null;
     cspECCSHA384 = null;
+    cspAESCMAC = null;
     cspSHA256 = null;
     cspSHA384 = null;
 
@@ -119,6 +124,12 @@ final class PIVCrypto {
     } catch (CryptoException ex) {
       // We couldn't create this algorithm, the card may not support it!
       cspAES = null;
+    }
+
+    try {
+      cspAESCBC = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
+    } catch (CryptoException ex) {
+      cspAESCBC = null;
     }
 
     if (cspRSA == null) {
@@ -151,6 +162,14 @@ final class PIVCrypto {
         cspECCSHA384 = Signature.getInstance(Signature.ALG_ECDSA_SHA_384, false);
       } catch (CryptoException ex) {
         cspECCSHA384 = null;
+      }
+    }
+
+    if (cspAESCMAC == null) {
+      try {
+        cspAESCMAC = Signature.getInstance(Signature.ALG_AES_CMAC_128, false);
+      } catch (CryptoException ex) {
+        cspAESCMAC = null;
       }
     }
 
@@ -194,7 +213,7 @@ final class PIVCrypto {
         return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
-        return (cspECDH != null && cspSHA256 != null);
+        return (cspECDH != null && cspSHA256 != null && cspAES != null && cspAESCBC != null && cspAESCMAC != null);
 
       case PIV.ID_ALG_ECC_CS7:
         return (cspECDH != null && cspSHA384 != null);
@@ -345,6 +364,52 @@ final class PIVCrypto {
   static short doSha256(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static short doAesCmac(
+      SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    cspAESCMAC.init(key, Signature.MODE_SIGN);
+    return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static short doAesEcbEncrypt(
+      SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    cspAES.init(key, Cipher.MODE_ENCRYPT);
+    return cspAES.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static short doAesCbcEncrypt(
+      SecretKey key,
+      byte[] iv,
+      short ivOffset,
+      short ivLength,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    cspAESCBC.init(key, Cipher.MODE_ENCRYPT, iv, ivOffset, ivLength);
+    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static short doAesCbcDecrypt(
+      SecretKey key,
+      byte[] iv,
+      short ivOffset,
+      short ivLength,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    cspAESCBC.init(key, Cipher.MODE_DECRYPT, iv, ivOffset, ivLength);
+    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static AESKey buildTransientAes128Key() {
+    return (AESKey)
+        KeyBuilder.buildKey(
+            KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, KeyBuilder.LENGTH_AES_128, false);
   }
 
   /**

@@ -44,8 +44,15 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   // The ECC private key element tag
   private static final byte ELEMENT_ECC_SECRET = (byte) 0x87;
 
+  // The PIV secure messaging CVC element tag (OpenFIPS201 ASN.1 smCVC [10]).
+  static final byte ELEMENT_SM_CVC = (byte) 0x8A;
+
+  private static final short LENGTH_SM_CVC_MAX = (short) 256;
+
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
+  private byte[] smCvc = null;
+  private short smCvcLength = (short) 0;
 
   // TODO: Refactor to remove the need for a permanent ECParams object
   private final ECParams params;
@@ -131,6 +138,22 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         allocatePrivate();
 
         privateKey.setS(buffer, offset, length);
+        break;
+
+      case ELEMENT_SM_CVC:
+        if (!isSecureMessagingMechanism()) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          return;
+        }
+        if (length <= (short) 0 || length > LENGTH_SM_CVC_MAX) {
+          ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+          return;
+        }
+        if (smCvc == null) {
+          smCvc = new byte[LENGTH_SM_CVC_MAX];
+        }
+        javacard.framework.Util.arrayCopyNonAtomic(buffer, offset, smCvc, (short) 0, length);
+        smCvcLength = length;
         break;
 
         // Clear all key parts
@@ -251,8 +274,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
       case PIV.ID_ALG_ECC_CS2:
       case PIV.ID_ALG_ECC_CS7:
-        // At a minimum we need the private key AND the Card Verifiable Certificate object
-        return (privateKey != null && privateKey.isInitialized());
+        return (privateKey != null && privateKey.isInitialized() && smCvcLength > (short) 0);
 
       default:
         return false; // Satisfy the compiler
@@ -269,7 +291,28 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       privateKey.clearKey();
       privateKey = null;
     }
+    if (smCvc != null) {
+      PIVSecurityProvider.zeroise(smCvc, (short) 0, (short) smCvc.length);
+    }
+    smCvcLength = (short) 0;
     clearOrigin();
+  }
+
+  short getSmCvc(byte[] buffer, short offset) throws ISOException {
+    if (smCvcLength <= (short) 0) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0;
+    }
+    return javacard.framework.Util.arrayCopyNonAtomic(
+        smCvc, (short) 0, buffer, offset, smCvcLength);
+  }
+
+  short getSmCvcLength() {
+    return smCvcLength;
+  }
+
+  private boolean isSecureMessagingMechanism() {
+    return getMechanism() == PIV.ID_ALG_ECC_CS2 || getMechanism() == PIV.ID_ALG_ECC_CS7;
   }
 
   /** Set ECC domain parameters. */

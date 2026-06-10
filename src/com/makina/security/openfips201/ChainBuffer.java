@@ -527,4 +527,57 @@ final class ChainBuffer {
       ISOException.throwIt((short) (ISO7816.SW_BYTES_REMAINING_00 | sw2));
     }
   }
+
+  void processOutgoingSecure(
+      APDU apdu, PIVSecureMessaging secureMessaging, byte[] buffer, short sw) throws ISOException {
+
+    byte[] apduBuffer = apdu.getBuffer();
+    byte[] plaintextBuffer = buffer;
+    short plaintextOffset = (short) 0;
+    short plaintextLength = (short) 0;
+    short responseSw = sw;
+
+    if (context[CONTEXT_STATE] == STATE_OUTGOING) {
+      if (apduBuffer[ISO7816.OFFSET_INS] != INS_GET_RESPONSE
+          && context[CONTEXT_REMAINING] != context[CONTEXT_LENGTH]) {
+        reset();
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+
+      plaintextBuffer = (byte[]) dataPtr[0];
+      plaintextOffset = context[CONTEXT_OFFSET];
+      plaintextLength =
+          (context[CONTEXT_REMAINING] > (short) 192) ? (short) 192 : context[CONTEXT_REMAINING];
+
+      context[CONTEXT_REMAINING] -= plaintextLength;
+      context[CONTEXT_OFFSET] += plaintextLength;
+
+      if (context[CONTEXT_REMAINING] == (short) 0) {
+        reset();
+      } else {
+        short sw2 =
+            (context[CONTEXT_REMAINING] > (short) 0x00FF)
+                ? (short) 0x00FF
+                : context[CONTEXT_REMAINING];
+        responseSw = (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
+      }
+    } else if (context[CONTEXT_STATE] != STATE_NONE) {
+      resetAbort();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    short length =
+        secureMessaging.wrapResponse(
+            plaintextBuffer,
+            plaintextOffset,
+            plaintextLength,
+            responseSw,
+            buffer,
+            (short) 0);
+
+    apdu.setOutgoing();
+    apdu.setOutgoingLength(length);
+    apdu.sendBytesLong(buffer, (short) 0, length);
+    ISOException.throwIt(ISO7816.SW_NO_ERROR);
+  }
 }

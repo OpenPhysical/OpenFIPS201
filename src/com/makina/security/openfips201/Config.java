@@ -695,8 +695,13 @@ final class Config {
 
       // Mode
       if (reader.match(TAG_VCI_MODE)) {
-        // TODO: Validation
-        config[CONFIG_VCI_MODE] = reader.toByte();
+        byte value = reader.toByte();
+        if (value != VCI_MODE_DISABLED
+            && value != VCI_MODE_ENABLED
+            && value != VCI_MODE_PAIRING_CODE) {
+          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        config[CONFIG_VCI_MODE] = value;
         reader.moveNext();
       }
     }

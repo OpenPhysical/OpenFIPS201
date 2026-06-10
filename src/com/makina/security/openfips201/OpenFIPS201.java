@@ -74,6 +74,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte SC_MASK =
       SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC;
   private final PIV piv;
+  private boolean pivSecureMessagingCommand;
 
   //
   // Persistent state definitions
@@ -202,7 +203,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // SPECIAL CASE 1 - GET RESPONSE
     // We handle the GET RESPONSE command differently because it is the only ISO 7816 Case 1 / 3
     // command this applet supports and we don't care about secure channel processing.
-    if (buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE) {
+    if (buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE
+        && !piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA])) {
       piv.processOutgoing(apdu);
       return;
     }
@@ -231,8 +233,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // Default to no secure channel until the APDU unwrap confirms one.
     piv.setIsSecureChannel(false);
+    pivSecureMessagingCommand = false;
 
-    if (apdu.isSecureMessagingCLA()) {
+    if (piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA])) {
+      length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
+      pivSecureMessagingCommand = true;
+    } else if (apdu.isSecureMessagingCLA()) {
       SecureChannel secureChannel = GPSystem.getSecureChannel();
       if ((secureChannel.getSecurityLevel() & SC_MASK) == SC_MASK) {
         // Validate and unwrap the APDU, including the header bytes
@@ -265,54 +271,63 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     //
     // TODO: Re-introduce CLA checking
 
-    switch (buffer[ISO7816.OFFSET_INS]) {
-      case INS_GP_INITIALIZE_UPDATE: // Case 4
-        processGP_SECURECHANNEL(apdu, true);
-        break;
+    try {
+      switch (buffer[ISO7816.OFFSET_INS]) {
+        case INS_GP_INITIALIZE_UPDATE: // Case 4
+          processGP_SECURECHANNEL(apdu, true);
+          break;
 
-      case INS_GP_EXTERNAL_AUTHENTICATE: // Case 4
-        processGP_SECURECHANNEL(apdu, false);
-        break;
+        case INS_GP_EXTERNAL_AUTHENTICATE: // Case 4
+          processGP_SECURECHANNEL(apdu, false);
+          break;
 
-        // Application Commands
-      case INS_PIV_SELECT: // Case 4
-        processPIV_SELECT(apdu);
-        break;
+          // Application Commands
+        case INS_PIV_SELECT: // Case 4
+          processPIV_SELECT(apdu);
+          break;
 
-      case INS_PIV_GET_DATA: // Case 4
-        processPIV_GET_DATA(apdu, length);
-        break;
+        case INS_PIV_GET_DATA: // Case 4
+          processPIV_GET_DATA(apdu, length);
+          break;
 
-      case INS_PIV_VERIFY: // Case 2
-        processPIV_VERIFY(apdu, length);
-        break;
+        case INS_PIV_VERIFY: // Case 2
+          processPIV_VERIFY(apdu, length);
+          break;
 
-      case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
-        processPIV_CHANGE_REFERENCE_DATA(apdu, length);
-        break;
+        case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
+          processPIV_CHANGE_REFERENCE_DATA(apdu, length);
+          break;
 
-      case INS_PIV_RESET_RETRY_COUNTER: // Case 2
-        processPIV_RESET_RETRY_COUNTER(apdu, length);
-        break;
+        case INS_PIV_RESET_RETRY_COUNTER: // Case 2
+          processPIV_RESET_RETRY_COUNTER(apdu, length);
+          break;
 
-      case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
-        processPIV_GENERAL_AUTHENTICATE(apdu, length);
-        break;
+        case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
+          processPIV_GENERAL_AUTHENTICATE(apdu, length);
+          break;
 
-      case INS_PIV_PUT_DATA: // Case 2
-        processPIV_PUT_DATA(apdu, length);
-        break;
+        case INS_PIV_PUT_DATA: // Case 2
+          processPIV_PUT_DATA(apdu, length);
+          break;
 
-      case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
-        processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
-        break;
+        case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
+          processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
+          break;
 
-      case INS_PIV_ATTEST:
-        processPIV_ATTEST(apdu, length);
-        break;
+        case INS_PIV_ATTEST:
+          processPIV_ATTEST(apdu, length);
+          break;
 
-      default:
-        ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+        default:
+          ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+      }
+
+      if (pivSecureMessagingCommand) {
+        piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
+      }
+    } catch (ISOException ex) {
+      if (!pivSecureMessagingCommand || ex.getReason() == ISO7816.SW_NO_ERROR) throw ex;
+      piv.processOutgoingSecure(apdu, ex.getReason());
     }
   }
 
@@ -349,6 +364,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // Send the response
     apdu.setOutgoingAndSend(offset, length);
+  }
+
+  private void processPIV_OUTGOING(APDU apdu) {
+    if (pivSecureMessagingCommand) {
+      piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
+    } else {
+      piv.processOutgoing(apdu);
+    }
   }
 
   /**
@@ -435,7 +458,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     //		 to a data object to write to the client.
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    piv.processOutgoing(apdu);
+    processPIV_OUTGOING(apdu);
   }
 
   /**
@@ -664,7 +687,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     length = piv.generalAuthenticate(buffer, offset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response, if any
-    if (length > 0) piv.processOutgoing(apdu);
+    if (length > 0) processPIV_OUTGOING(apdu);
   }
 
   /**
@@ -704,7 +727,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.generateAsymmetricKeyPair(buffer, offset);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    piv.processOutgoing(apdu);
+    processPIV_OUTGOING(apdu);
   }
 
   private void processPIV_ATTEST(APDU apdu, short length) {
@@ -721,6 +744,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
 
     piv.attest(buffer[ISO7816.OFFSET_P1]);
-    piv.processOutgoing(apdu);
+    processPIV_OUTGOING(apdu);
   }
 }
