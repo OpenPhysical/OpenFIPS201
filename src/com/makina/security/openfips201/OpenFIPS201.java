@@ -281,6 +281,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           processGP_SECURECHANNEL(apdu);
           break;
 
+        case INS_GP_GET_RESPONSE:
+          processPIV_OUTGOING(apdu);
+          return;
+
           // Application Commands
         case INS_PIV_SELECT: // Case 4
           processPIV_SELECT(apdu);

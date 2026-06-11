@@ -1509,14 +1509,8 @@ final class PIV {
         && responseOffset != 0
         && responseLength == 0) {
       // Variant A - Secure Messaging
-      if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
-        if (key instanceof PIVKeyObjectECC) {
-          return generalAuthenticateCase1A((PIVKeyObjectECC) key, challengeOffset, challengeLength);
-        } else {
-          authenticateReset();
-          PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-          ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
-        }
+      if (key instanceof PIVKeyObjectECC && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+        return generalAuthenticateCase1A((PIVKeyObjectECC) key, challengeOffset, challengeLength);
       }
       // Variant B - Digital Signatures
       else if (key.hasRole(PIVKeyObject.ROLE_SIGN)) {
@@ -1529,14 +1523,12 @@ final class PIV {
         }
       }
       // Variant C - RSA Key Transport
-      else if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
-        if (key instanceof PIVKeyObjectRSA) {
-          return generalAuthenticateCase1C((PIVKeyObjectRSA) key, challengeOffset, challengeLength);
-        } else {
-          authenticateReset();
-          PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-          ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
-        }
+      else if (key instanceof PIVKeyObjectRSA && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+        return generalAuthenticateCase1C((PIVKeyObjectRSA) key, challengeOffset, challengeLength);
+      } else if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+        authenticateReset();
+        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
       // Variant D - Symmetric Internal Authentication
       else if (key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE)) {

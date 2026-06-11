@@ -43,6 +43,7 @@ final class PIVSecureMessaging {
   private static final short LENGTH_KEY = (short) 16;
   private static final short LENGTH_BLOCK = (short) 16;
   private static final short LENGTH_SHORT_MAC = (short) 8;
+  static final short MAX_RESPONSE_PLAINTEXT = (short) 191;
   private static final byte CLA_SECURE_MESSAGING = (byte) 0x0C;
   private static final byte CLA_CHAINED_SECURE_MESSAGING = (byte) 0x1C;
   private static final byte INS_GET_RESPONSE = (byte) 0xC0;
@@ -193,7 +194,7 @@ final class PIVSecureMessaging {
 
     state[OFFSET_LAST_CLA] = apdu[ISO7816.OFFSET_CLA];
     state[OFFSET_LAST_INS] = apdu[ISO7816.OFFSET_INS];
-    apdu[ISO7816.OFFSET_CLA] = (byte) (apdu[ISO7816.OFFSET_CLA] & (byte) 0xE3);
+    apdu[ISO7816.OFFSET_CLA] = (byte) (apdu[ISO7816.OFFSET_CLA] & (byte) 0xF3);
 
     if (encryptedTlvOffset == (short) -1) return (short) 0;
 

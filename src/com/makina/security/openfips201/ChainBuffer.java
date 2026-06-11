@@ -546,8 +546,12 @@ final class ChainBuffer {
 
       plaintextBuffer = (byte[]) dataPtr[0];
       plaintextOffset = context[CONTEXT_OFFSET];
+      // 191 plaintext bytes pad to 192 encrypted bytes. With response DOs, MAC input, and the
+      // temporary 16-byte CMAC output, this fits the 448-byte secure-messaging response buffer.
       plaintextLength =
-          (context[CONTEXT_REMAINING] > (short) 192) ? (short) 192 : context[CONTEXT_REMAINING];
+          (context[CONTEXT_REMAINING] > PIVSecureMessaging.MAX_RESPONSE_PLAINTEXT)
+              ? PIVSecureMessaging.MAX_RESPONSE_PLAINTEXT
+              : context[CONTEXT_REMAINING];
 
       context[CONTEXT_REMAINING] -= plaintextLength;
       context[CONTEXT_OFFSET] += plaintextLength;
