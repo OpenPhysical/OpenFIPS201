@@ -34,8 +34,15 @@ import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import org.bouncycastle.asn1.ASN1BitString;
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.DERBitString;
+import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.sec.SECNamedCurves;
 import org.bouncycastle.asn1.x9.X9ECParameters;
+import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
 import org.bouncycastle.crypto.macs.CMac;
 import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.params.KeyParameter;
@@ -64,11 +71,20 @@ final class VciSupport {
   static final int TAG_CVC_ISSUER_ID = 0x42;
   static final int TAG_CVC_SUBJECT_ID = 0x5F20;
   static final int TAG_CVC_PUBLIC_KEY = 0x7F49;
+  static final int TAG_CVC_PUBLIC_KEY_OID = 0x06;
   static final int TAG_CVC_PUBLIC_POINT = 0x86;
   static final int TAG_CVC_ROLE = 0x5F4C;
   static final int TAG_CVC_SIGNATURE = 0x5F37;
   static final byte CVC_PROFILE_IDENTIFIER = (byte) 0x80;
-  static final byte CVC_ROLE_KEY_ESTABLISHMENT = (byte) 0x02;
+
+  // Role byte per the secure-messaging CVC profile, matching production PIV cards (0x00).
+  static final byte CVC_ROLE_KEY_ESTABLISHMENT = (byte) 0x00;
+
+  // Named-curve OID content placed in the 7F49 public-key template (tag 06), as production cards do.
+  // CS2 uses prime256v1 / secp256r1 (1.2.840.10045.3.1.7).
+  private static final byte[] CURVE_OID_P256 = {
+    0x2A, (byte) 0x86, 0x48, (byte) 0xCE, 0x3D, 0x03, 0x01, 0x07
+  };
 
   private static final byte[] KEY_CONFIRMATION_CONTEXT = {0x4B, 0x43, 0x5F, 0x31, 0x5F, 0x56};
   private static final int COORD_LENGTH = 32;
@@ -89,18 +105,40 @@ final class VciSupport {
     writeTlv(body, TAG_CVC_PROFILE, new byte[] {CVC_PROFILE_IDENTIFIER});
     writeTlv(body, TAG_CVC_ISSUER_ID, issuerId);
     writeTlv(body, TAG_CVC_SUBJECT_ID, subjectId);
-    writeTlv(body, TAG_CVC_PUBLIC_KEY, tlv(TAG_CVC_PUBLIC_POINT, cardPublicPoint));
+    // 7F49 public-key template: named-curve OID (tag 06) followed by the uncompressed point
+    // (tag 86), matching the encoding production PIV cards present.
+    ByteArrayOutputStream keyTemplate = new ByteArrayOutputStream();
+    writeTlv(keyTemplate, TAG_CVC_PUBLIC_KEY_OID, CURVE_OID_P256);
+    writeTlv(keyTemplate, TAG_CVC_PUBLIC_POINT, cardPublicPoint);
+    writeTlv(body, TAG_CVC_PUBLIC_KEY, keyTemplate.toByteArray());
     writeTlv(body, TAG_CVC_ROLE, new byte[] {CVC_ROLE_KEY_ESTABLISHMENT});
     return body.toByteArray();
   }
 
-  /** Assembles the complete CVC ({@code 7F21}) from its signed body and DER ECDSA signature. */
-  static byte[] assembleCvc(byte[] cvcBody, byte[] signatureDer) {
-    ByteArrayOutputStream value = new ByteArrayOutputStream();
-    value.write(cvcBody, 0, cvcBody.length);
-    byte[] sigTlv = tlv(TAG_CVC_SIGNATURE, signatureDer);
-    value.write(sigTlv, 0, sigTlv.length);
-    return tlv(TAG_CVC, value.toByteArray());
+  /**
+   * Assembles the complete CVC ({@code 7F21}) from its signed body and the raw DER ECDSA-Sig-Value.
+   * The {@code 5F37} signature is encoded as an X.509 SignatureValue
+   * (SEQUENCE&#123; AlgorithmIdentifier(ecdsa-with-SHA256), BIT STRING&#123;ECDSA-Sig-Value&#125; &#125;),
+   * the format production PIV cards present and that SP 800-73-5 relying parties expect.
+   */
+  static byte[] assembleCvc(byte[] cvcBody, byte[] ecdsaSigValueDer) {
+    try {
+      ByteArrayOutputStream value = new ByteArrayOutputStream();
+      value.write(cvcBody, 0, cvcBody.length);
+
+      ASN1EncodableVector algorithmId = new ASN1EncodableVector();
+      algorithmId.add(X9ObjectIdentifiers.ecdsa_with_SHA256);
+      ASN1EncodableVector signatureValue = new ASN1EncodableVector();
+      signatureValue.add(new DERSequence(algorithmId));
+      signatureValue.add(new DERBitString(ecdsaSigValueDer));
+      byte[] wrapped = new DERSequence(signatureValue).getEncoded("DER");
+
+      byte[] sigTlv = tlv(TAG_CVC_SIGNATURE, wrapped);
+      value.write(sigTlv, 0, sigTlv.length);
+      return tlv(TAG_CVC, value.toByteArray());
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to assemble CVC signature value", e);
+    }
   }
 
   /**
@@ -133,11 +171,33 @@ final class VciSupport {
       Signature verifier = Signature.getInstance("SHA256withECDSA");
       verifier.initVerify(signerPublicKey);
       verifier.update(cvc, valueOffset, signedLength);
-      byte[] signatureDer = Arrays.copyOfRange(cvc, signature[1], signature[1] + signature[2]);
-      return verifier.verify(signatureDer);
+      byte[] signatureField = Arrays.copyOfRange(cvc, signature[1], signature[1] + signature[2]);
+      return verifier.verify(unwrapCvcSignature(signatureField));
     } catch (Exception e) {
       return false;
     }
+  }
+
+  /**
+   * Returns the raw ECDSA-Sig-Value (DER {@code SEQUENCE&#123;r,s&#125;}) from a {@code 5F37}
+   * signature field that is either that raw value or a DER-wrapped X.509 SignatureValue
+   * ({@code SEQUENCE&#123;AlgorithmIdentifier, BIT STRING&#123;ECDSA-Sig-Value&#125;&#125;}).
+   */
+  private static byte[] unwrapCvcSignature(byte[] signatureField) {
+    try {
+      ASN1Primitive parsed = ASN1Primitive.fromByteArray(signatureField);
+      if (parsed instanceof ASN1Sequence) {
+        ASN1Sequence sequence = (ASN1Sequence) parsed;
+        if (sequence.size() == 2
+            && sequence.getObjectAt(0) instanceof ASN1Sequence
+            && sequence.getObjectAt(1) instanceof ASN1BitString) {
+          return ((ASN1BitString) sequence.getObjectAt(1)).getOctets();
+        }
+      }
+    } catch (Exception e) {
+      // Not DER-wrapped; treat the field as a raw ECDSA-Sig-Value.
+    }
+    return signatureField;
   }
 
   /** Extracts the uncompressed card SM public point ({@code 04 || X || Y}) from a CVC. */

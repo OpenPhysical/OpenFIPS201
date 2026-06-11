@@ -216,7 +216,10 @@ final class VciProvisioning {
 
     // STEP 3 - Sign the card public key into a CVC with the VCI signer CA.
     byte[] issuerId = VciSupport.issuerIdFromPublicKey(ca.certificate.getPublicKey());
-    byte[] subjectId = "OpenFIPS201-SM".getBytes(StandardCharsets.US_ASCII);
+    // Subject identifier is a 16-byte GUID, matching the encoding production PIV cards use in the
+    // CVC (rather than an ASCII label).
+    byte[] subjectId = new byte[16];
+    new SecureRandom().nextBytes(subjectId);
     byte[] cvcBody = VciSupport.buildCvcBody(cardPublicPoint, issuerId, subjectId);
     Signature signer = Signature.getInstance("SHA256withECDSA");
     signer.initSign(ca.privateKey);
@@ -238,6 +241,35 @@ final class VciProvisioning {
         VciSupport.KEY_REF_SECURE_MESSAGING & 0xFF,
         VciSupport.tlv(0x30, VciSupport.tlv(0x8A, cvc)),
         "Load SM CVC");
+
+    // STEP 4b - Install the Secure Messaging Certificate Signer (5FC122) holding the X.509 Content
+    // Signing certificate whose public key verifies the SM CVC (SP 800-73-5 Part 1 Section 3.3.7,
+    // Table 42: 0x70 X.509 cert, 0x71 CertInfo). A relying party reads this object to validate the
+    // card CVC; making it readable lets the host trust the card's secure-messaging credential
+    // without an out-of-band CA. The certificate is the VCI signer CA generated/loaded above.
+    byte[] smSignerObjectId = {(byte) 0x5F, (byte) 0xC1, (byte) 0x22};
+    byte[] smSignerDefinition =
+        VciSupport.tlv(
+            0x64,
+            concat(
+                VciSupport.tlv(0x8B, smSignerObjectId),
+                VciSupport.tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
+                VciSupport.tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
+                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B})));
+    expect(
+        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, smSignerDefinition)),
+        "Define Secure Messaging Certificate Signer (5FC122)");
+
+    byte[] smSignerValue =
+        concat(
+            VciSupport.tlv(0x5C, smSignerObjectId),
+            VciSupport.tlv(
+                0x53,
+                concat(
+                    VciSupport.tlv(0x70, ca.certificate.getEncoded()),
+                    VciSupport.tlv(0x71, new byte[] {0x00}))));
+    sendChained(
+        gp, 0xDB, 0x3F, 0xFF, smSignerValue, "Write Secure Messaging Certificate Signer (5FC122)");
 
     // STEP 5 - Require pairing before VCI (SP 800-73-4 pairing-code policy).
     expect(
