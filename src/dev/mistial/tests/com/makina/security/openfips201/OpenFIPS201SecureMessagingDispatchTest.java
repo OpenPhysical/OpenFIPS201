@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import apdu4j.core.BIBO;
@@ -29,8 +28,8 @@ import pro.javacard.engine.JavaCardEngine;
 /**
  * Conformance tests for secure messaging APDU dispatching.
  *
- * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging), verifying APDU
- * wrapping, unwrapping, MAC integrity verification, key destruction, and chaining.
+ * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging), verifying APDU wrapping,
+ * unwrapping, MAC integrity verification, key destruction, and chaining.
  */
 class OpenFIPS201SecureMessagingDispatchTest {
   private static final short MAX_SAFE_SECURE_RESPONSE_PLAINTEXT = (short) 191;
@@ -59,8 +58,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
   /**
    * Verifies that secure outgoing response chunks fit the secure messaging response buffer.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6. Outgoing plaintext blocks are capped
-   * to leave sufficient room for secure messaging envelope tags ('87', '99', '8E') and padding.
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6. Outgoing plaintext blocks are capped to
+   * leave sufficient room for secure messaging envelope tags ('87', '99', '8E') and padding.
    */
   @Test
   void secureOutgoingChunksFitSecureMessagingResponseBuffer() throws Exception {
@@ -69,7 +68,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Object chainBuffer = field(piv, "chainBuffer").get(piv);
 
     byte[] outgoing = new byte[256];
-    method(chainBuffer.getClass(), "setOutgoing", byte[].class, short.class, short.class, boolean.class)
+    method(
+            chainBuffer.getClass(),
+            "setOutgoing",
+            byte[].class,
+            short.class,
+            short.class,
+            boolean.class)
         .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
 
     byte[] apduBuffer = new byte[5];
@@ -122,7 +127,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
                 processOutgoingSecure.invoke(
                     chainBuffer, apdu, secureMessaging, secureResponse, ISO7816.SW_NO_ERROR));
 
-    assertTrue(thrown.getCause() instanceof ISOException, "Chain completion should throw SW_NO_ERROR");
+    assertTrue(
+        thrown.getCause() instanceof ISOException, "Chain completion should throw SW_NO_ERROR");
     assertEquals(
         ISO7816.SW_NO_ERROR,
         ((ISOException) thrown.getCause()).getReason(),
@@ -136,7 +142,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
   /**
    * Verifies that command unwrapping preserves the command chaining bit in CLA.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 (Chained command under secure messaging).
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 (Chained command under secure
+   * messaging).
    */
   @Test
   void unwrapPreservesCommandChainingBit() throws Exception {
@@ -221,7 +228,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
       System.arraycopy(complete, 10, last, 5, 5);
 
       Method unwrapSecureMessagingCommand =
-          method(piv.getClass(), "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
+          method(
+              piv.getClass(),
+              "unwrapSecureMessagingCommand",
+              byte[].class,
+              short.class,
+              short.class);
       InvocationTargetException firstResult =
           assertThrows(
               InvocationTargetException.class,
@@ -243,10 +255,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * Verifies that any secure messaging error immediately zeroizes the session keys.
+   * Verifies that a secure messaging processing error immediately zeroizes the session keys.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.3 (Session Key Destruction). Any failure
-   * in command C-MAC verification must destroy the established session.
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Sections 4.2.7 and 4.3. A C-MAC ('8E') that fails
+   * verification is an incorrect secure messaging data object, so the SW processing status is '69
+   * 88' (Section 4.2.7), returned without performing further secure messaging. Because that SW
+   * processing status is other than '61 XX' or '90 00', an error has occurred in secure messaging
+   * and the session keys must be zeroized (Section 4.3).
    */
   @Test
   void secureMessagingErrorClearsSessionKeys() throws Exception {
@@ -263,7 +278,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
       byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
       command[14] ^= (byte) 0x01;
       Method unwrapSecureMessagingCommand =
-          method(piv.getClass(), "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
+          method(
+              piv.getClass(),
+              "unwrapSecureMessagingCommand",
+              byte[].class,
+              short.class,
+              short.class);
 
       InvocationTargetException thrown =
           assertThrows(
@@ -272,18 +292,19 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
       assertTrue(thrown.getCause() instanceof ISOException, "Bad C-MAC should be rejected");
       assertEquals(
-          ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+          (short) 0x6988,
           ((ISOException) thrown.getCause()).getReason(),
-          "Bad C-MAC should fail secure messaging authentication");
+          "Bad C-MAC is an incorrect secure messaging data object: '69 88' (Part 2 Section 4.2.7)");
       assertEquals(
           false,
           method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
-          "Secure messaging session must be destroyed after a secure messaging error");
+          "Session keys must be zeroized after a secure messaging error (Part 2 Section 4.3)");
     }
   }
 
   /**
-   * Verifies that plaintext APDUs sent while VCI is established are rejected and destroy the session.
+   * Verifies that plaintext APDUs sent while VCI is established are rejected and destroy the
+   * session.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2. Plain APDUs are rejected to prevent
    * bypass attacks, and Section 4.3 session destruction rules apply.
@@ -324,71 +345,74 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * Verifies that protected applet execution errors cause secure messaging session destruction.
+   * Verifies that an application error inside a verified secure messaging exchange is returned
+   * encapsulated and does not destroy the session.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.3 (Footnote 25). Status codes other than
-   * 61xx or 9000 returned inside the secure envelope are considered secure messaging errors.
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Sections 4.2.6, 4.2.7 and 4.3. The application status
+   * is returned in the '99' status template of a wrapped response (Section 4.2.6); the SW
+   * processing status of that exchange (Section 4.2.7) is '90 00' because the secure messaging
+   * itself was performed successfully; and session key destruction (Section 4.3) applies only when
+   * the SW processing status is other than '61 XX' or '90 00' - that is, to the secure messaging
+   * error statuses of Section 4.2.7, never to an encapsulated application status. NIST SD-33
+   * reference cards behave exactly this way: their contactless vectors carry '99'-encapsulated
+   * error statuses followed by further successful exchanges in the same session.
    */
   @Test
-  void protectedProcessingErrorClearsSecureMessagingSession() throws Exception {
-    // SP 800-73-5 Part 2, section 4.3 requires secure messaging session keys to be
-    // zeroized when a protected response status is not 61xx or 9000.
+  void wrappedApplicationErrorIsEncapsulatedAndRetainsSession() throws Exception {
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
-        "SELECT before protected error");
+        "SELECT before wrapped application error");
 
-    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
-    Field pivField = realApplet.getClass().getDeclaredField("piv");
-    pivField.setAccessible(true);
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-    Class<?> pivClass = pivField.getType();
-    Object piv = Mockito.mock(pivClass);
-    Method isSecureMessagingCla = method(pivClass, "isSecureMessagingCLA", byte.class);
-    Method unwrapSecureMessagingCommand =
-        method(pivClass, "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
-    Method clearSecureMessaging = method(pivClass, "clearSecureMessaging");
-    Method processOutgoingSecure = method(pivClass, "processOutgoingSecure", APDU.class, short.class);
+      // First protected command: INS 'FE' is unsupported, so command processing raises an
+      // application error (SW_INS_NOT_SUPPORTED) after the secure messaging unwrap succeeded.
+      byte[] mcv = new byte[16];
+      byte[] first =
+          chainedMacOnlySecureCommand(mcv, (byte) 0x0C, (byte) 0xFE, (byte) 0x00, (byte) 0x00, mcv);
+      ResponseAPDU firstResponse = transmit(new CommandAPDU(first));
+      assertSw(
+          0x9000,
+          firstResponse,
+          "A wrapped application error has SW processing status '90 00' (Part 2 Section 4.2.7)");
+      assertEncapsulatedStatus(
+          ISO7816.SW_INS_NOT_SUPPORTED,
+          firstResponse,
+          "Application status encapsulated in the '99' template (Part 2 Section 4.2.6)");
 
-    when((Boolean) isSecureMessagingCla.invoke(piv, Mockito.anyByte())).thenReturn(true);
-    when((Short)
-            unwrapSecureMessagingCommand.invoke(
-                piv, Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-        .thenAnswer(
-            invocation -> {
-              byte[] buffer = invocation.getArgument(0);
-              buffer[ISO7816.OFFSET_CLA] = (byte) 0x00;
-              return (short) 3;
-            });
-    doAnswer(
-            invocation -> {
-              return null;
-            })
-        .when(piv);
-    clearSecureMessaging.invoke(piv);
-    doAnswer(
-            invocation -> {
-              assertEquals(
-                  ISO7816.SW_INS_NOT_SUPPORTED,
-                  (Short) invocation.getArgument(1),
-                  "Protected processing error should be wrapped with its original SW");
-              throw new ISOException(ISO7816.SW_NO_ERROR);
-            })
-        .when(piv);
-    processOutgoingSecure.invoke(piv, Mockito.any(APDU.class), Mockito.anyShort());
+      // The session must survive: the next protected command, MAC-chained from the updated MCV,
+      // must be accepted and answered with another wrapped response - not rejected bare.
+      byte[] second =
+          chainedMacOnlySecureCommand(mcv, (byte) 0x0C, (byte) 0xFE, (byte) 0x00, (byte) 0x00, mcv);
+      ResponseAPDU secondResponse = transmit(new CommandAPDU(second));
+      assertSw(
+          0x9000,
+          secondResponse,
+          "The session continues after a wrapped application error (Part 2 Section 4.3)");
+      assertEncapsulatedStatus(
+          ISO7816.SW_INS_NOT_SUPPORTED, secondResponse, "Second wrapped application error");
 
-    pivField.set(realApplet, piv);
-
-    ResponseAPDU response = transmit(new CommandAPDU(0x0C, 0xFE, 0x00, 0x00, new byte[0], 0));
-
-    assertSw(0x9000, response, "Protected error response should still be returned as SM");
-    clearSecureMessaging.invoke(verify(piv));
+      assertEquals(
+          true,
+          method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+          "An application error must not zeroize the session keys (Part 2 Section 4.3)");
+    }
   }
 
   /**
    * Verifies that a plain GET RESPONSE command does not increment the encryption counter.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.2 (Encryption counter increment exceptions).
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.2 (Encryption counter increment
+   * exceptions).
    */
   @Test
   void plainGetResponseSecureContinuationDoesNotIncrementEncryptionCounter() throws Exception {
@@ -422,7 +446,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, command, (short) 5, (short) 10, work, (short) 0);
       byte[] counterBeforeGetResponse = counter(secureMessaging);
       byte[] outgoing = new byte[] {(byte) 0xA5};
-      method(chainBuffer.getClass(), "setOutgoing", byte[].class, short.class, short.class, boolean.class)
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
           .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
       field(realApplet, "pivSecureMessagingCommand").setBoolean(realApplet, true);
 
@@ -487,7 +517,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * Verifies that a plain GET RESPONSE command sent after an SM command returns a secure wrapped response.
+   * Verifies that a plain GET RESPONSE command sent after an SM command returns a secure wrapped
+   * response.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6 (Response with PIV Secure Messaging).
    */
@@ -508,7 +539,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Object piv = Mockito.mock(pivClass);
     Method isSecureMessagingCla = method(pivClass, "isSecureMessagingCLA", byte.class);
     Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
-    Method processOutgoingSecure = method(pivClass, "processOutgoingSecure", APDU.class, short.class);
+    Method processOutgoingSecure =
+        method(pivClass, "processOutgoingSecure", APDU.class, short.class);
     final short[] outgoingSw = new short[] {(short) 0xFFFF};
 
     when((Boolean) isSecureMessagingCla.invoke(piv, Mockito.anyByte())).thenReturn(false);
@@ -559,6 +591,16 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   private static byte[] macOnlySecureCommand(byte cla, byte ins, byte p1, byte p2) {
+    return chainedMacOnlySecureCommand(new byte[16], cla, ins, p1, p2, new byte[16]);
+  }
+
+  /**
+   * Builds a MAC-only secure messaging command whose C-MAC chains from the given MCV, writing the
+   * full 16-byte C-MAC (the next MCV per NIST SP 800-73-5 Part 2 Section 4.2.3) into {@code
+   * nextMcv}. The same array may be passed for {@code mcv} and {@code nextMcv}.
+   */
+  private static byte[] chainedMacOnlySecureCommand(
+      byte[] mcv, byte cla, byte ins, byte p1, byte p2, byte[] nextMcv) {
     byte[] command = new byte[15];
     command[ISO7816.OFFSET_CLA] = cla;
     command[ISO7816.OFFSET_INS] = ins;
@@ -567,14 +609,47 @@ class OpenFIPS201SecureMessagingDispatchTest {
     command[ISO7816.OFFSET_LC] = (byte) 0x0A;
     command[5] = (byte) 0x8E;
     command[6] = (byte) 0x08;
-    byte[] work = new byte[128];
+
+    // C-MAC input per Part 2 Section 4.2.3: MCV || padded header || command data objects
+    // preceding the '8E' (none for a MAC-only command).
     byte[] macInput = new byte[64];
-    short macLength = buildMacOnlyCommandInput(command, macInput);
-    AESKey macKey = PIVCrypto.buildTransientAes128Key();
-    macKey.setKey(new byte[64], (short) 16);
-    PIVCrypto.doAesCmac(macKey, macInput, (short) 0, macLength, work, (short) 0);
-    System.arraycopy(work, 0, command, 7, 8);
+    short cursor = 0;
+    System.arraycopy(mcv, 0, macInput, 0, 16);
+    cursor = 16;
+    macInput[cursor++] = (byte) 0x0C;
+    macInput[cursor++] = ins;
+    macInput[cursor++] = p1;
+    macInput[cursor++] = p2;
+    macInput[cursor++] = (byte) 0x80;
+    cursor += 11;
+
+    // AES-CMAC (NIST SP 800-38B) over the MAC input with the zero session MAC key used by these
+    // tests. Computed host-side with BouncyCastle so command construction does not require a
+    // simulator engine context.
+    byte[] mac = new byte[16];
+    org.bouncycastle.crypto.macs.CMac cmac =
+        new org.bouncycastle.crypto.macs.CMac(
+            org.bouncycastle.crypto.engines.AESEngine.newInstance());
+    cmac.init(new org.bouncycastle.crypto.params.KeyParameter(new byte[16]));
+    cmac.update(macInput, 0, cursor);
+    cmac.doFinal(mac, 0);
+    System.arraycopy(mac, 0, command, 7, 8);
+    System.arraycopy(mac, 0, nextMcv, 0, 16);
     return command;
+  }
+
+  /**
+   * Asserts that a wrapped response encapsulates the expected application status in its '99' status
+   * template (NIST SP 800-73-5 Part 2 Section 4.2.6).
+   */
+  private static void assertEncapsulatedStatus(
+      short expectedSw, ResponseAPDU response, String context) {
+    byte[] data = response.getData();
+    assertTrue(data.length >= 4, context + ": response should carry a '99' status template");
+    assertEquals((byte) 0x99, data[0], context + ": '99' status template tag");
+    assertEquals((byte) 0x02, data[1], context + ": '99' status template length");
+    short encapsulated = (short) (((data[2] & 0xFF) << 8) | (data[3] & 0xFF));
+    assertEquals(expectedSw, encapsulated, context + ": encapsulated application status");
   }
 
   private static Field field(Object target, String name) throws Exception {

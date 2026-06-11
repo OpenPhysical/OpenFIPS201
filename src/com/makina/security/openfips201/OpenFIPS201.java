@@ -294,7 +294,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_GP_GET_RESPONSE:
-          processPIV_OUTGOING(apdu);
+          processPivOutgoing(apdu);
           return;
 
           // Application Commands
@@ -343,14 +343,17 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       }
     } catch (ISOException ex) {
       if (!pivSecureMessagingCommand || ex.getReason() == ISO7816.SW_NO_ERROR) throw ex;
-      try {
-        piv.processOutgoingSecure(apdu, ex.getReason());
-      } finally {
-        if (ex.getReason() != ISO7816.SW_NO_ERROR
-            && (short) (ex.getReason() & (short) 0xFF00) != ISO7816.SW_BYTES_REMAINING_00) {
-          piv.clearSecureMessaging();
-        }
-      }
+      // An error status produced by command processing inside a verified secure messaging
+      // exchange is an application status, not a secure messaging error. SP 800-73-5 Part 2
+      // Section 4.2.6 requires it to be returned encapsulated in the '99' status template of a
+      // wrapped response, and the SW processing status of that exchange (Section 4.2.7) is
+      // '90 00' because the secure messaging itself was performed successfully. Session key
+      // destruction (Section 4.3) applies only when the SW processing status is other than
+      // '61 XX' or '90 00' - that is, to the secure messaging error statuses of Section 4.2.7,
+      // which are returned without wrapping - so the session keys are retained here and the
+      // session continues. Secure messaging processing errors are zeroized at the point they
+      // are detected, in PIVSecureMessaging.unwrapCommand().
+      piv.processOutgoingSecure(apdu, ex.getReason());
     }
   }
 
@@ -385,7 +388,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     apdu.setOutgoingAndSend(offset, length);
   }
 
-  private void processPIV_OUTGOING(APDU apdu) {
+  private void processPivOutgoing(APDU apdu) {
     if (pivSecureMessagingCommand) {
       piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
     } else {
@@ -477,7 +480,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     //		 to a data object to write to the client.
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    processPIV_OUTGOING(apdu);
+    processPivOutgoing(apdu);
   }
 
   /**
@@ -706,7 +709,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     length = piv.generalAuthenticate(buffer, offset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response, if any
-    if (length > 0) processPIV_OUTGOING(apdu);
+    if (length > 0) processPivOutgoing(apdu);
   }
 
   /**
@@ -746,7 +749,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.generateAsymmetricKeyPair(buffer, offset);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    processPIV_OUTGOING(apdu);
+    processPivOutgoing(apdu);
   }
 
   private void processPIV_ATTEST(APDU apdu, short length) {
@@ -763,6 +766,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
 
     piv.attest(buffer[ISO7816.OFFSET_P1]);
-    processPIV_OUTGOING(apdu);
+    processPivOutgoing(apdu);
   }
 }

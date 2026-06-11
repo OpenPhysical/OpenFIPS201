@@ -30,14 +30,12 @@ import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.framework.Util;
 import javacard.security.AESKey;
-import javacard.security.SecretKey;
 
 /**
  * Tracks transient PIV secure messaging and VCI session state.
  *
- * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging).
- * Specifically handles APDU wrapping and unwrapping under Cipher Suite 2 (CS2)
- * as defined in Section 4.1.4 Table 18.
+ * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging). Specifically handles APDU
+ * wrapping and unwrapping under Cipher Suite 2 (CS2) as defined in Section 4.1.4 Table 18.
  */
 final class PIVSecureMessaging {
   private static final short OFFSET_SM_ESTABLISHED = (short) 0;
@@ -55,10 +53,20 @@ final class PIVSecureMessaging {
   private static final byte INS_GET_RESPONSE = (byte) 0xC0;
   // BER-TLV Tags defined in NIST SP 800-73-5 Part 2, Section 4.2.1 Table 21
   private static final byte TAG_ENCRYPTED_DATA = (byte) 0x87; // Padding indicator + encrypted data
-  private static final byte TAG_MAC = (byte) 0x8E;            // Cryptographic checksum (C-MAC/R-MAC)
-  private static final byte TAG_LE = (byte) 0x97;             // Le encapsulation
-  private static final byte TAG_STATUS = (byte) 0x99;         // Status word
+  private static final byte TAG_MAC = (byte) 0x8E; // Cryptographic checksum (C-MAC/R-MAC)
+  private static final byte TAG_LE = (byte) 0x97; // Le encapsulation
+  private static final byte TAG_STATUS = (byte) 0x99; // Status word
   private static final byte PADDING_INDICATOR = (byte) 0x01; // Padding indicator per Section 4.2.2
+
+  // Secure messaging processing status words, NIST SP 800-73-5 Part 2 Section 4.2.7 (Error
+  // Handling). These are the SW processing statuses of the secure messaging layer itself and are
+  // returned without performing further secure messaging (i.e. never wrapped):
+  //   '69 82' - security status not satisfied (secure messaging requested but no session keys
+  //             have been established - Section 4.2.7 footnote)
+  //   '69 87' - expected secure messaging data objects are missing
+  //   '69 88' - secure messaging data objects are incorrect
+  private static final short SW_SM_EXPECTED_OBJECTS_MISSING = (short) 0x6987;
+  private static final short SW_SM_OBJECTS_INCORRECT = (short) 0x6988;
 
   private final byte[] state;
   private final byte[] commandMcv;
@@ -130,7 +138,8 @@ final class PIVSecureMessaging {
     skRmac.setKey(buffer, offset);
   }
 
-  short computeConfirmationMac(byte[] buffer, short offset, short length, byte[] out, short outOffset) {
+  short computeConfirmationMac(
+      byte[] buffer, short offset, short length, byte[] out, short outOffset) {
     return PIVCrypto.doAesCmac(skCfrm, buffer, offset, length, out, outOffset);
   }
 
@@ -146,8 +155,8 @@ final class PIVSecureMessaging {
   /**
    * Unwraps an incoming command APDU.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 (Command with PIV Secure Messaging).
-   * If any secure messaging error (like C-MAC verification or decryption fail) occurs, the session
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 (Command with PIV Secure Messaging). If
+   * any secure messaging error (like C-MAC verification or decryption fail) occurs, the session
    * keys are zeroized per Section 4.3 (Session Key Destruction).
    */
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
@@ -174,36 +183,39 @@ final class PIVSecureMessaging {
     short macTlvOffset = (short) -1;
     short macValueOffset = (short) -1;
 
+    // Any malformed, duplicated, misordered or unknown secure messaging data object in the
+    // command data field is "secure messaging data objects are incorrect": '69 88' per NIST
+    // SP 800-73-5 Part 2 Section 4.2.7.
     while (cursor < end) {
       byte tag = apdu[cursor];
       short tlvLength = TLVReader.getLength(apdu, cursor);
       short valueOffset = TLVReader.getDataOffset(apdu, cursor);
       short next = (short) (valueOffset + tlvLength);
-      if (next > end) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      if (next > end) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
 
       if (tag == TAG_ENCRYPTED_DATA) {
         if (encryptedTlvOffset != (short) -1 || tlvLength < (short) 17) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
-        if (apdu[valueOffset] != PADDING_INDICATOR) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        if (apdu[valueOffset] != PADDING_INDICATOR) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         encryptedTlvOffset = cursor;
         encryptedValueOffset = (short) (valueOffset + 1);
         encryptedValueLength = (short) (tlvLength - 1);
         if ((short) (encryptedValueLength % LENGTH_BLOCK) != (short) 0) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
       } else if (tag == TAG_LE) {
         if (tlvLength != (short) 1 || apdu[valueOffset] != (byte) 0x00) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
       } else if (tag == TAG_MAC) {
         if (macTlvOffset != (short) -1 || tlvLength != LENGTH_SHORT_MAC || next != end) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
         macTlvOffset = cursor;
         macValueOffset = valueOffset;
       } else {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
       }
 
       cursor = next;
@@ -211,23 +223,23 @@ final class PIVSecureMessaging {
 
     // NIST SP 800-73-5 Part 2 Section 4.2.7 requires returning '69 87' if expected secure
     // messaging data objects (like tag '8E' for C-MAC) are missing.
-    if (macTlvOffset == (short) -1) ISOException.throwIt((short) 0x6987);
+    if (macTlvOffset == (short) -1) ISOException.throwIt(SW_SM_EXPECTED_OBJECTS_MISSING);
 
     // Verify C-MAC (NIST SP 800-73-5 Part 2 Section 4.2.3)
     short macInputLength = buildCommandMacInput(apdu, offset, macTlvOffset, work, workOffset);
-    PIVCrypto.doAesCmac(skMac, work, workOffset, macInputLength, work, (short) (workOffset + macInputLength));
+    PIVCrypto.doAesCmac(
+        skMac, work, workOffset, macInputLength, work, (short) (workOffset + macInputLength));
     if (Util.arrayCompare(
-            work,
-            (short) (workOffset + macInputLength),
-            apdu,
-            macValueOffset,
-            LENGTH_SHORT_MAC)
+            work, (short) (workOffset + macInputLength), apdu, macValueOffset, LENGTH_SHORT_MAC)
         != (byte) 0) {
-      // C-MAC verification failed: security status not satisfied.
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      // A C-MAC ('8E') that fails verification is an incorrect secure messaging data object:
+      // '69 88' per NIST SP 800-73-5 Part 2 Section 4.2.7. ('69 82' is reserved for secure
+      // messaging requested before session keys are established - Section 4.2.7 footnote.)
+      ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
     }
     // Update MAC chaining value (MCV) per Section 4.2
-    Util.arrayCopyNonAtomic(work, (short) (workOffset + macInputLength), commandMcv, (short) 0, LENGTH_BLOCK);
+    Util.arrayCopyNonAtomic(
+        work, (short) (workOffset + macInputLength), commandMcv, (short) 0, LENGTH_BLOCK);
 
     state[OFFSET_LAST_CLA] = apdu[ISO7816.OFFSET_CLA];
     state[OFFSET_LAST_INS] = apdu[ISO7816.OFFSET_INS];
@@ -255,7 +267,8 @@ final class PIVSecureMessaging {
    * Wraps a response payload under secure messaging.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6 (Response with PIV Secure Messaging).
-   * Data confidentiality and response integrity are achieved as per Section 4.2.2 and Section 4.2.5.
+   * Data confidentiality and response integrity are achieved as per Section 4.2.2 and Section
+   * 4.2.5.
    */
   short wrapResponse(
       byte[] plaintext,
@@ -275,7 +288,8 @@ final class PIVSecureMessaging {
       Util.arrayCopyNonAtomic(plaintext, plaintextOffset, out, cursor, plaintextLength);
       short padOffset = (short) (cursor + plaintextLength);
       out[padOffset] = (byte) 0x80;
-      Util.arrayFillNonAtomic(out, (short) (padOffset + 1), (short) (paddedLength - plaintextLength - 1), (byte) 0);
+      Util.arrayFillNonAtomic(
+          out, (short) (padOffset + 1), (short) (paddedLength - plaintextLength - 1), (byte) 0);
       buildIv(true, out, (short) (valueOffset + 1));
       PIVCrypto.doAesCbcEncrypt(
           skEnc,
@@ -298,8 +312,10 @@ final class PIVSecureMessaging {
 
     // Compute R-MAC over response data and status template (NIST SP 800-73-5 Part 2 Section 4.2.5)
     short macInputLength = buildResponseMacInput(out, outOffset, cursor, out, cursor);
-    PIVCrypto.doAesCmac(skRmac, out, cursor, macInputLength, out, (short) (cursor + macInputLength));
-    Util.arrayCopyNonAtomic(out, (short) (cursor + macInputLength), responseMcv, (short) 0, LENGTH_BLOCK);
+    PIVCrypto.doAesCmac(
+        skRmac, out, cursor, macInputLength, out, (short) (cursor + macInputLength));
+    Util.arrayCopyNonAtomic(
+        out, (short) (cursor + macInputLength), responseMcv, (short) 0, LENGTH_BLOCK);
 
     out[cursor++] = TAG_MAC;
     out[cursor++] = (byte) LENGTH_SHORT_MAC;
@@ -330,7 +346,8 @@ final class PIVSecureMessaging {
     return (short) (cursor - outOffset);
   }
 
-  private short buildResponseMacInput(byte[] response, short offset, short end, byte[] out, short outOffset) {
+  private short buildResponseMacInput(
+      byte[] response, short offset, short end, byte[] out, short outOffset) {
     short cursor = outOffset;
     Util.arrayCopyNonAtomic(responseMcv, (short) 0, out, cursor, LENGTH_BLOCK);
     cursor += LENGTH_BLOCK;
@@ -346,13 +363,15 @@ final class PIVSecureMessaging {
   }
 
   private short stripPadding(byte[] buffer, short offset, short length) {
+    // Invalid ISO 7816-4 padding in the recovered plaintext means the '87' encrypted-data
+    // object was incorrect: '69 88' per NIST SP 800-73-5 Part 2 Section 4.2.7.
     short cursor = (short) (offset + length - 1);
     while (cursor >= offset) {
       if (buffer[cursor] == (byte) 0x80) return (short) (cursor - offset);
-      if (buffer[cursor] != (byte) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      if (buffer[cursor] != (byte) 0x00) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
       cursor--;
     }
-    ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
     return (short) 0;
   }
 
