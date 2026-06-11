@@ -54,7 +54,11 @@
     </fileset>
   </path>
 
+  <!-- NOTE: this path doubles as the tool runtime classpath. The SDK/GP export stub jars
+       must never appear here (see the test.runtime.classpath note above); the applet
+       sources are compiled against the stubs in a dedicated step inside tool-compile. -->
   <path id="tool.compile.classpath">
+    <pathelement location="tools/jcardengine-26.06.04.jar"/>
     <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
     <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
     <pathelement location="tools/capfile-26.05.15.jar"/>
@@ -69,10 +73,13 @@
     <path refid="tool.compile.classpath"/>
   </path>
 
+  <!-- NOTE: ${gp.exportjar} must stay OFF the test runtime classpath. It contains
+       compile-time stubs (e.g. GPSystem.getSecureChannel() returns null) that shadow
+       jCardEngine's functional org.globalplatform implementation and break any test
+       that drives the applet's GlobalPlatform secure-channel path. -->
   <path id="test.runtime.classpath">
     <pathelement location="${test.outputpath}"/>
     <pathelement location="${tool.outputpath}"/>
-    <pathelement location="${gp.exportjar}"/>
     <pathelement location="tools/jcardengine-26.06.04.jar"/>
     <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
     <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
@@ -173,13 +180,39 @@
   <target name="tool-compile" depends="resolve-test-deps">
     <delete dir="${tool.outputpath}" />
     <mkdir dir="${tool.outputpath}" />
+    <!-- The emulator server tool installs the applet class into jCardEngine, so the applet
+         is compiled into the tool output as well. Compilation uses the SDK/GP stub jars,
+         which stay confined to this step and off the tool runtime classpath. -->
+    <javac srcdir="${build.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath>
+        <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
+        <pathelement location="${gp.exportjar}"/>
+      </classpath>
+    </javac>
     <javac srcdir="${tool.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
-      <classpath refid="tool.compile.classpath"/>
+      <classpath>
+        <path refid="tool.compile.classpath"/>
+        <pathelement location="${tool.outputpath}"/>
+      </classpath>
     </javac>
   </target>
 
   <target name="attestation-tool" depends="tool-compile">
     <java classname="dev.mistial.tools.openfips201.attestation.AttestationTool" fork="true">
+      <classpath refid="tool.runtime.classpath"/>
+      <arg line="${args}"/>
+    </java>
+  </target>
+
+  <target name="emulator-server" depends="tool-compile">
+    <java classname="dev.mistial.tools.openfips201.emulator.EmulatorServerTool" fork="true">
+      <classpath refid="tool.runtime.classpath"/>
+      <arg line="${args}"/>
+    </java>
+  </target>
+
+  <target name="vci-tool" depends="tool-compile">
+    <java classname="dev.mistial.tools.openfips201.vci.VciTool" fork="true">
       <classpath refid="tool.runtime.classpath"/>
       <arg line="${args}"/>
     </java>

@@ -11,10 +11,12 @@
   <dependencies>
     <dependency org="org.junit.jupiter" name="junit-jupiter-api" rev="6.1.0" conf="test-compile->default"/>
     <dependency org="org.mockito" name="mockito-core" rev="5.23.0" conf="test-compile->default"/>
+    <dependency org="com.google.code.gson" name="gson" rev="2.11.0" conf="test-compile,test-runtime->default"/>
     <dependency org="org.bouncycastle" name="bcpkix-jdk18on" rev="1.84" conf="test-compile,tool-compile->default"/>
     <dependency org="org.bouncycastle" name="bcprov-jdk18on" rev="1.84" conf="test-compile,tool-compile->default"/>
     <dependency org="org.bouncycastle" name="bcutil-jdk18on" rev="1.84" conf="test-compile,tool-compile->default"/>
     <dependency org="info.picocli" name="picocli" rev="4.7.7" conf="tool-compile->default"/>
+    <dependency org="org.zeromq" name="jeromq" rev="0.6.0" conf="tool-compile->default"/>
     <dependency org="org.ow2.asm" name="asm" rev="9.10.1" conf="test-compile->default"/>
     <dependency org="org.ow2.asm" name="asm-tree" rev="9.10.1" conf="test-compile->default"/>
     <dependency org="org.ow2.asm" name="asm-commons" rev="9.10.1" conf="test-compile->default"/>
