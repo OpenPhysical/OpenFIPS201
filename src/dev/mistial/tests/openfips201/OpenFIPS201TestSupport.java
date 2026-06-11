@@ -30,15 +30,34 @@ abstract class OpenFIPS201TestSupport {
       hex("A000000308000010000100");
   protected static final AID OPENFIPS201_AID =
       new AID(OPENFIPS201_AID_BYTES, (short) 0, (byte) OPENFIPS201_AID_BYTES.length);
+  // CAP package AID, matching the ant-javacard <cap aid="..."> in build/build.xml.
+  protected static final byte[] OPENFIPS201_PACKAGE_AID_BYTES = hex("A00000030800001000");
+  protected static final AID OPENFIPS201_PACKAGE_AID =
+      new AID(
+          OPENFIPS201_PACKAGE_AID_BYTES, (short) 0, (byte) OPENFIPS201_PACKAGE_AID_BYTES.length);
 
   protected JavaCardEngine engine;
   protected BIBO session;
 
   @BeforeEach
   void setUpCard() {
-    engine = JavaCardEngine.create();
-    engine.installApplet(OPENFIPS201_AID, OpenFIPS201.class, new byte[0]);
+    engine = createEngine();
+    installApplet();
     session = engine.connect();
+  }
+
+  protected JavaCardEngine createEngine() {
+    return JavaCardEngine.create();
+  }
+
+  /**
+   * Installs the applet into the simulator. The default is a direct engine install, which is fast
+   * and sufficient for command parsing tests. Tests that need full GlobalPlatform fidelity (card
+   * content managed through the ISD, e.g. real SCP03 transport tests) override this to install
+   * through the GP load/INSTALL lifecycle instead.
+   */
+  protected void installApplet() {
+    engine.installApplet(OPENFIPS201_AID, OpenFIPS201.class, new byte[0]);
   }
 
   @AfterEach
