@@ -19,9 +19,9 @@ import pro.javacard.gp.keys.PlaintextKeys;
  * Proves OpenFIPS201 can run against jCardEngine's real GlobalPlatform SCP03 stack.
  *
  * <p>The existing mocked-SCP tests keep narrow parser coverage. This class installs the applet
- * through the real GlobalPlatform card-content lifecycle (load file registration, SCP03 to the
- * ISD, INSTALL [for install and make selectable]) and then establishes SCP03 through GPPro, so
- * emulator transport work has a real secure-channel baseline that matches how a physical card is
+ * through the real GlobalPlatform card-content lifecycle (load file registration, SCP03 to the ISD,
+ * INSTALL [for install and make selectable]) and then establishes SCP03 through GPPro, so emulator
+ * transport work has a real secure-channel baseline that matches how a physical card is
  * provisioned.
  *
  * <p>NOTE: these tests require that the GlobalPlatform export jar (compile-time API stubs whose
@@ -32,12 +32,19 @@ import pro.javacard.gp.keys.PlaintextKeys;
 @Timeout(value = 20, unit = TimeUnit.SECONDS)
 class OpenFIPS201RealScp03Test extends OpenFIPS201TestSupport {
   private static final byte[] TEST_SCP03_KEY = PlaintextKeys.DEFAULT_KEY();
-  private static final byte[] ISD_AID_BYTES =
-      {(byte) 0xA0, 0x00, 0x00, 0x01, 0x51, 0x00, 0x00, 0x00};
+  private static final byte[] ISD_AID_BYTES = {
+    (byte) 0xA0, 0x00, 0x00, 0x01, 0x51, 0x00, 0x00, 0x00
+  };
 
   @Override
   protected JavaCardEngine createEngine() {
     return new JavaCardEngine.Builder().withSCP(new SCPConfig.SCP03(TEST_SCP03_KEY, false)).build();
+  }
+
+  /** Exercises real SCP03 transport; the mocked-SCP standard test card must not be applied. */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
   }
 
   /**

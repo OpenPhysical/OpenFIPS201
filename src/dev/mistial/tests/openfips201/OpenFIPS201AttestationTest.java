@@ -938,6 +938,14 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     return result[0];
   }
 
+  /**
+   * Attestation manages its own PIN and 9B/F9 authority, so the standard test card is not applied.
+   */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
+  }
+
   private void createDataObjectOverScp(final byte id) {
     withMockedScp(
         new Runnable() {
@@ -1039,20 +1047,6 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         });
   }
 
-  private void setLocalPinOverScp(final byte[] pin) {
-    withMockedScp(
-        new Runnable() {
-          @Override
-          public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before admin PIN update");
-            assertSw(
-                0x9000,
-                transmit(0x84, 0x24, 0xFF, LOCAL_PIN_REFERENCE & 0xFF, pin),
-                "Administrative local PIN update");
-          }
-        });
-  }
-
   private void authenticateManagementKey(byte[] managementKey) {
     assertSw(0x9000, selectApplet(), "SELECT before plaintext management-key authentication");
     ResponseAPDU challengeResponse =
@@ -1080,12 +1074,6 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     return new byte[] {(byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, id};
   }
 
-  private static byte[] keyUpdateData(byte[] keyBytes) {
-    return concat(
-        new byte[] {(byte) 0x30, (byte) (keyBytes.length + 2), (byte) 0x80, (byte) keyBytes.length},
-        keyBytes);
-  }
-
   private static byte[] extractChallenge(byte[] responseData) {
     assertEquals(0x14, responseData.length, "Unexpected AES challenge response length");
     assertEquals(
@@ -1105,14 +1093,6 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     } catch (Exception e) {
       throw new IllegalStateException("Failed to encrypt management-key challenge", e);
     }
-  }
-
-  private static byte[] keyMaterialAes128(byte seed) {
-    byte[] key = new byte[0x10];
-    for (int i = 0; i < key.length; i++) {
-      key[i] = (byte) (seed + i);
-    }
-    return key;
   }
 
   private static KeyPair generateEcP256() throws Exception {

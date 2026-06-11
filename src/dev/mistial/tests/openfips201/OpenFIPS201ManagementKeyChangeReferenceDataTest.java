@@ -1,21 +1,19 @@
 package dev.mistial.tests.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
+import java.util.concurrent.TimeUnit;
 import javacard.framework.ISO7816;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
-
-import javax.crypto.Cipher;
-import javax.crypto.spec.SecretKeySpec;
-import javax.smartcardio.CommandAPDU;
-import javax.smartcardio.ResponseAPDU;
-import java.util.concurrent.TimeUnit;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 /**
  * TDD coverage for management key (9B) updates using INS=0x24 (CHANGE REFERENCE DATA).
@@ -48,7 +46,13 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
     assertSw(0x9000, selectApplet(), "SELECT before unauthenticated management key change");
 
-    ResponseAPDU response = transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey));
+    ResponseAPDU response =
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedKey));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         response,
@@ -63,7 +67,13 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
     authenticateManagementKey(ALG_AES_128, initialKey);
 
-    ResponseAPDU response = transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey));
+    ResponseAPDU response =
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedKey));
     assertSw(0x9000, response, "Authenticated admin session should permit 9B rotation without SCP");
   }
 
@@ -76,7 +86,12 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     authenticateManagementKey(ALG_AES_128, initialKey);
     assertSw(
         0x9000,
-        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey)),
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedKey)),
         "9B rotation should succeed before post-rotation verification");
 
     reconnectAndSelect();
@@ -91,13 +106,19 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
   @Test
   void managementKeyChangeRejectsWrongKeyLengthForAlgorithm() {
     byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x71);
-    byte[] wrongSizedKeyForAes128 = keyMaterial(ALG_AES_192, (byte) 0x72); // 24 bytes, should fail for 0x08
+    byte[] wrongSizedKeyForAes128 =
+        keyMaterial(ALG_AES_192, (byte) 0x72); // 24 bytes, should fail for 0x08
 
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
     authenticateManagementKey(ALG_AES_128, initialKey);
 
     ResponseAPDU response =
-        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(wrongSizedKeyForAes128));
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(wrongSizedKeyForAes128));
     assertSw(
         ISO7816.SW_WRONG_LENGTH,
         response,
@@ -115,11 +136,13 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     // A different (but still valid PIV) algorithm ID must not retarget the existing key object.
     // Type migration requires a management-domain delete/recreate flow, not CHANGE REFERENCE DATA.
     ResponseAPDU response =
-        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(candidateAes128Key));
-    assertSw(
-        0x6A88,
-        response,
-        "9B key mechanism is immutable for CHANGE REFERENCE DATA");
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(candidateAes128Key));
+    assertSw(0x6A88, response, "9B key mechanism is immutable for CHANGE REFERENCE DATA");
   }
 
   @Test
@@ -130,7 +153,8 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
     authenticateManagementKey(ALG_AES_128, initialKey);
 
-    ResponseAPDU response = transmit(0x00, 0x24, 0x09, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey));
+    ResponseAPDU response =
+        transmit(0x00, 0x24, 0x09, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey));
     assertSw(
         ISO7816.SW_INCORRECT_P1P2,
         response,
@@ -171,13 +195,10 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
 
     // Only one key element is valid in CHANGE REFERENCE DATA for a key object.
     byte[] malformedMultiElement =
-        concat(
-            keyUpdateData(candidateKey),
-            new byte[] {(byte) 0x81, (byte) 0x00});
+        concat(keyUpdateData(candidateKey), new byte[] {(byte) 0x81, (byte) 0x00});
     byte[] wrapped =
         concat(
-            new byte[] {(byte) 0x30, (byte) malformedMultiElement.length},
-            malformedMultiElement);
+            new byte[] {(byte) 0x30, (byte) malformedMultiElement.length}, malformedMultiElement);
     ResponseAPDU response =
         transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, wrapped);
     assertSw(ISO7816.SW_WRONG_DATA, response, "Extra elements must be rejected");
@@ -203,12 +224,22 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     authenticateManagementKey(ALG_AES_128, initialKey);
     assertSw(
         0x9000,
-        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey)),
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedKey)),
         "Initial authenticated rotation should succeed");
 
     // Rotation must clear key-authenticated state. A second rotation requires re-authentication.
     ResponseAPDU secondRotationWithoutAuth =
-        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedAgainKey));
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedAgainKey));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         secondRotationWithoutAuth,
@@ -227,13 +258,20 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
         transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
     assertSw(0x9000, challenge, "Challenge request should succeed");
 
-    byte[] plaintextChallenge = extractChallenge(challenge.getData(), challengeLengthForAlgorithm(ALG_AES_128));
-    byte[] encryptedChallenge = encryptChallengeWithManagementKey(ALG_AES_128, initialKey, plaintextChallenge);
+    byte[] plaintextChallenge =
+        extractChallenge(challenge.getData(), challengeLengthForAlgorithm(ALG_AES_128));
+    byte[] encryptedChallenge =
+        encryptChallengeWithManagementKey(ALG_AES_128, initialKey, plaintextChallenge);
     encryptedChallenge[0] ^= (byte) 0x01; // Deliberately corrupt one byte.
 
     byte[] badResponse =
         concat(
-            new byte[] {(byte) 0x7C, (byte) (encryptedChallenge.length + 2), (byte) 0x82, (byte) encryptedChallenge.length},
+            new byte[] {
+              (byte) 0x7C,
+              (byte) (encryptedChallenge.length + 2),
+              (byte) 0x82,
+              (byte) encryptedChallenge.length
+            },
             encryptedChallenge);
     ResponseAPDU authResponse =
         transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, badResponse);
@@ -243,7 +281,12 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
         "Mismatched challenge response must not authenticate the management key");
 
     ResponseAPDU rotation =
-        transmit(0x00, 0x24, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey));
+        transmit(
+            0x00,
+            0x24,
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedKey));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         rotation,
@@ -276,37 +319,10 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
    * <p>This mirrors OpenFIPS201's documented profile flow: create key object with PUT DATA admin,
    * then inject key value with CHANGE REFERENCE DATA admin.
    */
-  private void provisionManagementKeyOverScp(byte algorithm, byte[] keyBytes) {
-    try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
-      SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
-      Mockito.when(secureChannel.getSecurityLevel())
-          .thenReturn((byte) (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
-      Mockito.when(secureChannel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-          .thenAnswer(invocation -> (short) invocation.getArgument(2));
-      Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
-
-      assertSw(0x9000, selectApplet(), "SELECT before SCP provisioning flow");
-
-      // 66 { 8B=id, 8C=mode contact, 8D=mode contactless, 8E=mechanism, 8F=role, 90=attrs }
-      // Access mode and key attributes align with the NIST-compliant profile scripts.
-      byte[] createManagementKeyObject =
-          new byte[] {
-            (byte) 0x66, (byte) 0x12,
-            (byte) 0x8B, (byte) 0x01, KEY_REF_CARD_MANAGEMENT,
-            (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
-            (byte) 0x8D, (byte) 0x01, (byte) 0x00,
-            (byte) 0x8E, (byte) 0x01, algorithm,
-            (byte) 0x8F, (byte) 0x01, (byte) 0x01,
-            (byte) 0x90, (byte) 0x01, (byte) 0x11
-          };
-
-      ResponseAPDU createResponse = transmit(0x84, 0xDB, 0x3F, 0x00, createManagementKeyObject);
-      assertSw(0x9000, createResponse, "SCP create-key operation for 9B should succeed");
-
-      ResponseAPDU importResponse =
-          transmit(0x84, 0x24, algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(keyBytes));
-      assertSw(0x9000, importResponse, "SCP initial key import for 9B should succeed");
-    }
+  /** Creates and rotates its own 9B key per algorithm, so the standard test card is not applied. */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
   }
 
   private void assertManagementKeyRotationWorksWithoutScp(byte algorithm) {
@@ -317,7 +333,12 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     authenticateManagementKey(algorithm, initialKey);
     assertSw(
         0x9000,
-        transmit(0x00, 0x24, algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(rotatedKey)),
+        transmit(
+            0x00,
+            0x24,
+            algorithm & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            keyUpdateData(rotatedKey)),
         "PIV algorithm ID " + String.format("0x%02X", algorithm) + " should support 9B update");
   }
 
@@ -335,16 +356,24 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
         transmit(0x00, 0x87, algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, externalAuthRequest);
     assertSw(0x9000, challengeResponse, "GENERAL AUTHENTICATE challenge request should succeed");
 
-    byte[] expectedChallenge = extractChallenge(challengeResponse.getData(), challengeLengthForAlgorithm(algorithm));
-    byte[] encryptedChallenge = encryptChallengeWithManagementKey(algorithm, keyBytes, expectedChallenge);
+    byte[] expectedChallenge =
+        extractChallenge(challengeResponse.getData(), challengeLengthForAlgorithm(algorithm));
+    byte[] encryptedChallenge =
+        encryptChallengeWithManagementKey(algorithm, keyBytes, expectedChallenge);
 
     // External authenticate response: send encrypted challenge response in tag 0x82.
     byte[] externalAuthResponse =
         concat(
-            new byte[] {(byte) 0x7C, (byte) (encryptedChallenge.length + 2), (byte) 0x82, (byte) encryptedChallenge.length},
+            new byte[] {
+              (byte) 0x7C,
+              (byte) (encryptedChallenge.length + 2),
+              (byte) 0x82,
+              (byte) encryptedChallenge.length
+            },
             encryptedChallenge);
     ResponseAPDU verificationResponse =
-        transmit(0x00, 0x87, algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, externalAuthResponse);
+        transmit(
+            0x00, 0x87, algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, externalAuthResponse);
     return verificationResponse.getSW();
   }
 
@@ -360,35 +389,54 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
-          .thenReturn((byte) (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
-      Mockito.when(secureChannel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+          .thenReturn(
+              (byte)
+                  (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
+      Mockito.when(
+              secureChannel.unwrap(
+                  Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
           .thenAnswer(invocation -> (short) invocation.getArgument(2));
       Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
 
       assertSw(0x9000, selectApplet(), "SELECT before SCP management key update");
       ResponseAPDU updateResponse =
-          transmit(0x84, 0x24, algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(keyBytes));
+          transmit(
+              0x84,
+              0x24,
+              algorithm & 0xFF,
+              KEY_REF_CARD_MANAGEMENT & 0xFF,
+              keyUpdateData(keyBytes));
       assertSw(0x9000, updateResponse, "SCP 9B update should succeed for PIV algorithm identifier");
     }
   }
 
-  private static byte[] keyUpdateData(byte[] keyBytes) {
-    return concat(new byte[] {(byte) 0x30, (byte) (keyBytes.length + 2), (byte) 0x80, (byte) keyBytes.length}, keyBytes);
-  }
-
   private static byte[] extractChallenge(byte[] responseData, int expectedLength) {
-    assertEquals(4 + expectedLength, responseData.length, "Unexpected external authenticate response length");
-    assertEquals((byte) 0x7C, responseData[0], "Response must be wrapped in Dynamic Authentication Template (0x7C)");
-    assertEquals((byte) (responseData.length - 2), responseData[1], "Outer template length must match payload");
-    assertEquals((byte) 0x81, responseData[2], "External authenticate challenge response must include tag 0x81");
-    assertEquals((byte) expectedLength, responseData[3], "Challenge size must match algorithm block size");
+    assertEquals(
+        4 + expectedLength,
+        responseData.length,
+        "Unexpected external authenticate response length");
+    assertEquals(
+        (byte) 0x7C,
+        responseData[0],
+        "Response must be wrapped in Dynamic Authentication Template (0x7C)");
+    assertEquals(
+        (byte) (responseData.length - 2),
+        responseData[1],
+        "Outer template length must match payload");
+    assertEquals(
+        (byte) 0x81,
+        responseData[2],
+        "External authenticate challenge response must include tag 0x81");
+    assertEquals(
+        (byte) expectedLength, responseData[3], "Challenge size must match algorithm block size");
 
     byte[] challenge = new byte[expectedLength];
     System.arraycopy(responseData, 4, challenge, 0, expectedLength);
     return challenge;
   }
 
-  private static byte[] encryptChallengeWithManagementKey(byte algorithm, byte[] keyBytes, byte[] challenge) {
+  private static byte[] encryptChallengeWithManagementKey(
+      byte algorithm, byte[] keyBytes, byte[] challenge) {
     try {
       if (algorithm == ALG_3DES) {
         Cipher cipher = Cipher.getInstance("DESede/ECB/NoPadding");
@@ -424,7 +472,8 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
         len = 32;
         break;
       default:
-        throw new IllegalArgumentException("Unsupported management key algorithm: " + String.format("0x%02X", algorithm));
+        throw new IllegalArgumentException(
+            "Unsupported management key algorithm: " + String.format("0x%02X", algorithm));
     }
 
     byte[] key = new byte[len];

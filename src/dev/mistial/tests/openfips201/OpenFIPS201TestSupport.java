@@ -1,8 +1,14 @@
 package dev.mistial.tests.openfips201;
 
-import com.makina.security.openfips201.OpenFIPS201;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import apdu4j.core.BIBO;
+import com.makina.security.openfips201.OpenFIPS201;
+import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import javacard.framework.AID;
+import javax.smartcardio.CommandAPDU;
+import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -10,12 +16,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import pro.javacard.engine.JavaCardEngine;
-
-import javax.smartcardio.CommandAPDU;
-import javax.smartcardio.ResponseAPDU;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Shared test harness for OpenFIPS201 APDU command testing.
@@ -26,8 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 abstract class OpenFIPS201TestSupport {
   // Production applet AID used by the project.
-  protected static final byte[] OPENFIPS201_AID_BYTES =
-      hex("A000000308000010000100");
+  protected static final byte[] OPENFIPS201_AID_BYTES = hex("A000000308000010000100");
   protected static final AID OPENFIPS201_AID =
       new AID(OPENFIPS201_AID_BYTES, (short) 0, (byte) OPENFIPS201_AID_BYTES.length);
   // CAP package AID, matching the ant-javacard <cap aid="..."> in build/build.xml.
@@ -44,6 +43,94 @@ abstract class OpenFIPS201TestSupport {
     engine = createEngine();
     installApplet();
     session = engine.connect();
+    if (provisionsStandardCard()) {
+      provisionStandardTestCard();
+    }
+  }
+
+  /**
+   * Whether {@link #setUpCard()} provisions the deterministic standard test card (known PIN, PUK
+   * and 9B admin key from {@link StandardCardProfile}). Tests that need a different or raw card
+   * state — e.g. those exercising the random boot PUK, real SCP transport, or their own management
+   * key — override this to return {@code false}.
+   */
+  protected boolean provisionsStandardCard() {
+    return true;
+  }
+
+  /**
+   * Provisions the deterministic standard test card: sets the local PIN and PUK and creates and
+   * loads the 9B card management key, all from {@link StandardCardProfile} over a mocked secure
+   * channel. This replaces the applet's random boot PIN/PUK so PIN-gated and admin operations are
+   * reproducible.
+   */
+  protected void provisionStandardTestCard() {
+    setLocalPinOverScp(StandardCardProfile.PIN);
+    setPukOverScp(StandardCardProfile.PUK);
+    provisionManagementKeyOverScp(StandardCardProfile.ADMIN_KEY_ALG, StandardCardProfile.ADMIN_KEY);
+  }
+
+  /** Sets the local PIN (reference 0x80) over a mocked administrative secure channel. */
+  protected void setLocalPinOverScp(final byte[] pin) {
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before admin PIN update");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0x24, 0xFF, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pin),
+              "Administrative local PIN update");
+        });
+  }
+
+  /** Sets the PUK (reference 0x81) over a mocked administrative secure channel. */
+  protected void setPukOverScp(final byte[] puk) {
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before admin PUK update");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, puk),
+              "Administrative PUK update");
+        });
+  }
+
+  /**
+   * Creates and loads the 9B card management key with the given PIV mechanism over a mocked
+   * administrative secure channel.
+   */
+  protected void provisionManagementKeyOverScp(final byte algorithm, final byte[] keyBytes) {
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before SCP provisioning flow");
+          assertSw(
+              0x9000,
+              transmit(
+                  0x84, 0xDB, 0x3F, 0x00, StandardCardProfile.managementKeyDefinition(algorithm)),
+              "SCP create-key operation for 9B should succeed");
+          assertSw(
+              0x9000,
+              transmit(
+                  0x84,
+                  0x24,
+                  algorithm & 0xFF,
+                  StandardCardProfile.ADMIN_KEY_REF & 0xFF,
+                  keyUpdateData(keyBytes)),
+              "SCP initial key import for 9B should succeed");
+        });
+  }
+
+  /** Wraps a key value in the administrative CHANGE REFERENCE DATA key-import structure. */
+  protected static byte[] keyUpdateData(byte[] keyBytes) {
+    return StandardCardProfile.keyUpdateData(keyBytes);
+  }
+
+  /** Deterministic AES-128 key material derived from a seed: {@code key[i] = seed + i}. */
+  protected static byte[] keyMaterialAes128(byte seed) {
+    byte[] key = new byte[0x10];
+    for (int i = 0; i < key.length; i++) {
+      key[i] = (byte) (seed + i);
+    }
+    return key;
   }
 
   protected JavaCardEngine createEngine() {
@@ -97,12 +184,14 @@ abstract class OpenFIPS201TestSupport {
     assertEquals(
         expectedSw,
         response.getSW(),
-        context + " expected SW=" + Integer.toHexString(expectedSw) + " but was " + swHex(response));
+        context
+            + " expected SW="
+            + Integer.toHexString(expectedSw)
+            + " but was "
+            + swHex(response));
   }
 
-  /**
-   * Asserts a "63Cx retries remaining" status and returns retries as an integer.
-   */
+  /** Asserts a "63Cx retries remaining" status and returns retries as an integer. */
   protected static int assert63cxAndGetRetries(ResponseAPDU response, String context) {
     int sw = response.getSW();
     assertEquals(
@@ -140,8 +229,12 @@ abstract class OpenFIPS201TestSupport {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
-          .thenReturn((byte) (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
-      Mockito.when(secureChannel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+          .thenReturn(
+              (byte)
+                  (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
+      Mockito.when(
+              secureChannel.unwrap(
+                  Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
           .thenAnswer(invocation -> (short) invocation.getArgument(2));
       Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
       action.run();

@@ -28,6 +28,7 @@ package dev.mistial.tools.openfips201.vci;
 import apdu4j.core.BIBO;
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.Reader;
 import java.io.Writer;
 import java.math.BigInteger;
@@ -193,6 +194,25 @@ final class VciProvisioning {
         null,
         EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
 
+    // STEP 0 - Set the deterministic standard-card PIN and PUK (administrative CHANGE REFERENCE
+    // DATA
+    // over SCP). The applet boots with a random PIN/PUK, so without this the emulator card has an
+    // unknown PIN; using the shared profile keeps it identical to the JUnit standard test card.
+    expect(
+        gp.transmit(
+            new CommandAPDU(
+                0x00,
+                0x24,
+                0xFF,
+                StandardCardProfile.LOCAL_PIN_REF & 0xFF,
+                StandardCardProfile.PIN)),
+        "Set standard local PIN");
+    expect(
+        gp.transmit(
+            new CommandAPDU(
+                0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
+        "Set standard PUK");
+
     // STEP 1 - Define the SM key: reference 04, CS2, key-establishment role, non-importable so the
     // private key can only ever exist on-card.
     byte[] keyDefinition =
@@ -226,9 +246,9 @@ final class VciProvisioning {
     // STEP 3 - Sign the card public key into a CVC with the VCI signer CA.
     byte[] issuerId = VciSupport.issuerIdFromPublicKey(ca.certificate.getPublicKey());
     // Subject identifier is a 16-byte GUID, matching the encoding production PIV cards use in the
-    // CVC (rather than an ASCII label).
-    byte[] subjectId = new byte[16];
-    new SecureRandom().nextBytes(subjectId);
+    // CVC (rather than an ASCII label). A fixed value from the shared profile keeps the emulator's
+    // card identity deterministic across provisioning runs.
+    byte[] subjectId = StandardCardProfile.CVC_SUBJECT;
     byte[] cvcBody = VciSupport.buildCvcBody(cardPublicPoint, issuerId, subjectId);
     Signature signer = Signature.getInstance("SHA256withECDSA");
     signer.initSign(ca.privateKey);
