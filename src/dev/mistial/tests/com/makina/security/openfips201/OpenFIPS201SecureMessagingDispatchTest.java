@@ -166,6 +166,57 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void secureMessagingCommandChainingReassemblesBeforeMacVerification() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] complete = macOnlySecureCommand((byte) 0x0C, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
+      byte[] first = new byte[10];
+      first[ISO7816.OFFSET_CLA] = (byte) 0x1C;
+      first[ISO7816.OFFSET_INS] = complete[ISO7816.OFFSET_INS];
+      first[ISO7816.OFFSET_P1] = complete[ISO7816.OFFSET_P1];
+      first[ISO7816.OFFSET_P2] = complete[ISO7816.OFFSET_P2];
+      first[ISO7816.OFFSET_LC] = (byte) 0x05;
+      System.arraycopy(complete, 5, first, 5, 5);
+
+      byte[] last = new byte[10];
+      last[ISO7816.OFFSET_CLA] = (byte) 0x0C;
+      last[ISO7816.OFFSET_INS] = complete[ISO7816.OFFSET_INS];
+      last[ISO7816.OFFSET_P1] = complete[ISO7816.OFFSET_P1];
+      last[ISO7816.OFFSET_P2] = complete[ISO7816.OFFSET_P2];
+      last[ISO7816.OFFSET_LC] = (byte) 0x05;
+      System.arraycopy(complete, 10, last, 5, 5);
+
+      Method unwrapSecureMessagingCommand =
+          method(piv.getClass(), "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
+      InvocationTargetException firstResult =
+          assertThrows(
+              InvocationTargetException.class,
+              () -> unwrapSecureMessagingCommand.invoke(piv, first, (short) 5, (short) 5));
+      assertTrue(
+          firstResult.getCause() instanceof ISOException,
+          "Intermediate chained secure fragment should complete with SW_NO_ERROR");
+      assertEquals(
+          ISO7816.SW_NO_ERROR,
+          ((ISOException) firstResult.getCause()).getReason(),
+          "Intermediate chained secure fragment should wait for the final MAC");
+
+      short plaintextLength =
+          (Short) unwrapSecureMessagingCommand.invoke(piv, last, (short) 5, (short) 5);
+
+      assertEquals((short) 0, plaintextLength, "Reassembled MAC-only command has no plaintext");
+      assertEquals((byte) 0x00, last[ISO7816.OFFSET_CLA], "Final unwrapped CLA should be plain");
+    }
+  }
+
+  @Test
   void protectedGetResponseDrainsSecureOutgoingChain() throws Exception {
     assertSw(
         0x9000,
@@ -274,6 +325,25 @@ class OpenFIPS201SecureMessagingDispatchTest {
       out[cursor++] = 0;
     }
     return cursor;
+  }
+
+  private static byte[] macOnlySecureCommand(byte cla, byte ins, byte p1, byte p2) {
+    byte[] command = new byte[15];
+    command[ISO7816.OFFSET_CLA] = cla;
+    command[ISO7816.OFFSET_INS] = ins;
+    command[ISO7816.OFFSET_P1] = p1;
+    command[ISO7816.OFFSET_P2] = p2;
+    command[ISO7816.OFFSET_LC] = (byte) 0x0A;
+    command[5] = (byte) 0x8E;
+    command[6] = (byte) 0x08;
+    byte[] work = new byte[128];
+    byte[] macInput = new byte[64];
+    short macLength = buildMacOnlyCommandInput(command, macInput);
+    AESKey macKey = PIVCrypto.buildTransientAes128Key();
+    macKey.setKey(new byte[64], (short) 16);
+    PIVCrypto.doAesCmac(macKey, macInput, (short) 0, macLength, work, (short) 0);
+    System.arraycopy(work, 0, command, 7, 8);
+    return command;
   }
 
   private static Field field(Object target, String name) throws Exception {

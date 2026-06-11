@@ -183,6 +183,8 @@ final class PIV {
   private byte[] attestationResponse;
   // TRANSIENT - Reusable response/work buffer for CS2 secure messaging establishment.
   private final byte[] smResponse;
+  // TRANSIENT - Reassembled secure-messaging command data.
+  private final byte[] smCommand;
 
   /** Constructor */
   PIV() {
@@ -194,6 +196,7 @@ final class PIV {
     // Create our transient buffers
     scratch = JCSystem.makeTransientByteArray(LENGTH_SCRATCH, JCSystem.CLEAR_ON_DESELECT);
     smResponse = JCSystem.makeTransientByteArray((short) 448, JCSystem.CLEAR_ON_DESELECT);
+    smCommand = JCSystem.makeTransientByteArray((short) 448, JCSystem.CLEAR_ON_DESELECT);
     authenticationContext =
         JCSystem.makeTransientByteArray(LENGTH_AUTH_STATE, JCSystem.CLEAR_ON_DESELECT);
 
@@ -255,7 +258,17 @@ final class PIV {
   }
 
   short unwrapSecureMessagingCommand(byte[] buffer, short offset, short length) {
-    return secureMessaging.unwrapCommand(buffer, offset, length, smResponse, ZERO);
+    boolean commandChaining = (buffer[ISO7816.OFFSET_CLA] & (byte) 0x10) != (byte) 0;
+    Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);
+    length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
+    if (length == ZERO && commandChaining) ISOException.throwIt(ISO7816.SW_NO_ERROR);
+
+    length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
+    Util.arrayCopyNonAtomic(smCommand, ZERO, buffer, ZERO, (short) 5);
+    if (length > ZERO) {
+      Util.arrayCopyNonAtomic(smCommand, (short) 5, buffer, offset, length);
+    }
+    return length;
   }
 
   /**
