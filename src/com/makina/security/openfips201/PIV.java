@@ -257,6 +257,10 @@ final class PIV {
     return secureMessaging.isSecureMessagingCla(cla);
   }
 
+  boolean isSecureMessagingEstablished() {
+    return secureMessaging.isEstablished();
+  }
+
   void clearSecureMessaging() {
     secureMessaging.clear();
   }

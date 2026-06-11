@@ -254,6 +254,41 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void plaintextApduDuringActiveVciSecureMessagingIsRejectedAndClearsSession() throws Exception {
+    // SP 800-73-5 Part 2, section 4.2 requires commands in an established VCI secure
+    // messaging session to remain protected; section 4.3 requires session keys to be
+    // zeroized after secure messaging errors. Plain APDUs are rejected except for the
+    // GET RESPONSE continuation specified for secure response chaining.
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before plaintext APDU rejection");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+    }
+
+    ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"), 0));
+
+    assertSw(
+        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+        response,
+        "Plain APDU while VCI secure messaging is active");
+    assertEquals(
+        false,
+        method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+        "Plain APDU while VCI is active must destroy the secure messaging session");
+  }
+
+  @Test
   void protectedProcessingErrorClearsSecureMessagingSession() throws Exception {
     // SP 800-73-5 Part 2, section 4.3 requires secure messaging session keys to be
     // zeroized when a protected response status is not 61xx or 9000.

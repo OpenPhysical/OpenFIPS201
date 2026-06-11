@@ -239,10 +239,18 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.setIsSecureChannel(false);
     pivSecureMessagingCommand = false;
 
-    if (piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA])) {
+    boolean pivSecureMessagingCla = piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA]);
+    boolean gpSecureMessagingCla = apdu.isSecureMessagingCLA();
+
+    if (pivSecureMessagingCla) {
       length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
       pivSecureMessagingCommand = true;
-    } else if (apdu.isSecureMessagingCLA()) {
+    } else if (piv.isSecureMessagingEstablished() && !gpSecureMessagingCla) {
+      // SP 800-73-5 Part 2, section 4.2 keeps VCI commands protected once secure
+      // messaging is active; this is an SM error, so section 4.3 zeroization applies.
+      piv.clearSecureMessaging();
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    } else if (gpSecureMessagingCla) {
       SecureChannel secureChannel = GPSystem.getSecureChannel();
       if ((secureChannel.getSecurityLevel() & SC_MASK) == SC_MASK) {
         // Validate and unwrap the APDU, including the header bytes
