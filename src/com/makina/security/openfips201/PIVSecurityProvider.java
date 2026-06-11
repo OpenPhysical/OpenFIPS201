@@ -282,9 +282,10 @@ final class PIVSecurityProvider {
    * Validates the current security conditions for administering the specified object.
    *
    * @param object The object to check permissions for
+   * @param vciEstablished True if the Virtual Contact Interface (secure messaging) is established
    * @return True of the access mode check passed
    */
-  boolean checkAccessModeAdmin(PIVObject object) {
+  boolean checkAccessModeAdmin(PIVObject object, boolean vciEstablished) {
 
     //
     // This check can pass by any of the following conditions being true:
@@ -322,7 +323,7 @@ final class PIVSecurityProvider {
     //
     if ((mode != PIVObject.ACCESS_MODE_ALWAYS)
         && ((mode & PIVObject.ACCESS_MODE_USER_ADMIN) == PIVObject.ACCESS_MODE_USER_ADMIN)
-        && checkAccessModeObject(object)) {
+        && checkAccessModeObject(object, vciEstablished)) {
       result = true;
     }
 
@@ -338,39 +339,51 @@ final class PIVSecurityProvider {
    * Validates the current security conditions for access to a given data or key object
    *
    * @param object The object to check permissions for
+   * @param vciEstablished True if the Virtual Contact Interface (secure messaging) is established
    * @return True of the access mode check passed
    */
-  boolean checkAccessModeObject(PIVObject object) {
+  boolean checkAccessModeObject(PIVObject object, boolean vciEstablished) {
 
     boolean valid = false;
 
     // Select the appropriate access mode to check
+    final boolean contactless = (transientState[STATE_IS_CONTACTLESS] == FLAG_TRUE);
     byte mode;
-    if (transientState[STATE_IS_CONTACTLESS] == FLAG_TRUE) {
+    if (contactless) {
       mode = object.getModeContactless();
     } else {
       mode = object.getModeContact();
     }
 
-    // Check for special ALWAYS condition, which ignores PIN_ALWAYS
+    // Check for special ALWAYS condition, which ignores PIN_ALWAYS and VCI
     if (mode == PIVObject.ACCESS_MODE_ALWAYS) {
       valid = true;
     } else {
-      // Check for PIN and GLOBAL PIN
-      if ((mode & PIVObject.ACCESS_MODE_PIN) == PIVObject.ACCESS_MODE_PIN
-          || (mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS) {
-        // At least one PIN type must be both Enabled and Validated or we fail
-        // NOTE: We don't check if they are enabled here, because if they weren't they could
-        // never be valid.
-        if (cardPIN.isValidated() || globalPIN.isValidated()) {
+      // A mode requiring VCI fails closed on the contactless interface until VCI is established
+      // (SP 800-73-5 Part 2). The VCI condition has no effect on the contact interface.
+      final boolean vciRequired =
+          contactless && (mode & PIVObject.ACCESS_MODE_VCI) == PIVObject.ACCESS_MODE_VCI;
+
+      if (!vciRequired || vciEstablished) {
+        // Check for PIN and GLOBAL PIN
+        if ((mode & PIVObject.ACCESS_MODE_PIN) == PIVObject.ACCESS_MODE_PIN
+            || (mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS) {
+          // At least one PIN type must be both Enabled and Validated or we fail
+          // NOTE: We don't check if they are enabled here, because if they weren't they could
+          // never be valid.
+          if (cardPIN.isValidated() || globalPIN.isValidated()) {
+            valid = true;
+          }
+        } else if (vciRequired && (mode & PIVObject.ACCESS_MODE_OCC) == 0) {
+          // VCI-only condition (no PIN/OCC): satisfied once VCI is established.
           valid = true;
         }
-      }
 
-      // Check for PIN_ALWAYS
-      if (((mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS)
-          && transientState[STATE_PIN_ALWAYS] != FLAG_TRUE) {
-        valid = false;
+        // Check for PIN_ALWAYS
+        if (((mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS)
+            && transientState[STATE_PIN_ALWAYS] != FLAG_TRUE) {
+          valid = false;
+        }
       }
     }
 

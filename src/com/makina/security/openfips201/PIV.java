@@ -473,7 +473,7 @@ final class PIV {
     }
 
     // PRE-CONDITION 2 - The access rules must be satisfied for the requested object
-    if (!cspPIV.checkAccessModeObject(object)) {
+    if (!cspPIV.checkAccessModeObject(object, secureMessaging.isVciEstablished())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -620,7 +620,7 @@ final class PIV {
 
     // PRE-CONDITION 4 - The access rules must be satisfied for write access, either with an
     // administrative role or if the data object has explicit permission to write.
-    if (!cspPIV.checkAccessModeAdmin(object)) {
+    if (!cspPIV.checkAccessModeAdmin(object, secureMessaging.isVciEstablished())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -707,6 +707,15 @@ final class PIV {
     if (cspPIV.getIsContactless()
         && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
         && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+
+    // PRE-CONDITION 2B - PIN verification over the contactless interface requires the Virtual
+    // Contact Interface (secure messaging, plus pairing where the VCI policy requires it) to be
+    // established (SP 800-73-5 Part 2). Fail closed otherwise.
+    if (cspPIV.getIsContactless()
+        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
+        && !secureMessaging.isVciEstablished()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -1399,7 +1408,7 @@ final class PIV {
 
     // PRE-CONDITION 2 - The access rules must be satisfied for the requested key
     // NOTE: A call to this method automatically clears the PIN ALWAYS status.
-    if (!cspPIV.checkAccessModeObject(key)) {
+    if (!cspPIV.checkAccessModeObject(key, secureMessaging.isVciEstablished())) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return ZERO; // Keep compiler happy
@@ -2490,7 +2499,7 @@ final class PIV {
     }
 
     // PRE-CONDITION 6 - The access rules must be satisfied for administrative access
-    if (!cspPIV.checkAccessModeAdmin(key)) {
+    if (!cspPIV.checkAccessModeAdmin(key, secureMessaging.isVciEstablished())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -3370,7 +3379,7 @@ final class PIV {
 
     // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
     // This allows either SCP or prior successful authentication with the key's admin key.
-    if (!cspPIV.checkAccessModeAdmin(key)) {
+    if (!cspPIV.checkAccessModeAdmin(key, secureMessaging.isVciEstablished())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
     }
@@ -3494,7 +3503,7 @@ final class PIV {
     if (target == null) {
       ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
-    if (!cspPIV.checkAccessModeObject(target)) {
+    if (!cspPIV.checkAccessModeObject(target, secureMessaging.isVciEstablished())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 

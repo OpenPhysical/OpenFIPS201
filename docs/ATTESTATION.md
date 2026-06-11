@@ -86,9 +86,11 @@ Supported target key algorithms are RSA-1024, RSA-2048, ECC P-256, and ECC P-384
 issuer key is always ECC P-256 and generated certificates are signed with ECDSA-with-SHA256.
 
 Unlike YubiKey-style public attestation, this applet applies the target key's normal access rules
-before issuing an attestation certificate. A target slot configured for PIN access
-requires a verified PIN, and a target slot blocked on the current contact/contactless interface is
-not attestable on that interface.
+before issuing an attestation certificate. A target slot configured for PIN access requires a
+verified PIN. A target slot whose contactless access mode requires the Virtual Contact Interface
+(VCI / secure messaging) is not attestable over the contactless interface until VCI is established.
+A target slot blocked on the current contact/contactless interface is not attestable on that
+interface.
 
 ## Certificate Profile
 
@@ -200,7 +202,9 @@ The applet rejects attestation unless:
 
 - The authority profile has been committed.
 - The target slot exists.
-- The target slot's contact/contactless access mode is satisfied.
+- The target slot's contact/contactless access mode is satisfied. On the contactless interface this
+  includes the VCI access condition: a VCI-gated target key requires secure messaging (VCI) to be
+  established before it is attestable.
 - The target key was generated on-card after the current authority commit.
 - The target algorithm is supported.
 
@@ -211,7 +215,8 @@ Imported target keys are not attestable.
 - `9000`: success.
 - `6985`: attestation authority missing, target key missing material, or target key not generated.
 - `6982`: authority operation was attempted outside the required secure channel, or attestation
-  was attempted without satisfying the target slot access mode.
+  was attempted without satisfying the target slot access mode (including a VCI-gated target key
+  attested over the contactless interface before VCI is established).
 - `6A80`: malformed authority data, malformed DER, unsupported authority fields, or key-pair mismatch.
 - `6A84`: configured subject, validity, or generated certificate exceeds supported limits.
 - `6A86`: invalid attestation slot or command parameters.
