@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import apdu4j.core.BIBO;
@@ -248,6 +249,60 @@ class OpenFIPS201SecureMessagingDispatchTest {
           method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
           "Secure messaging session must be destroyed after a secure messaging error");
     }
+  }
+
+  @Test
+  void protectedProcessingErrorClearsSecureMessagingSession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before protected error");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Field pivField = realApplet.getClass().getDeclaredField("piv");
+    pivField.setAccessible(true);
+
+    Class<?> pivClass = pivField.getType();
+    Object piv = Mockito.mock(pivClass);
+    Method isSecureMessagingCla = method(pivClass, "isSecureMessagingCLA", byte.class);
+    Method unwrapSecureMessagingCommand =
+        method(pivClass, "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
+    Method clearSecureMessaging = method(pivClass, "clearSecureMessaging");
+    Method processOutgoingSecure = method(pivClass, "processOutgoingSecure", APDU.class, short.class);
+
+    when((Boolean) isSecureMessagingCla.invoke(piv, Mockito.anyByte())).thenReturn(true);
+    when((Short)
+            unwrapSecureMessagingCommand.invoke(
+                piv, Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+        .thenAnswer(
+            invocation -> {
+              byte[] buffer = invocation.getArgument(0);
+              buffer[ISO7816.OFFSET_CLA] = (byte) 0x00;
+              return (short) 3;
+            });
+    doAnswer(
+            invocation -> {
+              return null;
+            })
+        .when(piv);
+    clearSecureMessaging.invoke(piv);
+    doAnswer(
+            invocation -> {
+              assertEquals(
+                  ISO7816.SW_INS_NOT_SUPPORTED,
+                  (Short) invocation.getArgument(1),
+                  "Protected processing error should be wrapped with its original SW");
+              throw new ISOException(ISO7816.SW_NO_ERROR);
+            })
+        .when(piv);
+    processOutgoingSecure.invoke(piv, Mockito.any(APDU.class), Mockito.anyShort());
+
+    pivField.set(realApplet, piv);
+
+    ResponseAPDU response = transmit(new CommandAPDU(0x0C, 0xFE, 0x00, 0x00, new byte[0], 0));
+
+    assertSw(0x9000, response, "Protected error response should still be returned as SM");
+    clearSecureMessaging.invoke(verify(piv));
   }
 
   @Test

@@ -257,6 +257,10 @@ final class PIV {
     return secureMessaging.isSecureMessagingCla(cla);
   }
 
+  void clearSecureMessaging() {
+    secureMessaging.clear();
+  }
+
   short unwrapSecureMessagingCommand(byte[] buffer, short offset, short length) {
     boolean commandChaining = (buffer[ISO7816.OFFSET_CLA] & (byte) 0x10) != (byte) 0;
     Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);

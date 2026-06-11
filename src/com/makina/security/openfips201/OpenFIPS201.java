@@ -335,7 +335,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       }
     } catch (ISOException ex) {
       if (!pivSecureMessagingCommand || ex.getReason() == ISO7816.SW_NO_ERROR) throw ex;
-      piv.processOutgoingSecure(apdu, ex.getReason());
+      try {
+        piv.processOutgoingSecure(apdu, ex.getReason());
+      } finally {
+        if (ex.getReason() != ISO7816.SW_NO_ERROR
+            && (short) (ex.getReason() & (short) 0xFF00) != ISO7816.SW_BYTES_REMAINING_00) {
+          piv.clearSecureMessaging();
+        }
+      }
     }
   }
 
