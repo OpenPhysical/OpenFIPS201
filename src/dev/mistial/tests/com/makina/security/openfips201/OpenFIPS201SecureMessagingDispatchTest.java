@@ -1,5 +1,6 @@
 package com.makina.security.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -127,6 +128,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object piv = field(realApplet, "piv").get(realApplet);
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
       byte[] sessionKeys = new byte[64];
       method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
           .invoke(secureMessaging, sessionKeys, (short) 0);
@@ -253,6 +255,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   @Test
   void protectedProcessingErrorClearsSecureMessagingSession() throws Exception {
+    // SP 800-73-5 Part 2, section 4.3 requires secure messaging session keys to be
+    // zeroized when a protected response status is not 61xx or 9000.
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
@@ -303,6 +307,53 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     assertSw(0x9000, response, "Protected error response should still be returned as SM");
     clearSecureMessaging.invoke(verify(piv));
+  }
+
+  @Test
+  void plainGetResponseSecureContinuationDoesNotIncrementEncryptionCounter() throws Exception {
+    // SP 800-73-5 Part 2, section 4.2.2 states that the encryption counter is not
+    // incremented for GET RESPONSE in a secure-messaging response chain.
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before plain GET RESPONSE counter check");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
+      byte[] work = new byte[512];
+      method(
+              secureMessagingClass,
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(secureMessaging, command, (short) 5, (short) 10, work, (short) 0);
+      byte[] counterBeforeGetResponse = counter(secureMessaging);
+      byte[] outgoing = new byte[] {(byte) 0xA5};
+      method(chainBuffer.getClass(), "setOutgoing", byte[].class, short.class, short.class, boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+      field(realApplet, "pivSecureMessagingCommand").setBoolean(realApplet, true);
+
+      ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0));
+
+      assertSw(0x9000, response, "Plain GET RESPONSE secure continuation");
+
+      assertArrayEquals(
+          counterBeforeGetResponse,
+          counter(secureMessaging),
+          "Plain GET RESPONSE secure continuation must not increment the encryption counter");
+    }
   }
 
   @Test
@@ -471,6 +522,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Method asCurrent = engine.getClass().getMethod("asCurrent");
     asCurrent.setAccessible(true);
     return (AutoCloseable) asCurrent.invoke(engine);
+  }
+
+  private static byte[] counter(Object secureMessaging) throws Exception {
+    byte[] encCounter = (byte[]) field(secureMessaging, "encCounter").get(secureMessaging);
+    byte[] copy = new byte[encCounter.length];
+    System.arraycopy(encCounter, 0, copy, 0, encCounter.length);
+    return copy;
   }
 
   private static void assertSw(int expectedSw, ResponseAPDU response, String context) {

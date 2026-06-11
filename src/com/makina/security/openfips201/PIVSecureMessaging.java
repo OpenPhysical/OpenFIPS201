@@ -132,6 +132,10 @@ final class PIVSecureMessaging {
         || (byte) (cla & (byte) 0x1C) == CLA_CHAINED_SECURE_MESSAGING;
   }
 
+  void markGetResponse() {
+    state[OFFSET_LAST_INS] = INS_GET_RESPONSE;
+  }
+
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
     try {
       return unwrapCommandChecked(apdu, offset, length, work, workOffset);

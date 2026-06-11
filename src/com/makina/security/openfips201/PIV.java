@@ -285,6 +285,9 @@ final class PIV {
   }
 
   void processOutgoingSecure(APDU apdu, short sw) {
+    if (apdu.getBuffer()[ISO7816.OFFSET_INS] == (byte) 0xC0) {
+      secureMessaging.markGetResponse();
+    }
     chainBuffer.processOutgoingSecure(apdu, secureMessaging, smResponse, sw);
   }
 
