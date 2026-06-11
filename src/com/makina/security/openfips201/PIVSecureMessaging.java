@@ -133,6 +133,16 @@ final class PIVSecureMessaging {
   }
 
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
+    try {
+      return unwrapCommandChecked(apdu, offset, length, work, workOffset);
+    } catch (ISOException ex) {
+      clear();
+      throw ex;
+    }
+  }
+
+  private short unwrapCommandChecked(
+      byte[] apdu, short offset, short length, byte[] work, short workOffset) {
     if (!isEstablished()) ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     short end = (short) (offset + length);

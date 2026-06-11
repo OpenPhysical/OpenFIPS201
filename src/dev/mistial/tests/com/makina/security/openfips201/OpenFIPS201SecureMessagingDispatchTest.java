@@ -217,6 +217,40 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void secureMessagingErrorClearsSessionKeys() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
+      command[14] ^= (byte) 0x01;
+      Method unwrapSecureMessagingCommand =
+          method(piv.getClass(), "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
+
+      InvocationTargetException thrown =
+          assertThrows(
+              InvocationTargetException.class,
+              () -> unwrapSecureMessagingCommand.invoke(piv, command, (short) 5, (short) 10));
+
+      assertTrue(thrown.getCause() instanceof ISOException, "Bad C-MAC should be rejected");
+      assertEquals(
+          ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+          ((ISOException) thrown.getCause()).getReason(),
+          "Bad C-MAC should fail secure messaging authentication");
+      assertEquals(
+          false,
+          method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+          "Secure messaging session must be destroyed after a secure messaging error");
+    }
+  }
+
+  @Test
   void protectedGetResponseDrainsSecureOutgoingChain() throws Exception {
     assertSw(
         0x9000,
