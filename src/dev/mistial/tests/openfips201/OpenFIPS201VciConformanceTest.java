@@ -7,6 +7,12 @@ import javax.smartcardio.ResponseAPDU;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * Conformance tests for Virtual Contact Interface (VCI) behavior.
+ *
+ * <p>Aligned with NIST SP 800-73-5 Part 1 & Part 2, verifying the Discovery Object,
+ * Application Property Template (APT) advertisement, and VCI key/CVC loading.
+ */
 class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
@@ -16,6 +22,9 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ATTR_NONE = (byte) 0x00;
   private static final byte ATTR_IMPORTABLE = (byte) 0x10;
 
+  /**
+   * Verifies that invalid VCI modes are rejected.
+   */
   @Test
   void invalidVciModeIsRejectedByConfiguration() {
     withMockedScp(
@@ -29,6 +38,13 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         });
   }
 
+  /**
+   * Verifies that the Discovery Object correctly advertises VCI capability and its pairing policy.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 1, Section 3.1.2 (Table 43 Discovery Object).
+   * Bit 4 of the first byte of PIN Usage Policy indicates VCI implementation; bit 3 indicates
+   * whether the pairing code is required (0) or not required (1) to establish VCI.
+   */
   @Test
   void discoveryObjectAdvertisesVciAndPairingPolicy() {
     withMockedScp(
@@ -68,6 +84,13 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     assertTrue((noPairingPolicy[0] & 0x04) != 0, "No-pairing VCI must set no-pairing bit");
   }
 
+  /**
+   * Verifies that the Application Property Template (APT) advertises CS2 only after key material and CVC are loaded.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 1, Section 3.1.2. The 'AC' tag of the APT template
+   * must only advertise secure messaging algorithm references (e.g., CS2 '27') once the SM key
+   * reference 0x04 is fully initialized with both key material and its corresponding CVC.
+   */
   @Test
   void applicationPropertyTemplateAdvertisesCs2OnlyAfterKeyMaterialAndCvc() {
     assertSw(0x9000, selectApplet(), "Initial SELECT");
@@ -83,6 +106,12 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     assertTrue(contains(selectAppletWithData().getData(), hex("800127")), "APT must advertise CS2 after key and CVC");
   }
 
+  /**
+   * Verifies that a non-importable VCI key accepts CVC loading but rejects private key import.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 3.2.1 Table 2 & Section 4.1.8. Administrative
+   * key references check access modes, allowing post-generation CVC loading to the VCI key slot.
+   */
   @Test
   void nonImportableVciKeyAcceptsCvcButRejectsPrivateKeyImport() {
     configureVciMode((byte) 0x02);
@@ -94,6 +123,11 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     assertSw(0x6982, privateImport, "Generated non-importable VCI key must reject private import");
   }
 
+  /**
+   * Verifies that an imported VCI key requires its CVC to be loaded before APT advertisement.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 1, Section 3.1.2.
+   */
   @Test
   void importedVciKeyRequiresCvcBeforeAptAdvertisement() {
     configureVciMode((byte) 0x01);

@@ -26,6 +26,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import pro.javacard.engine.JavaCardEngine;
 
+/**
+ * Conformance tests for secure messaging APDU dispatching.
+ *
+ * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging), verifying APDU
+ * wrapping, unwrapping, MAC integrity verification, key destruction, and chaining.
+ */
 class OpenFIPS201SecureMessagingDispatchTest {
   private static final short MAX_SAFE_SECURE_RESPONSE_PLAINTEXT = (short) 191;
   private static final byte[] OPENFIPS201_AID_BYTES = hex("A000000308000010000100");
@@ -50,6 +56,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  /**
+   * Verifies that secure outgoing response chunks fit the secure messaging response buffer.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6. Outgoing plaintext blocks are capped
+   * to leave sufficient room for secure messaging envelope tags ('87', '99', '8E') and padding.
+   */
   @Test
   void secureOutgoingChunksFitSecureMessagingResponseBuffer() throws Exception {
     Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
@@ -121,6 +133,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
         "Secure outgoing chunks must leave room for response wrapping overhead");
   }
 
+  /**
+   * Verifies that command unwrapping preserves the command chaining bit in CLA.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 (Chained command under secure messaging).
+   */
   @Test
   void unwrapPreservesCommandChainingBit() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
@@ -168,6 +185,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  /**
+   * Verifies that command chaining fragments are reassembled before performing C-MAC verification.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4. Only the final command APDU in the
+   * chain (having CLA '0C') triggers the full unwrap and MAC validation process.
+   */
   @Test
   void secureMessagingCommandChainingReassemblesBeforeMacVerification() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
@@ -219,6 +242,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  /**
+   * Verifies that any secure messaging error immediately zeroizes the session keys.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.3 (Session Key Destruction). Any failure
+   * in command C-MAC verification must destroy the established session.
+   */
   @Test
   void secureMessagingErrorClearsSessionKeys() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
@@ -253,6 +282,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  /**
+   * Verifies that plaintext APDUs sent while VCI is established are rejected and destroy the session.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2. Plain APDUs are rejected to prevent
+   * bypass attacks, and Section 4.3 session destruction rules apply.
+   */
   @Test
   void plaintextApduDuringActiveVciSecureMessagingIsRejectedAndClearsSession() throws Exception {
     // SP 800-73-5 Part 2, section 4.2 requires commands in an established VCI secure
@@ -288,6 +323,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
         "Plain APDU while VCI is active must destroy the secure messaging session");
   }
 
+  /**
+   * Verifies that protected applet execution errors cause secure messaging session destruction.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.3 (Footnote 25). Status codes other than
+   * 61xx or 9000 returned inside the secure envelope are considered secure messaging errors.
+   */
   @Test
   void protectedProcessingErrorClearsSecureMessagingSession() throws Exception {
     // SP 800-73-5 Part 2, section 4.3 requires secure messaging session keys to be
@@ -344,6 +385,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
     clearSecureMessaging.invoke(verify(piv));
   }
 
+  /**
+   * Verifies that a plain GET RESPONSE command does not increment the encryption counter.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.2 (Encryption counter increment exceptions).
+   */
   @Test
   void plainGetResponseSecureContinuationDoesNotIncrementEncryptionCounter() throws Exception {
     // SP 800-73-5 Part 2, section 4.2.2 states that the encryption counter is not
@@ -391,6 +437,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  /**
+   * Verifies that a protected GET RESPONSE command drains the secure outgoing response chain.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 and 4.2.6.
+   */
   @Test
   void protectedGetResponseDrainsSecureOutgoingChain() throws Exception {
     assertSw(
@@ -435,6 +486,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
         "Protected GET RESPONSE should continue the secure outgoing chain, not wrap 6D00");
   }
 
+  /**
+   * Verifies that a plain GET RESPONSE command sent after an SM command returns a secure wrapped response.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6 (Response with PIV Secure Messaging).
+   */
   @Test
   void plainGetResponseAfterSecureResponseStaysSecureWrapped() throws Exception {
     assertSw(

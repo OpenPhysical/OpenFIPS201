@@ -9,9 +9,9 @@ import org.mockito.Mockito;
 /**
  * Verifies that the Virtual Contact Interface (VCI) is enforced as a contactless access condition.
  *
- * <p>An object whose contactless access mode carries {@code ACCESS_MODE_VCI} (0x08) must be denied
- * over the contactless interface until VCI (secure messaging) is established, fail closed. The VCI
- * condition has no effect on the contact interface, and objects without the VCI bit are unaffected.
+ * <p>Aligned with NIST SP 800-73-5 Part 2, verifying that objects gated by VCI access mode
+ * (0x08) are blocked over contactless until secure messaging is established, while remaining
+ * accessible normally over the contact interface.
  */
 class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
 
@@ -48,6 +48,11 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
         });
   }
 
+  /**
+   * Verifies that contactless read of a VCI-gated object is denied without VCI.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2. Security status must not be satisfied.
+   */
   @Test
   void contactlessReadOfVciObjectIsDeniedWithoutVci() {
     createObject(ACCESS_MODE_VCI);
@@ -65,6 +70,11 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
     }
   }
 
+  /**
+   * Verifies that contact read of a VCI-gated object succeeds regardless of VCI state.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2 (VCI condition only restricts contactless interface).
+   */
   @Test
   void contactReadOfVciObjectSucceeds() {
     createObject(ACCESS_MODE_VCI);
@@ -75,6 +85,11 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
         0x9000, response, "The VCI condition has no effect on the contact interface");
   }
 
+  /**
+   * Verifies that contactless read of an ALWAYS-gated object succeeds without VCI.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2.
+   */
   @Test
   void contactlessReadOfAlwaysObjectStillSucceeds() {
     createObject(ACCESS_MODE_ALWAYS);

@@ -46,6 +46,12 @@ class OpenFIPS201VciVectorTest {
 
   private static final byte[] TRANSPORT_SW = Hex.decode("9000");
 
+  /**
+   * Verifies that the OPACITY CS2 KDF derivation matches the card-reported session keys.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.1.6 (Key Derivation) and Section 4.1.7
+   * (Key Confirmation).
+   */
   @TestFactory
   Stream<DynamicTest> opacityKdfMatchesCardReportedKeys() throws Exception {
     return forEachVector(
@@ -77,6 +83,12 @@ class OpenFIPS201VciVectorTest {
         });
   }
 
+  /**
+   * Verifies that secure messaging response unwrapping matches captured card-reported states.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.5 (Response Integrity) and Section 4.2.6
+   * (Response with PIV Secure Messaging).
+   */
   @TestFactory
   Stream<DynamicTest> smResponseChainMatchesCardReportedState() throws Exception {
     return forEachVector(
@@ -132,6 +144,12 @@ class OpenFIPS201VciVectorTest {
         });
   }
 
+  /**
+   * Verifies that secure messaging command wrapping generates byte-for-byte identical APDUs.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.3 (Command Integrity) and Section 4.2.4
+   * (Command with PIV Secure Messaging).
+   */
   @TestFactory
   Stream<DynamicTest> smCommandWrapMatchesCapturedApdus() throws Exception {
     return forEachVector(

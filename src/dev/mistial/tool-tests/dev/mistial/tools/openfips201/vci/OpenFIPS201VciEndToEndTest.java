@@ -21,6 +21,8 @@ import pro.javacard.gp.keys.PlaintextKeys;
  * signed by a VCI CA, pairing-code mode) and then establishes a real OPACITY secure-messaging
  * session through the same ZeroMQ transport the .NET stack uses, validating the card CVC against
  * the CA. This is the cross-stack interop check for the applet's secure-messaging implementation.
+ *
+ * <p>Aligned with NIST SP 800-73-5 Part 1 Section 5.1.3 (Pairing Code) & Part 2 Section 4.1 (Key Establishment).
  */
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201VciEndToEndTest {
