@@ -931,10 +931,17 @@ final class PIV {
     cspPIV.setPINAlways(false);
   }
 
+  /**
+   * Verifies the pairing code over secure messaging.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 1 Section 5.1.3 (Pairing Code) and Part 2 Table 2
+   * (VERIFY command using Key Reference 0x98 for the pairing code).
+   */
   private void verifyPairingCode(byte[] buffer, short offset, short length) {
     if (config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_PAIRING_CODE) {
       ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
+    // SP 800-73-5 Part 2 Section 4.2: Pairing code verification must be submitted over secure messaging.
     if (!secureMessaging.isEstablished()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
@@ -946,15 +953,20 @@ final class PIV {
       }
     }
 
+    // Read the Pairing Code Reference Data Container (Tag 0x5FC123) defined in
+    // SP 800-73-5 Part 1 Section 3.3.8 / Table 44.
     scratch[ZERO] = (byte) 0x5F;
     scratch[(short) 1] = (byte) 0xC1;
     scratch[(short) 2] = (byte) 0x23;
     PIVDataObject object = findDataObject(scratch, ZERO, (short) 3);
     if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+    
+    // The container data is BER-TLV structured with Tag 0x53 (Part 1 Section 3.3.8 Table 44)
     if (object.getLength() < (short) 12 || object.content[ZERO] != (byte) 0x53) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
+    // Inside tag 0x53, the pairing code value is carried under tag 0x99 with length 0x08
     short contentLength = TLVReader.getLength(object.content, ZERO);
     short contentOffset = TLVReader.getDataOffset(object.content, ZERO);
     if (contentLength != (short) 10
@@ -963,6 +975,7 @@ final class PIV {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
+    // Compare with the provided PIN data
     if (Util.arrayCompare(
             object.content, (short) (contentOffset + 2), buffer, offset, (short) 8)
         != (byte) 0) {
@@ -1700,6 +1713,12 @@ final class PIV {
   }
 
   // Variant A - Secure Messaging
+  /**
+   * Performs the Key Establishment Protocol (Variant A - Secure Messaging).
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.1 (Key Establishment Protocol) and
+   * Section 4.1.2 Table 16 (Protocol Steps for PIV Card Application, C1-C11) under Cipher Suite 2 (CS2).
+   */
   private short generalAuthenticateCase1A(
       PIVKeyObjectECC key, short challengeOffset, short challengeLength) {
 
@@ -1708,6 +1727,7 @@ final class PIV {
 
     secureMessaging.clear();
 
+    // CS2 is defined in Section 4.1.4 Table 18.
     if (key.getMechanism() != ID_ALG_ECC_CS2) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
@@ -1728,25 +1748,32 @@ final class PIV {
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offsetIdH, (short) 8);
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offsetQeh, (short) 65);
 
+    // Step C5: Z = ECC_CDH(d_sICC, Q_eH)
     key.keyAgreement(smResponse, offsetQeh, (short) 65, smResponse, offsetSharedSecret);
+    
+    // Step C6: Generate random nonce N_ICC (16 bytes for CS2)
     PIVCrypto.doGenerateRandom(smResponse, offsetNonce, (short) 16);
 
+    // Step C1: ID_sICC = T_8(SHA-256(C_ICC))
     short cvcLength = key.getSmCvcLength();
     key.getSmCvc(smResponse, offsetDerived);
     PIVCrypto.doSha256(smResponse, offsetDerived, cvcLength, smResponse, offsetIdSicc);
 
+    // Step C7: SK_CFRM || SK_MAC || SK_ENC || SK_RMAC = KDF(Z, len, OtherInfo)
     deriveCs2SessionKeys(offsetSharedSecret, offsetNonce, offsetIdH, offsetQeh, offsetIdSicc, offsetDerived);
     secureMessaging.setSessionKeys(scratch, offsetDerived);
 
+    // Step C9: AuthCryptogram_ICC = CMAC(SK_CFRM, "KC_1_V" || ID_sICC || ID_sH || Q_eH)
     short authLength = buildCs2AuthenticationCryptogramInput(offsetIdH, offsetQeh, offsetIdSicc);
     secureMessaging.computeConfirmationMac(scratch, ZERO, authLength, scratch, offsetDerived);
 
+    // Step C11: Return CB_ICC || N_ICC || AuthCryptogram_ICC || C_ICC (Section 4.1.8 Data Field format)
     TLVWriter writer = TLVWriter.getInstance();
     writer.init(smResponse, ZERO, (short) 296, CONST_TAG_AUTH_TEMPLATE);
     writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
     writer.writeLength((short) (33 + cvcLength));
     short out = writer.getOffset();
-    smResponse[out++] = (byte) 0;
+    smResponse[out++] = (byte) 0; // CB_ICC (Step C2/C3 check CB_ICC == 0x00)
     out = Util.arrayCopyNonAtomic(smResponse, offsetNonce, smResponse, out, (short) 16);
     out = Util.arrayCopyNonAtomic(scratch, offsetDerived, smResponse, out, (short) 16);
     out = key.getSmCvc(smResponse, out);
@@ -1761,6 +1788,10 @@ final class PIV {
     return length;
   }
 
+  /**
+   * Derives Cipher Suite 2 (CS2) session keys using the KDF function defined in
+   * NIST SP 800-73-5 Part 2, Section 4.1.6.
+   */
   private void deriveCs2SessionKeys(
       short sharedSecretOffset,
       short nonceOffset,
@@ -1774,6 +1805,11 @@ final class PIV {
     PIVCrypto.doSha256(scratch, ZERO, (short) 97, scratch, (short) (outOffset + 32));
   }
 
+  /**
+   * Constructs OtherInfo input for the CS2 Key Derivation Function (KDF)
+   * as specified in NIST SP 800-73-5 Part 2, Section 4.1.6 Table: OtherInfo CS2.
+   * KDF Input: Counter || Z || OtherInfo
+   */
   private void buildCs2KdfInput(
       byte counter,
       short sharedSecretOffset,
@@ -1806,6 +1842,11 @@ final class PIV {
     scratch[out] = (byte) 0x00;
   }
 
+  /**
+   * Constructs MacData_p input for Key Confirmation AuthCryptogram_ICC
+   * as specified in NIST SP 800-73-5 Part 2, Section 4.1.7.
+   * MacData_p: "KC_1_V" || ID_sICC || ID_sH || Q_eH
+   */
   private short buildCs2AuthenticationCryptogramInput(
       short idHOffset, short qehOffset, short idSiccOffset) {
     short out = ZERO;

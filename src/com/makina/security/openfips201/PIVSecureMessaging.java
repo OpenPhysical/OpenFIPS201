@@ -32,7 +32,13 @@ import javacard.framework.Util;
 import javacard.security.AESKey;
 import javacard.security.SecretKey;
 
-/** Tracks transient PIV secure messaging and VCI session state. */
+/**
+ * Tracks transient PIV secure messaging and VCI session state.
+ *
+ * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging).
+ * Specifically handles APDU wrapping and unwrapping under Cipher Suite 2 (CS2)
+ * as defined in Section 4.1.4 Table 18.
+ */
 final class PIVSecureMessaging {
   private static final short OFFSET_SM_ESTABLISHED = (short) 0;
   private static final short OFFSET_PAIRING_VERIFIED = (short) 1;
@@ -47,11 +53,12 @@ final class PIVSecureMessaging {
   private static final byte CLA_SECURE_MESSAGING = (byte) 0x0C;
   private static final byte CLA_CHAINED_SECURE_MESSAGING = (byte) 0x1C;
   private static final byte INS_GET_RESPONSE = (byte) 0xC0;
-  private static final byte TAG_ENCRYPTED_DATA = (byte) 0x87;
-  private static final byte TAG_MAC = (byte) 0x8E;
-  private static final byte TAG_LE = (byte) 0x97;
-  private static final byte TAG_STATUS = (byte) 0x99;
-  private static final byte PADDING_INDICATOR = (byte) 0x01;
+  // BER-TLV Tags defined in NIST SP 800-73-5 Part 2, Section 4.2.1 Table 21
+  private static final byte TAG_ENCRYPTED_DATA = (byte) 0x87; // Padding indicator + encrypted data
+  private static final byte TAG_MAC = (byte) 0x8E;            // Cryptographic checksum (C-MAC/R-MAC)
+  private static final byte TAG_LE = (byte) 0x97;             // Le encapsulation
+  private static final byte TAG_STATUS = (byte) 0x99;         // Status word
+  private static final byte PADDING_INDICATOR = (byte) 0x01; // Padding indicator per Section 4.2.2
 
   private final byte[] state;
   private final byte[] commandMcv;
@@ -136,10 +143,18 @@ final class PIVSecureMessaging {
     state[OFFSET_LAST_INS] = INS_GET_RESPONSE;
   }
 
+  /**
+   * Unwraps an incoming command APDU.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4 (Command with PIV Secure Messaging).
+   * If any secure messaging error (like C-MAC verification or decryption fail) occurs, the session
+   * keys are zeroized per Section 4.3 (Session Key Destruction).
+   */
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
     try {
       return unwrapCommandChecked(apdu, offset, length, work, workOffset);
     } catch (ISOException ex) {
+      // NIST SP 800-73-5 Part 2 Section 4.3 requires key zeroization on secure messaging errors.
       clear();
       throw ex;
     }
@@ -147,6 +162,8 @@ final class PIVSecureMessaging {
 
   private short unwrapCommandChecked(
       byte[] apdu, short offset, short length, byte[] work, short workOffset) {
+    // NIST SP 800-73-5 Part 2 Section 4.2.7 SW '69 82' is returned when secure messaging is
+    // requested but no session keys are established.
     if (!isEstablished()) ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     short end = (short) (offset + length);
@@ -192,7 +209,11 @@ final class PIVSecureMessaging {
       cursor = next;
     }
 
-    if (macTlvOffset == (short) -1) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    // NIST SP 800-73-5 Part 2 Section 4.2.7 requires returning '69 87' if expected secure
+    // messaging data objects (like tag '8E' for C-MAC) are missing.
+    if (macTlvOffset == (short) -1) ISOException.throwIt((short) 0x6987);
+
+    // Verify C-MAC (NIST SP 800-73-5 Part 2 Section 4.2.3)
     short macInputLength = buildCommandMacInput(apdu, offset, macTlvOffset, work, workOffset);
     PIVCrypto.doAesCmac(skMac, work, workOffset, macInputLength, work, (short) (workOffset + macInputLength));
     if (Util.arrayCompare(
@@ -202,8 +223,10 @@ final class PIVSecureMessaging {
             macValueOffset,
             LENGTH_SHORT_MAC)
         != (byte) 0) {
+      // C-MAC verification failed: security status not satisfied.
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
+    // Update MAC chaining value (MCV) per Section 4.2
     Util.arrayCopyNonAtomic(work, (short) (workOffset + macInputLength), commandMcv, (short) 0, LENGTH_BLOCK);
 
     state[OFFSET_LAST_CLA] = apdu[ISO7816.OFFSET_CLA];
@@ -212,6 +235,7 @@ final class PIVSecureMessaging {
 
     if (encryptedTlvOffset == (short) -1) return (short) 0;
 
+    // Decrypt command data (NIST SP 800-73-5 Part 2 Section 4.2.2)
     buildIv(false, work, workOffset);
     short plainLength =
         PIVCrypto.doAesCbcDecrypt(
@@ -227,6 +251,12 @@ final class PIVSecureMessaging {
     return stripPadding(apdu, offset, plainLength);
   }
 
+  /**
+   * Wraps a response payload under secure messaging.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6 (Response with PIV Secure Messaging).
+   * Data confidentiality and response integrity are achieved as per Section 4.2.2 and Section 4.2.5.
+   */
   short wrapResponse(
       byte[] plaintext,
       short plaintextOffset,
@@ -260,11 +290,13 @@ final class PIVSecureMessaging {
       cursor += paddedLength;
     }
 
+    // Encapsulate status word (NIST SP 800-73-5 Part 2 Section 4.2.5 item 3)
     out[cursor++] = TAG_STATUS;
     out[cursor++] = (byte) 2;
     Util.setShort(out, cursor, sw);
     cursor += (short) 2;
 
+    // Compute R-MAC over response data and status template (NIST SP 800-73-5 Part 2 Section 4.2.5)
     short macInputLength = buildResponseMacInput(out, outOffset, cursor, out, cursor);
     PIVCrypto.doAesCmac(skRmac, out, cursor, macInputLength, out, (short) (cursor + macInputLength));
     Util.arrayCopyNonAtomic(out, (short) (cursor + macInputLength), responseMcv, (short) 0, LENGTH_BLOCK);
@@ -328,6 +360,13 @@ final class PIVSecureMessaging {
     return (short) (length + (short) (LENGTH_BLOCK - (short) (length % LENGTH_BLOCK)));
   }
 
+  /**
+   * Checks whether the encryption counter should be incremented.
+   *
+   * <p>NIST SP 800-73-5 Part 2 Section 4.2.2 requires the encryption counter to be incremented by
+   * one after each APDU sent over secure messaging, except for the GET RESPONSE command and APDUs
+   * with a CLA of '1C'.
+   */
   private boolean shouldIncrementCounter() {
     if (state[OFFSET_LAST_INS] == INS_GET_RESPONSE) return false;
     return state[OFFSET_LAST_CLA] != CLA_CHAINED_SECURE_MESSAGING;
