@@ -85,8 +85,10 @@ final class VciProvisioning {
   private static final byte[] PAIRING_OBJECT_ID = {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
   private static final int MAX_CHUNK = 0x80;
   private static final int CLA_CHAINING = 0x10;
-  private static final byte ACCESS_NEVER = (byte) 0x00;
   private static final byte ACCESS_ALWAYS = (byte) 0x7F;
+  // Access-mode bits matching the applet's PIVObject bitmap: PIN (0x01) and VCI (0x08).
+  private static final byte ACCESS_PIN = (byte) 0x01;
+  private static final byte ACCESS_VCI = (byte) 0x08;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte ATTR_NONE = (byte) 0x00;
 
@@ -172,13 +174,16 @@ final class VciProvisioning {
       ca = loadCa(caCertPath, caKeyPath);
     } else if (caOutPrefix != null) {
       ca = makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Signer");
-      System.out.println("Generated VCI signer CA: " + caOutPrefix + ".key / " + caOutPrefix + ".crt");
+      System.out.println(
+          "Generated VCI signer CA: " + caOutPrefix + ".key / " + caOutPrefix + ".crt");
     } else {
       throw new IllegalArgumentException("Supply --ca-cert/--ca-key or --ca-out");
     }
 
     byte[] scpKey =
-        scp03KeyHex == null ? PlaintextKeys.DEFAULT_KEY() : Hex.decode(scp03KeyHex.replace(" ", ""));
+        scp03KeyHex == null
+            ? PlaintextKeys.DEFAULT_KEY()
+            : Hex.decode(scp03KeyHex.replace(" ", ""));
     GPSession gp = GPSession.connect(bibo, new AID(PIV_AID));
     PlaintextKeys keys = PlaintextKeys.fromMasterKey(scpKey);
     keys.setVersion(0);
@@ -208,8 +213,12 @@ final class VciProvisioning {
         expect(
             gp.transmit(
                 new CommandAPDU(
-                    0x00, 0x47, 0x00, VciSupport.KEY_REF_SECURE_MESSAGING,
-                    new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, VciSupport.ALG_CS2}, 256)),
+                    0x00,
+                    0x47,
+                    0x00,
+                    VciSupport.KEY_REF_SECURE_MESSAGING,
+                    new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, VciSupport.ALG_CS2},
+                    256)),
             "Generate SM key on card");
     byte[] cardPublicPoint = parseGeneratedPublicPoint(generated.getData());
     System.out.println("Card SM public point: " + Hex.toHexString(cardPublicPoint).toUpperCase());
@@ -231,7 +240,8 @@ final class VciProvisioning {
     if (!VciSupport.verifyCvc(cvc, ca.certificate.getPublicKey())) {
       throw new IllegalStateException("Freshly signed CVC failed self-verification");
     }
-    System.out.println("Signed CVC (" + cvc.length + " bytes): " + Hex.toHexString(cvc).toUpperCase());
+    System.out.println(
+        "Signed CVC (" + cvc.length + " bytes): " + Hex.toHexString(cvc).toUpperCase());
 
     // STEP 4 - Load the CVC onto the SM key (CHANGE REFERENCE DATA, chained).
     sendChained(
@@ -276,15 +286,22 @@ final class VciProvisioning {
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
         "Set VCI mode to pairing-code");
 
-    // STEP 6 - Define the pairing-code object. GET DATA access is NEVER on both interfaces so the
-    // code cannot be read back; the applet's pairing verification reads the object internally.
+    // STEP 6 - Define the pairing-code object with the SP 800-73 container access rules: GET DATA
+    // is
+    // PIN over contact and VCI-and-PIN over contactless (5FC123, container 0x1018). A client reads
+    // the
+    // code over the contact interface after PIN to cache it for later VCI establishment (SP
+    // 800-73-4
+    // Section 5.1.3); the applet's own pairing verification reads the object content internally and
+    // is
+    // unaffected by these GET DATA rules.
     byte[] pairingDefinition =
         VciSupport.tlv(
             0x64,
             concat(
                 VciSupport.tlv(0x8B, PAIRING_OBJECT_ID),
-                VciSupport.tlv(0x8C, new byte[] {ACCESS_NEVER}),
-                VciSupport.tlv(0x8D, new byte[] {ACCESS_NEVER}),
+                VciSupport.tlv(0x8C, new byte[] {ACCESS_PIN}),
+                VciSupport.tlv(0x8D, new byte[] {(byte) (ACCESS_VCI | ACCESS_PIN)}),
                 VciSupport.tlv(0x91, new byte[] {(byte) 0x9B})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, pairingDefinition)),
@@ -335,7 +352,8 @@ final class VciProvisioning {
 
     ResponseAPDU discovery =
         transceive(
-            bibo, new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, Hex.decode("5C017E"), 256),
+            bibo,
+            new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, Hex.decode("5C017E"), 256),
             "GET DATA Discovery Object");
     // The PIN usage policy (5F2F) is nested inside the 7E template; locate its 2-byte value.
     byte[] policyBytes = locatePinUsagePolicy(discovery.getData());
@@ -361,11 +379,13 @@ final class VciProvisioning {
 
     byte[] witness = concat(new byte[] {0x00}, VciSupport.buildWitness(hostPublicPoint));
     byte[] template =
-        VciSupport.tlv(0x7C, concat(VciSupport.tlv(0x81, witness), VciSupport.tlv(0x82, new byte[0])));
+        VciSupport.tlv(
+            0x7C, concat(VciSupport.tlv(0x81, witness), VciSupport.tlv(0x82, new byte[0])));
     ResponseAPDU ga =
         transceive(
             bibo,
-            new CommandAPDU(0x00, 0x87, VciSupport.ALG_CS2, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256),
+            new CommandAPDU(
+                0x00, 0x87, VciSupport.ALG_CS2, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256),
             "GENERAL AUTHENTICATE (SM establishment)");
 
     byte[] gaData = ga.getData();
