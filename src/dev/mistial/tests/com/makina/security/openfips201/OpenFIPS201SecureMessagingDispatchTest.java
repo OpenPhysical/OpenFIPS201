@@ -209,6 +209,53 @@ class OpenFIPS201SecureMessagingDispatchTest {
         "Protected GET RESPONSE should continue the secure outgoing chain, not wrap 6D00");
   }
 
+  @Test
+  void plainGetResponseAfterSecureResponseStaysSecureWrapped() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before plain secure-continuation GET RESPONSE");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Field pivField = realApplet.getClass().getDeclaredField("piv");
+    pivField.setAccessible(true);
+    Field secureCommandField = realApplet.getClass().getDeclaredField("pivSecureMessagingCommand");
+    secureCommandField.setAccessible(true);
+
+    Class<?> pivClass = pivField.getType();
+    Object piv = Mockito.mock(pivClass);
+    Method isSecureMessagingCla = method(pivClass, "isSecureMessagingCLA", byte.class);
+    Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
+    Method processOutgoingSecure = method(pivClass, "processOutgoingSecure", APDU.class, short.class);
+    final short[] outgoingSw = new short[] {(short) 0xFFFF};
+
+    when((Boolean) isSecureMessagingCla.invoke(piv, Mockito.anyByte())).thenReturn(false);
+    doAnswer(
+            invocation -> {
+              throw new AssertionError("Plain GET RESPONSE must not drain secure data in clear");
+            })
+        .when(piv);
+    processOutgoing.invoke(piv, Mockito.any(APDU.class));
+    doAnswer(
+            invocation -> {
+              outgoingSw[0] = (Short) invocation.getArgument(1);
+              throw new ISOException(ISO7816.SW_NO_ERROR);
+            })
+        .when(piv);
+    processOutgoingSecure.invoke(piv, Mockito.any(APDU.class), Mockito.anyShort());
+
+    pivField.set(realApplet, piv);
+    secureCommandField.setBoolean(realApplet, true);
+
+    ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0));
+
+    assertSw(0x9000, response, "Plain GET RESPONSE should still return a wrapped response");
+    assertEquals(
+        ISO7816.SW_NO_ERROR,
+        outgoingSw[0],
+        "Plain GET RESPONSE after an SM response should continue through secure wrapping");
+  }
+
   private ResponseAPDU transmit(CommandAPDU command) {
     return new ResponseAPDU(session.transceive(command.getBytes()));
   }

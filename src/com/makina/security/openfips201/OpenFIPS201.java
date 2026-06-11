@@ -205,7 +205,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // command this applet supports and we don't care about secure channel processing.
     if (buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE
         && !piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA])) {
-      piv.processOutgoing(apdu);
+      if (pivSecureMessagingCommand) {
+        piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
+      } else {
+        piv.processOutgoing(apdu);
+      }
       return;
     }
     // TODO: Decide if this should go back to being called every time
