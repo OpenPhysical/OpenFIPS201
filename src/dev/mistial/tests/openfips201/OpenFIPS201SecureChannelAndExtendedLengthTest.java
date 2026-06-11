@@ -83,7 +83,8 @@ class OpenFIPS201SecureChannelAndExtendedLengthTest extends OpenFIPS201TestSuppo
 
       ResponseAPDU initUpdate = transmit(new CommandAPDU(0x80, 0x50, 0x00, 0x00, hex("0102030405060708")));
       assertSw(0x9000, initUpdate, "INITIALIZE UPDATE should route to SecureChannel.processSecurity");
-      Mockito.verify(secureChannel).resetSecurity();
+      Mockito.verify(secureChannel).processSecurity(Mockito.any());
+      Mockito.verify(secureChannel, Mockito.never()).resetSecurity();
 
       ResponseAPDU extAuth = transmit(new CommandAPDU(0x84, 0x82, 0x00, 0x00, hex("0000000000000000")));
       assertSw(0x9000, extAuth, "EXTERNAL AUTHENTICATE should route to SecureChannel.processSecurity");

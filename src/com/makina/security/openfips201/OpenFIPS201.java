@@ -274,11 +274,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     try {
       switch (buffer[ISO7816.OFFSET_INS]) {
         case INS_GP_INITIALIZE_UPDATE: // Case 4
-          processGP_SECURECHANNEL(apdu, true);
+          processGP_SECURECHANNEL(apdu);
           break;
 
         case INS_GP_EXTERNAL_AUTHENTICATE: // Case 4
-          processGP_SECURECHANNEL(apdu, false);
+          processGP_SECURECHANNEL(apdu);
           break;
 
           // Application Commands
@@ -335,9 +335,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * Processes the GlobalPlatform Secure Channel Protocol (SCP) authentication mechanisms
    *
    * @param apdu The APDU to process.
-   * @param reset If true, reset the secure channel
    */
-  private void processGP_SECURECHANNEL(APDU apdu, boolean reset) {
+  private void processGP_SECURECHANNEL(APDU apdu) {
 
     /*
      * PRE-CONDITIONS
@@ -354,11 +353,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     SecureChannel secureChannel = GPSystem.getSecureChannel();
 
-    if (reset) {
-      secureChannel.resetSecurity();
-    }
-
-    // STEP 1 - Call the PIV 'SELECT' command
+    // STEP 1 - Call the GlobalPlatform secure-channel command handler. INITIALIZE UPDATE starts a
+    // new SCP session; the platform implementation owns any required session reset.
     short length = secureChannel.processSecurity(apdu);
     short offset = apdu.getOffsetCdata();
 
