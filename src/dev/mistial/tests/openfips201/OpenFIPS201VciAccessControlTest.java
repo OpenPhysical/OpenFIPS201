@@ -9,9 +9,9 @@ import org.mockito.Mockito;
 /**
  * Verifies that the Virtual Contact Interface (VCI) is enforced as a contactless access condition.
  *
- * <p>Aligned with NIST SP 800-73-5 Part 2, verifying that objects gated by VCI access mode
- * (0x08) are blocked over contactless until secure messaging is established, while remaining
- * accessible normally over the contact interface.
+ * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as a contactless condition satisfied
+ * by secure messaging plus Discovery Object policy. Part 1 Table 2 applies that condition to
+ * contactless data-object reads.
  */
 class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
 
@@ -51,7 +51,8 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that contactless read of a VCI-gated object is denied without VCI.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2. Security status must not be satisfied.
+   * <p>NIST SP 800-73-5 Part 1 Section 5.5: VCI requires a command submitted over secure
+   * messaging; without VCI, the contactless access condition is not satisfied.
    */
   @Test
   void contactlessReadOfVciObjectIsDeniedWithoutVci() {
@@ -73,7 +74,8 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that contact read of a VCI-gated object succeeds regardless of VCI state.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2 (VCI condition only restricts contactless interface).
+   * <p>NIST SP 800-73-5 Part 1 Table 2 separates contact and contactless read rules; the VCI
+   * condition applies to the contactless column.
    */
   @Test
   void contactReadOfVciObjectSucceeds() {
@@ -88,7 +90,8 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that contactless read of an ALWAYS-gated object succeeds without VCI.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2.
+   * <p>NIST SP 800-73-5 Part 1 Table 2 allows ALWAYS contactless reads without a VCI
+   * condition.
    */
   @Test
   void contactlessReadOfAlwaysObjectStillSucceeds() {

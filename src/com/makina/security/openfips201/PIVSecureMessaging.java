@@ -34,8 +34,9 @@ import javacard.security.AESKey;
 /**
  * Tracks transient PIV secure messaging and VCI session state.
  *
- * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging). Specifically handles APDU
- * wrapping and unwrapping under Cipher Suite 2 (CS2) as defined in Section 4.1.4 Table 18.
+ * <p>NIST SP 800-73-5 Part 2 Sections 4.2.1-4.2.7 define PIV secure messaging
+ * data objects, command/response protection, and error handling. This class implements that
+ * APDU wrapping for Cipher Suite 2 (CS2), defined in Section 4.1.4 Table 18.
  */
 final class PIVSecureMessaging {
   private static final short OFFSET_SM_ESTABLISHED = (short) 0;

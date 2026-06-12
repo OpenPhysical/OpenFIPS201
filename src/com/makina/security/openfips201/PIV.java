@@ -185,6 +185,8 @@ final class PIV {
   private final byte[] smResponse;
   // TRANSIENT - Reassembled secure-messaging command data.
   private final byte[] smCommand;
+  // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
+  private final byte[] secureMessagingCommand;
 
   /** Constructor */
   PIV() {
@@ -197,6 +199,7 @@ final class PIV {
     scratch = JCSystem.makeTransientByteArray(LENGTH_SCRATCH, JCSystem.CLEAR_ON_DESELECT);
     smResponse = JCSystem.makeTransientByteArray((short) 448, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray((short) 448, JCSystem.CLEAR_ON_DESELECT);
+    secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
     authenticationContext =
         JCSystem.makeTransientByteArray(LENGTH_AUTH_STATE, JCSystem.CLEAR_ON_DESELECT);
 
@@ -261,7 +264,16 @@ final class PIV {
     return secureMessaging.isEstablished();
   }
 
+  boolean isSecureMessagingCommand() {
+    return secureMessagingCommand[ZERO] != (byte) 0;
+  }
+
+  void clearSecureMessagingCommand() {
+    secureMessagingCommand[ZERO] = (byte) 0;
+  }
+
   void clearSecureMessaging() {
+    clearSecureMessagingCommand();
     secureMessaging.clear();
   }
 
@@ -272,6 +284,7 @@ final class PIV {
     if (length == ZERO && commandChaining) ISOException.throwIt(ISO7816.SW_NO_ERROR);
 
     length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
+    secureMessagingCommand[ZERO] = (byte) 1;
     Util.arrayCopyNonAtomic(smCommand, ZERO, buffer, ZERO, (short) 5);
     if (length > ZERO) {
       Util.arrayCopyNonAtomic(smCommand, (short) 5, buffer, offset, length);
@@ -285,6 +298,19 @@ final class PIV {
    * @param apdu The current APDU buffer to transmit with
    */
   void processOutgoing(APDU apdu) {
+    processOutgoing(apdu, ISO7816.SW_NO_ERROR);
+  }
+
+  void processOutgoing(APDU apdu, short sw) {
+    if (isSecureMessagingCommand()) {
+      processOutgoingSecure(apdu, sw);
+      return;
+    }
+
+    if (sw != ISO7816.SW_NO_ERROR) {
+      ISOException.throwIt(sw);
+    }
+
     chainBuffer.processOutgoing(apdu);
   }
 
@@ -734,9 +760,9 @@ final class PIV {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
-    // PRE-CONDITION 2B - PIN verification over the contactless interface requires the Virtual
-    // Contact Interface (secure messaging, plus pairing where the VCI policy requires it) to be
-    // established (SP 800-73-5 Part 2). Fail closed otherwise.
+    // PRE-CONDITION 2B - SP 800-73-5 Part 1 Section 5.5 defines VCI as secure
+    // messaging plus Discovery Object policy. PIN verification over contactless fails closed until
+    // that VCI state is established.
     if (cspPIV.getIsContactless()
         && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
         && !secureMessaging.isVciEstablished()) {

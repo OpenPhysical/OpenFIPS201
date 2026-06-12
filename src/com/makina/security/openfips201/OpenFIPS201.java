@@ -74,7 +74,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte SC_MASK =
       SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC;
   private final PIV piv;
-  private boolean pivSecureMessagingCommand;
 
   //
   // Persistent state definitions
@@ -205,11 +204,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // command this applet supports and we don't care about secure channel processing.
     if (buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE
         && !piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA])) {
-      if (pivSecureMessagingCommand) {
-        piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
-      } else {
-        piv.processOutgoing(apdu);
-      }
+      piv.processOutgoing(apdu);
       return;
     }
     // TODO: Decide if this should go back to being called every time
@@ -237,17 +232,17 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // Default to no secure channel until the APDU unwrap confirms one.
     piv.setIsSecureChannel(false);
-    pivSecureMessagingCommand = false;
+    piv.clearSecureMessagingCommand();
 
     boolean pivSecureMessagingCla = piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA]);
     boolean gpSecureMessagingCla = apdu.isSecureMessagingCLA();
 
     if (pivSecureMessagingCla) {
       length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
-      pivSecureMessagingCommand = true;
     } else if (piv.isSecureMessagingEstablished() && !gpSecureMessagingCla) {
-      // SP 800-73-5 Part 2, section 4.2 keeps VCI commands protected once secure
-      // messaging is active; this is an SM error, so section 4.3 zeroization applies.
+      // SP 800-73-5 Part 1 Section 5.5 defines VCI as communication over secure
+      // messaging. After a VCI session is established, plaintext PIV commands are a
+      // secure messaging error, so Part 2 Section 4.3 zeroization applies.
       piv.clearSecureMessaging();
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     } else if (gpSecureMessagingCla) {
@@ -294,7 +289,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_GP_GET_RESPONSE:
-          processPivOutgoing(apdu);
+          piv.processOutgoing(apdu);
           return;
 
           // Application Commands
@@ -338,11 +333,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
       }
 
-      if (pivSecureMessagingCommand) {
-        piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
+      if (piv.isSecureMessagingCommand()) {
+        piv.processOutgoing(apdu);
       }
     } catch (ISOException ex) {
-      if (!pivSecureMessagingCommand || ex.getReason() == ISO7816.SW_NO_ERROR) throw ex;
+      if (!piv.isSecureMessagingCommand() || ex.getReason() == ISO7816.SW_NO_ERROR) throw ex;
       // An error status produced by command processing inside a verified secure messaging
       // exchange is an application status, not a secure messaging error. SP 800-73-5 Part 2
       // Section 4.2.6 requires it to be returned encapsulated in the '99' status template of a
@@ -353,7 +348,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // which are returned without wrapping - so the session keys are retained here and the
       // session continues. Secure messaging processing errors are zeroized at the point they
       // are detected, in PIVSecureMessaging.unwrapCommand().
-      piv.processOutgoingSecure(apdu, ex.getReason());
+      piv.processOutgoing(apdu, ex.getReason());
     }
   }
 
@@ -386,14 +381,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // Send the response
     apdu.setOutgoingAndSend(offset, length);
-  }
-
-  private void processPivOutgoing(APDU apdu) {
-    if (pivSecureMessagingCommand) {
-      piv.processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
-    } else {
-      piv.processOutgoing(apdu);
-    }
   }
 
   /**
@@ -480,7 +467,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     //		 to a data object to write to the client.
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    processPivOutgoing(apdu);
+    piv.processOutgoing(apdu);
   }
 
   /**
@@ -709,7 +696,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     length = piv.generalAuthenticate(buffer, offset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response, if any
-    if (length > 0) processPivOutgoing(apdu);
+    if (length > 0) piv.processOutgoing(apdu);
   }
 
   /**
@@ -749,7 +736,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.generateAsymmetricKeyPair(buffer, offset);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    processPivOutgoing(apdu);
+    piv.processOutgoing(apdu);
   }
 
   private void processPIV_ATTEST(APDU apdu, short length) {
@@ -766,6 +753,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
 
     piv.attest(buffer[ISO7816.OFFSET_P1]);
-    processPivOutgoing(apdu);
+    piv.processOutgoing(apdu);
   }
 }

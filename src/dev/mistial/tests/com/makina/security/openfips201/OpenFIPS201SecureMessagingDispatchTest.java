@@ -28,8 +28,8 @@ import pro.javacard.engine.JavaCardEngine;
 /**
  * Conformance tests for secure messaging APDU dispatching.
  *
- * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4 (Secure Messaging), verifying APDU wrapping,
- * unwrapping, MAC integrity verification, key destruction, and chaining.
+ * <p>NIST SP 800-73-5 Part 2 Sections 4.2.4-4.2.7 define protected command and
+ * response APDUs; Section 4.3 defines session key destruction.
  */
 class OpenFIPS201SecureMessagingDispatchTest {
   private static final short MAX_SAFE_SECURE_RESPONSE_PLAINTEXT = (short) 191;
@@ -306,15 +306,14 @@ class OpenFIPS201SecureMessagingDispatchTest {
    * Verifies that plaintext APDUs sent while VCI is established are rejected and destroy the
    * session.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2. Plain APDUs are rejected to prevent
-   * bypass attacks, and Section 4.3 session destruction rules apply.
+   * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as communication over secure
+   * messaging; Part 2 Section 4.3 requires session key destruction after SM errors.
    */
   @Test
   void plaintextApduDuringActiveVciSecureMessagingIsRejectedAndClearsSession() throws Exception {
-    // SP 800-73-5 Part 2, section 4.2 requires commands in an established VCI secure
-    // messaging session to remain protected; section 4.3 requires session keys to be
-    // zeroized after secure messaging errors. Plain APDUs are rejected except for the
-    // GET RESPONSE continuation specified for secure response chaining.
+    // SP 800-73-5 Part 1 Section 5.5 defines VCI as secure messaging plus policy bits.
+    // Plain APDUs after VCI establishment are rejected except for the GET RESPONSE
+    // continuation allowed by Part 2 Section 4.2.6 response chaining.
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
@@ -416,7 +415,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
    */
   @Test
   void plainGetResponseSecureContinuationDoesNotIncrementEncryptionCounter() throws Exception {
-    // SP 800-73-5 Part 2, section 4.2.2 states that the encryption counter is not
+    // SP 800-73-5 Part 2 Section 4.2.2 states that the encryption counter is not
     // incremented for GET RESPONSE in a secure-messaging response chain.
     assertSw(
         0x9000,
@@ -454,7 +453,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
               short.class,
               boolean.class)
           .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
-      field(realApplet, "pivSecureMessagingCommand").setBoolean(realApplet, true);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
 
       ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0));
 
@@ -488,9 +487,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Method isSecureMessagingCla = method(pivClass, "isSecureMessagingCLA", byte.class);
     Method unwrapSecureMessagingCommand =
         method(pivClass, "unwrapSecureMessagingCommand", byte[].class, short.class, short.class);
-    Method processOutgoingSecure =
-        method(pivClass, "processOutgoingSecure", APDU.class, short.class);
-    final short[] outgoingSw = new short[] {(short) 0xFFFF};
+    Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
+    final boolean[] outgoingCalled = new boolean[] {false};
 
     when((Boolean) isSecureMessagingCla.invoke(piv, Mockito.anyByte())).thenReturn(true);
     when((Short)
@@ -499,21 +497,20 @@ class OpenFIPS201SecureMessagingDispatchTest {
         .thenReturn((short) 0);
     doAnswer(
             invocation -> {
-              outgoingSw[0] = (Short) invocation.getArgument(1);
+              outgoingCalled[0] = true;
               throw new ISOException(ISO7816.SW_NO_ERROR);
             })
         .when(piv);
-    processOutgoingSecure.invoke(piv, Mockito.any(APDU.class), Mockito.anyShort());
+    processOutgoing.invoke(piv, Mockito.any(APDU.class));
 
     pivField.set(realApplet, piv);
 
     ResponseAPDU response = transmit(new CommandAPDU(0x0C, 0xC0, 0x00, 0x00, 0));
 
     assertSw(0x9000, response, "Protected GET RESPONSE should be dispatched as secure outgoing");
-    assertEquals(
-        ISO7816.SW_NO_ERROR,
-        outgoingSw[0],
-        "Protected GET RESPONSE should continue the secure outgoing chain, not wrap 6D00");
+    assertTrue(
+        outgoingCalled[0],
+        "Protected GET RESPONSE should continue through PIV outgoing dispatch, not wrap 6D00");
   }
 
   /**
@@ -532,42 +529,30 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
     Field pivField = realApplet.getClass().getDeclaredField("piv");
     pivField.setAccessible(true);
-    Field secureCommandField = realApplet.getClass().getDeclaredField("pivSecureMessagingCommand");
-    secureCommandField.setAccessible(true);
 
     Class<?> pivClass = pivField.getType();
     Object piv = Mockito.mock(pivClass);
     Method isSecureMessagingCla = method(pivClass, "isSecureMessagingCLA", byte.class);
     Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
-    Method processOutgoingSecure =
-        method(pivClass, "processOutgoingSecure", APDU.class, short.class);
-    final short[] outgoingSw = new short[] {(short) 0xFFFF};
+    final boolean[] outgoingCalled = new boolean[] {false};
 
     when((Boolean) isSecureMessagingCla.invoke(piv, Mockito.anyByte())).thenReturn(false);
     doAnswer(
             invocation -> {
-              throw new AssertionError("Plain GET RESPONSE must not drain secure data in clear");
-            })
-        .when(piv);
-    processOutgoing.invoke(piv, Mockito.any(APDU.class));
-    doAnswer(
-            invocation -> {
-              outgoingSw[0] = (Short) invocation.getArgument(1);
+              outgoingCalled[0] = true;
               throw new ISOException(ISO7816.SW_NO_ERROR);
             })
         .when(piv);
-    processOutgoingSecure.invoke(piv, Mockito.any(APDU.class), Mockito.anyShort());
+    processOutgoing.invoke(piv, Mockito.any(APDU.class));
 
     pivField.set(realApplet, piv);
-    secureCommandField.setBoolean(realApplet, true);
 
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0));
 
     assertSw(0x9000, response, "Plain GET RESPONSE should still return a wrapped response");
-    assertEquals(
-        ISO7816.SW_NO_ERROR,
-        outgoingSw[0],
-        "Plain GET RESPONSE after an SM response should continue through secure wrapping");
+    assertTrue(
+        outgoingCalled[0],
+        "Plain GET RESPONSE after an SM response should continue through PIV outgoing dispatch");
   }
 
   private ResponseAPDU transmit(CommandAPDU command) {

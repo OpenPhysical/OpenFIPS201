@@ -53,9 +53,9 @@ abstract class PIVObject {
   // The object may be accessed after OCC authentication
   static final byte ACCESS_MODE_OCC = (byte) 0x04;
 
-  // The object may be accessed only when the Virtual Contact Interface (VCI / secure messaging) is
-  // established. This applies to the contactless interface (SP 800-73-5 Part 2); on the contact
-  // interface it has no effect. It may be combined with PIN/OCC to express "VCI and PIN" etc.
+  // The object may be accessed only when the Virtual Contact Interface (VCI) is established.
+  // SP 800-73-5 Part 1 Section 5.5 defines VCI as a contactless security condition; contact
+  // access is unaffected. It may be combined with PIN/OCC to express "VCI and PIN" etc.
   static final byte ACCESS_MODE_VCI = (byte) 0x08;
 
   // The object may be managed to by a user who has satisfied the access conditions

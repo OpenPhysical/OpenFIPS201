@@ -359,8 +359,8 @@ final class PIVSecurityProvider {
     if (mode == PIVObject.ACCESS_MODE_ALWAYS) {
       valid = true;
     } else {
-      // A mode requiring VCI fails closed on the contactless interface until VCI is established
-      // (SP 800-73-5 Part 2). The VCI condition has no effect on the contact interface.
+      // SP 800-73-5 Part 1 Section 5.5 defines VCI as a contactless security condition;
+      // contact-interface rules do not depend on VCI state.
       final boolean vciRequired =
           contactless && (mode & PIVObject.ACCESS_MODE_VCI) == PIVObject.ACCESS_MODE_VCI;
 

@@ -274,7 +274,7 @@ final class VciProvisioning {
 
     // STEP 4b - Install the Secure Messaging Certificate Signer (5FC122) holding the X.509 Content
     // Signing certificate whose public key verifies the SM CVC (SP 800-73-5 Part 1 Section 3.3.7,
-    // Table 42: 0x70 X.509 cert, 0x71 CertInfo). A relying party reads this object to validate the
+    // Table 43: 0x70 X.509 cert, 0x71 CertInfo). A relying party reads this object to validate the
     // card CVC; making it readable lets the host trust the card's secure-messaging credential
     // without an out-of-band CA. The certificate is the VCI signer CA generated/loaded above.
     byte[] smSignerObjectId = {(byte) 0x5F, (byte) 0xC1, (byte) 0x22};
@@ -301,20 +301,17 @@ final class VciProvisioning {
     sendChained(
         gp, 0xDB, 0x3F, 0xFF, smSignerValue, "Write Secure Messaging Certificate Signer (5FC122)");
 
-    // STEP 5 - Require pairing before VCI (SP 800-73-4 pairing-code policy).
+    // STEP 5 - Require pairing before VCI. SP 800-73-5 Part 1 Section 5.5 requires support for
+    // the default VCI mode where secure messaging plus pairing-code verification establishes VCI.
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
         "Set VCI mode to pairing-code");
 
-    // STEP 6 - Define the pairing-code object with the SP 800-73 container access rules: GET DATA
-    // is
-    // PIN over contact and VCI-and-PIN over contactless (5FC123, container 0x1018). A client reads
-    // the
-    // code over the contact interface after PIN to cache it for later VCI establishment (SP
-    // 800-73-4
-    // Section 5.1.3); the applet's own pairing verification reads the object content internally and
-    // is
-    // unaffected by these GET DATA rules.
+    // STEP 6 - Define the pairing-code object with the SP 800-73-5 container access rules: GET
+    // DATA is PIN over contact and VCI-and-PIN over contactless (Part 1 Table 2, container
+    // 0x1018). A client may read and cache it over contact after PIN (Part 1 Section 5.1.3);
+    // the applet's pairing VERIFY reads object content internally and is unaffected by GET DATA
+    // access rules.
     byte[] pairingDefinition =
         VciSupport.tlv(
             0x64,
@@ -336,7 +333,8 @@ final class VciProvisioning {
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0xFF, pairingPayload)),
         "Write pairing-code object");
 
-    // STEP 7 - Define the Discovery Object so hosts can read the VCI policy bits.
+    // STEP 7 - Define the Discovery Object so hosts can read the VCI policy bits defined in
+    // SP 800-73-5 Part 1 Section 3.3.2/Table 1.
     byte[] discoveryDefinition =
         VciSupport.tlv(
             0x64,

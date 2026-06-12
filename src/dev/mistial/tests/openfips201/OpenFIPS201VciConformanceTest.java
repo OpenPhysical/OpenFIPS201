@@ -10,8 +10,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Conformance tests for Virtual Contact Interface (VCI) behavior.
  *
- * <p>Aligned with NIST SP 800-73-5 Part 1 & Part 2, verifying the Discovery Object,
- * Application Property Template (APT) advertisement, and VCI key/CVC loading.
+ * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI, Section 3.3.2 defines
+ * Discovery Object policy bits, and Appendix C.3 defines APT secure-messaging algorithm
+ * advertisement.
  */
 class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
@@ -41,9 +42,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that the Discovery Object correctly advertises VCI capability and its pairing policy.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 1, Section 3.1.2 (Table 43 Discovery Object).
-   * Bit 4 of the first byte of PIN Usage Policy indicates VCI implementation; bit 3 indicates
-   * whether the pairing code is required (0) or not required (1) to establish VCI.
+   * <p>NIST SP 800-73-5 Part 1 Section 3.3.2/Table 1: PIN Usage Policy bit 4
+   * indicates VCI support; bit 3 selects pairing-required (0) or no-pairing (1) VCI.
    */
   @Test
   void discoveryObjectAdvertisesVciAndPairingPolicy() {
@@ -87,9 +87,9 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that the Application Property Template (APT) advertises CS2 only after key material and CVC are loaded.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 1, Section 3.1.2. The 'AC' tag of the APT template
-   * must only advertise secure messaging algorithm references (e.g., CS2 '27') once the SM key
-   * reference 0x04 is fully initialized with both key material and its corresponding CVC.
+   * <p>NIST SP 800-73-5 Part 1 Appendix C.3: APT tag 'AC' advertises secure
+   * messaging algorithm identifiers; '27' means CS2 is supported and the card has the
+   * matching PIV Secure Messaging key.
    */
   @Test
   void applicationPropertyTemplateAdvertisesCs2OnlyAfterKeyMaterialAndCvc() {
@@ -126,7 +126,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that an imported VCI key requires its CVC to be loaded before APT advertisement.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 1, Section 3.1.2.
+   * <p>NIST SP 800-73-5 Part 1 Appendix C.3 requires a PIV Secure Messaging key before
+   * APT secure-messaging algorithm advertisement.
    */
   @Test
   void importedVciKeyRequiresCvcBeforeAptAdvertisement() {
