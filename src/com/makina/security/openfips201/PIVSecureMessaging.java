@@ -306,20 +306,24 @@ final class PIVSecureMessaging {
 
     if (encryptedTlvOffset == (short) -1) return (short) 0;
 
-    // Decrypt command data (NIST SP 800-73-5 Part 2 Section 4.2.2)
-    buildIv(false, work, workOffset);
+    // Decrypt command data (NIST SP 800-73-5 Part 2 Section 4.2.2). Do not decrypt in-place
+    // into an overlapping lower APDU offset; Java Card cipher providers are not required to
+    // preserve CBC chaining material when input and output partially overlap.
+    buildIv(false, responseIv, (short) 0);
     short plainLength =
         PIVCrypto.doAesCbcDecrypt(
             skEnc,
-            work,
-            workOffset,
+            responseIv,
+            (short) 0,
             LENGTH_BLOCK,
             apdu,
             encryptedValueOffset,
             encryptedValueLength,
-            apdu,
-            offset);
-    return stripPadding(apdu, offset, plainLength);
+            work,
+            workOffset);
+    plainLength = stripPadding(work, workOffset, plainLength);
+    Util.arrayCopyNonAtomic(work, workOffset, apdu, offset, plainLength);
+    return plainLength;
   }
 
   void beginResponseStream(short plaintextLength, short sw) {

@@ -132,6 +132,26 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @Test
+  void uninitializedObjectCanReturnEmptyPlaintextResponseWhenConfigured() {
+    byte[] managementKey = keyMaterialAes128((byte) 0x42);
+
+    provisionManagementKeyOverScp(managementKey);
+    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before empty-object option update");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A403850101")),
+              "Enable empty-object reads");
+        });
+
+    ResponseAPDU response = getDataNormal(DATA_ID_NORMAL);
+    assertSw(0x9000, response, "Uninitialized object should return empty success when configured");
+    assertEquals(0, response.getData().length, "Empty object response should not include data");
+  }
+
+  @Test
   void putDataIsRejectedWithoutManagementAuthentication() {
     byte[] managementKey = keyMaterialAes128((byte) 0x51);
 

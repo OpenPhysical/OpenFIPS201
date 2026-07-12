@@ -245,6 +245,46 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void unwrapMultiBlockEncryptedCommandUsesNonOverlappingCbcOutput() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] expectedPlaintext = hex("00112233445566778899AABBCCDDEEFF10");
+      byte[] command = authenticatedEncryptedDataCommand(expectedPlaintext);
+      byte[] work = new byte[320];
+      short plaintextLength =
+          (Short)
+              method(
+                      secureMessagingClass,
+                      "unwrapCommand",
+                      byte[].class,
+                      short.class,
+                      short.class,
+                      byte[].class,
+                      short.class)
+                  .invoke(
+                      secureMessaging,
+                      command,
+                      (short) 5,
+                      (short) (command.length - 5),
+                      work,
+                      (short) 0);
+
+      assertEquals((short) expectedPlaintext.length, plaintextLength);
+      for (short i = 0; i < plaintextLength; i++) {
+        assertEquals(expectedPlaintext[i], command[(short) (5 + i)]);
+      }
+    }
+  }
+
+  @Test
   void incomingChainDuringOutgoingStateFailsClosed() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
       Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
@@ -848,6 +888,77 @@ class OpenFIPS201SecureMessagingDispatchTest {
     cmac.doFinal(mac, 0);
     System.arraycopy(mac, 0, command, cursor, 8);
     return command;
+  }
+
+  private static byte[] authenticatedEncryptedDataCommand(byte[] plaintext) throws Exception {
+    byte[] paddedPlaintext = iso7816Padded(plaintext);
+    byte[] iv = aesEcb(new byte[16], new byte[16]);
+    byte[] ciphertext = aesCbcEncrypt(new byte[16], iv, paddedPlaintext);
+    short encryptedValueLength = (short) (1 + ciphertext.length);
+    byte[] command = new byte[5 + 2 + encryptedValueLength + 10];
+    command[ISO7816.OFFSET_CLA] = (byte) 0x0C;
+    command[ISO7816.OFFSET_INS] = (byte) 0xDB;
+    command[ISO7816.OFFSET_P1] = (byte) 0x3F;
+    command[ISO7816.OFFSET_P2] = (byte) 0xFF;
+    command[ISO7816.OFFSET_LC] = (byte) (command.length - 5);
+
+    short cursor = 5;
+    command[cursor++] = (byte) 0x87;
+    command[cursor++] = (byte) encryptedValueLength;
+    command[cursor++] = (byte) 0x01;
+    System.arraycopy(ciphertext, 0, command, cursor, ciphertext.length);
+    cursor = (short) (cursor + ciphertext.length);
+    command[cursor++] = (byte) 0x8E;
+    command[cursor++] = (byte) 0x08;
+
+    byte[] mac = commandMac(command, (short) 5, (short) (cursor - 2));
+    System.arraycopy(mac, 0, command, cursor, 8);
+    return command;
+  }
+
+  private static byte[] iso7816Padded(byte[] plaintext) {
+    int paddedLength = plaintext.length + (16 - (plaintext.length % 16));
+    byte[] padded = new byte[paddedLength];
+    System.arraycopy(plaintext, 0, padded, 0, plaintext.length);
+    padded[plaintext.length] = (byte) 0x80;
+    return padded;
+  }
+
+  private static byte[] aesEcb(byte[] key, byte[] block) throws Exception {
+    javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/ECB/NoPadding");
+    cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, new javax.crypto.spec.SecretKeySpec(key, "AES"));
+    return cipher.doFinal(block);
+  }
+
+  private static byte[] aesCbcEncrypt(byte[] key, byte[] iv, byte[] plaintext) throws Exception {
+    javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/CBC/NoPadding");
+    cipher.init(
+        javax.crypto.Cipher.ENCRYPT_MODE,
+        new javax.crypto.spec.SecretKeySpec(key, "AES"),
+        new javax.crypto.spec.IvParameterSpec(iv));
+    return cipher.doFinal(plaintext);
+  }
+
+  private static byte[] commandMac(byte[] command, short bodyOffset, short bodyEnd) {
+    byte[] macInput = new byte[16 + 16 + bodyEnd - bodyOffset];
+    short cursor = 16;
+    macInput[cursor++] = (byte) 0x0C;
+    macInput[cursor++] = command[ISO7816.OFFSET_INS];
+    macInput[cursor++] = command[ISO7816.OFFSET_P1];
+    macInput[cursor++] = command[ISO7816.OFFSET_P2];
+    macInput[cursor++] = (byte) 0x80;
+    cursor = (short) (cursor + 11);
+    System.arraycopy(command, bodyOffset, macInput, cursor, bodyEnd - bodyOffset);
+    cursor = (short) (cursor + bodyEnd - bodyOffset);
+
+    byte[] mac = new byte[16];
+    org.bouncycastle.crypto.macs.CMac cmac =
+        new org.bouncycastle.crypto.macs.CMac(
+            org.bouncycastle.crypto.engines.AESEngine.newInstance());
+    cmac.init(new org.bouncycastle.crypto.params.KeyParameter(new byte[16]));
+    cmac.update(macInput, 0, cursor);
+    cmac.doFinal(mac, 0);
+    return mac;
   }
 
   /**

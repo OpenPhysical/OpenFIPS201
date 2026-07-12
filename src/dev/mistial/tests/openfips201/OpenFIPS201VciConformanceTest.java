@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
+  private static final byte ACCESS_MODE_OCC = (byte) 0x04;
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
   private static final byte KEY_REF_SECURE_MESSAGING = (byte) 0x04;
   private static final byte ALG_CS2 = (byte) 0x27;
@@ -48,6 +49,32 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         });
   }
 
+  @Test
+  void occConfigurationAndAccessRulesAreRejectedUntilOccIsImplemented() {
+    withMockedScp(
+        new Runnable() {
+          @Override
+          public void run() {
+            assertSw(0x9000, selectApplet(), "SELECT before OCC config update");
+            ResponseAPDU config =
+                transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A3 03 80 01 01"));
+            assertSw(0x6984, config, "OCC mode must remain disabled");
+
+            byte[] objectWithOcc =
+                tlv(
+                    (byte) 0x64,
+                    new byte[] {
+                      (byte) 0x8B, (byte) 0x01, (byte) 0x5A,
+                      (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
+                      (byte) 0x8D, (byte) 0x01, ACCESS_MODE_OCC,
+                      (byte) 0x91, (byte) 0x01, (byte) 0x9B
+                    });
+            ResponseAPDU object = transmit(0x84, 0xDB, 0x3F, 0x00, objectWithOcc);
+            assertSw(0x6A81, object, "OCC-bearing ACLs are unsupported until OCC CVM exists");
+          }
+        });
+  }
+
   /**
    * Verifies that the Discovery Object correctly advertises VCI capability and its pairing policy.
    *
@@ -72,6 +99,24 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     ResponseAPDU pairingRequired = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"));
     assertSw(0x9000, pairingRequired, "Read Discovery Object with VCI pairing-required");
     byte[] pairingPolicy = policyBytes(pairingRequired.getData());
+    assertFalse(
+        (pairingPolicy[0] & 0x08) != 0,
+        "Discovery Object must not advertise VCI before SM key/CVC and pairing data are ready");
+
+    createOperationalVciKey();
+
+    pairingRequired = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"));
+    assertSw(0x9000, pairingRequired, "Read Discovery Object after SM key provisioning");
+    pairingPolicy = policyBytes(pairingRequired.getData());
+    assertFalse(
+        (pairingPolicy[0] & 0x08) != 0,
+        "Pairing-required VCI must not advertise before pairing reference data exists");
+
+    createPairingCodeReferenceData();
+
+    pairingRequired = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"));
+    assertSw(0x9000, pairingRequired, "Read Discovery Object with VCI pairing-required ready");
+    pairingPolicy = policyBytes(pairingRequired.getData());
     assertTrue((pairingPolicy[0] & 0x08) != 0, "Discovery Object must set VCI implemented bit");
     assertFalse((pairingPolicy[0] & 0x04) != 0, "Pairing-required VCI must clear no-pairing bit");
 
@@ -226,6 +271,44 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
               (byte) 0x91, (byte) 0x01, (byte) 0x9B
             });
     assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, request), "Create Discovery Object");
+  }
+
+  private void createOperationalVciKey() {
+    createVciKeyOverScp(ATTR_IMPORTABLE);
+    importVciPrivateKeyOverScp(p256ScalarOne());
+    importVciPublicKeyOverScp(p256BasePoint());
+    loadVciCvcOverScp(hex("7F210401020304"));
+  }
+
+  private void createPairingCodeReferenceData() {
+    withMockedScp(
+        new Runnable() {
+          @Override
+          public void run() {
+            byte[] createObject =
+                tlv(
+                    (byte) 0x64,
+                    new byte[] {
+                      (byte) 0x8B, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, (byte) 0x23,
+                      (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
+                      (byte) 0x8D, (byte) 0x01, ACCESS_MODE_ALWAYS,
+                      (byte) 0x91, (byte) 0x01, (byte) 0x9B
+                    });
+            assertSw(
+                0x9000,
+                transmit(0x84, 0xDB, 0x3F, 0x00, createObject),
+                "Create Pairing Code Reference Data object");
+
+            byte[] content =
+                concat(
+                    hex("5C035FC123"),
+                    tlv((byte) 0x53, tlv((byte) 0x99, hex("3132333435363738"))));
+            assertSw(
+                0x9000,
+                transmit(0x84, 0xDB, 0x3F, 0xFF, content),
+                "Load Pairing Code Reference Data object");
+          }
+        });
   }
 
   private void importVciPrivateKeyOverScp(byte[] privateScalar) {

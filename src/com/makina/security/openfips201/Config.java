@@ -720,8 +720,11 @@ final class Config {
 
       // Mode
       if (reader.match(TAG_OCC_MODE)) {
-        // TODO: Validation
-        config[CONFIG_OCC_MODE] = reader.toByte();
+        byte value = reader.toByte();
+        if (value != OCC_MODE_DISABLED) {
+          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        config[CONFIG_OCC_MODE] = value;
         reader.moveNext();
       }
     }

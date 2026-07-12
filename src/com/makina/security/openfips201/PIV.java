@@ -65,6 +65,8 @@ final class PIV {
 
   // Data Objects
   static final byte ID_DATA_DISCOVERY = (byte) 0x7E;
+  private static final byte[] ID_DATA_PAIRING_CODE_REFERENCE =
+      {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
 
   // PIV Secure Messaging key reference.
   static final byte ID_KEY_SECURE_MESSAGING = (byte) 0x04;
@@ -464,6 +466,7 @@ final class PIV {
   private short buildDiscoveryObject(byte[] buffer, short offset) {
 
     short length = (short) Config.TEMPLATE_DISCOVERY.length;
+    boolean vciAdvertised = isVciDiscoveryAdvertised();
 
     // Write the template
     offset = Util.arrayCopyNonAtomic(Config.TEMPLATE_DISCOVERY, ZERO, buffer, offset, length);
@@ -491,12 +494,13 @@ final class PIV {
             // command execution and PIV data object access
             // | (config.readFlag(Config.CONFIG_OCC_MODE) ? (byte) (1 << 4) : (byte) 0)
 
-            // Bit 4 indicates whether the optional VCI is implemented
-            | (isVciConfigured() ? (byte) (1 << 3) : (byte) 0)
+            // Bit 4 indicates whether VCI can actually be established: policy enabled, SM key
+            // initialized with its CVC, and pairing reference data present when pairing is used.
+            | (vciAdvertised ? (byte) (1 << 3) : (byte) 0)
 
             // Bit 3 is set to zero if the pairing code is required to establish a VCI and is
             // set to one if a VCI is established without pairing code
-            | (config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_ENABLED
+            | (vciAdvertised && config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_ENABLED
                 ? (byte) (1 << 2)
                 : (byte) 0)
 
@@ -521,8 +525,28 @@ final class PIV {
     return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
   }
 
+  private boolean isVciDiscoveryAdvertised() {
+    if (!isSecureMessagingAdvertised()) {
+      return false;
+    }
+    if (config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_PAIRING_CODE) {
+      return true;
+    }
+    PIVDataObject pairing =
+        findDataObject(
+            ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) ID_DATA_PAIRING_CODE_REFERENCE.length);
+    return pairing != null && pairing.isInitialised();
+  }
+
   private boolean isVciSatisfied() {
     return isSecureMessagingCommand() && secureMessaging.isVciEstablished();
+  }
+
+  private void rejectUnsupportedOccAccessMode(byte mode) {
+    if (mode != PIVObject.ACCESS_MODE_ALWAYS
+        && (mode & PIVObject.ACCESS_MODE_OCC) == PIVObject.ACCESS_MODE_OCC) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
   }
 
   /**
@@ -587,6 +611,7 @@ final class PIV {
         // Return an OK response with no data. This must be a normal return so the outer
         // secure-messaging dispatch can still wrap the response status when GET DATA was
         // received inside an established SM session.
+        chainBuffer.setOutgoing(scratch, ZERO, ZERO, false);
         return ZERO;
       } else {
         ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
@@ -2956,6 +2981,7 @@ final class PIV {
     }
 
     byte modeContact = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContact);
     reader.moveNext();
 
     // PRE-CONDITION 5 - The 'MODE CONTACTLESS' tag MUST be present
@@ -2971,6 +2997,7 @@ final class PIV {
     }
 
     byte modeContactless = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContactless);
     reader.moveNext();
 
     // PRE-CONDITION 7 - The 'ADMIN KEY' tag MAY be present
@@ -3094,6 +3121,7 @@ final class PIV {
     }
 
     byte modeContact = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContact);
     reader.moveNext();
 
     // PRE-CONDITION 5 - The 'MODE CONTACTLESS' tag MUST be present
@@ -3109,6 +3137,7 @@ final class PIV {
     }
 
     byte modeContactless = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContactless);
     reader.moveNext();
 
     // PRE-CONDITION 7 - The 'ADMIN KEY' tag MAY be present
