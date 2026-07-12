@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import com.makina.security.openfips201.OpenFIPS201;
 import java.util.EnumSet;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import pro.javacard.engine.JavaCardEngine;
@@ -29,6 +30,7 @@ import pro.javacard.gp.keys.PlaintextKeys;
  * applet resolves jCardEngine's functional {@code org.globalplatform} implementation. See the
  * {@code test.runtime.classpath} note in build/build.xml.
  */
+@Tag("slow")
 @Timeout(value = 20, unit = TimeUnit.SECONDS)
 class OpenFIPS201RealScp03Test extends OpenFIPS201TestSupport {
   private static final byte[] TEST_SCP03_KEY = PlaintextKeys.DEFAULT_KEY();

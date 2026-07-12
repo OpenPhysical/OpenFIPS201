@@ -21,6 +21,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.bouncycastle.util.encoders.Hex;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestFactory;
 
 /**
@@ -53,6 +54,7 @@ import org.junit.jupiter.api.TestFactory;
  * <p>Standards: NIST SP 800-73-5 Part 2 Sections 4.1–4.2; SP 800-56A concatenation KDF; ISO 7816-4
  * SM TLV encoding and command chaining.
  */
+@Tag("slow")
 class OpenFIPS201VciVectorTest {
 
   private static final byte[] TRANSPORT_SW = Hex.decode("9000");

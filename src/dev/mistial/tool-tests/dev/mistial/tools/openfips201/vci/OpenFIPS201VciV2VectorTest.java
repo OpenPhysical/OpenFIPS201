@@ -20,6 +20,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.bouncycastle.util.encoders.Hex;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestFactory;
 
 /**
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.TestFactory;
  *
  * <p>Aligned with NIST SP 800-73-5 Part 2 Sections 4.1–4.2. Includes CS2 (cards 3, 4) and CS7 (cards 2, 5, 16) captures.
  */
+@Tag("slow")
 class OpenFIPS201VciV2VectorTest {
 
   private static final byte[] TRANSPORT_SW = Hex.decode("9000");

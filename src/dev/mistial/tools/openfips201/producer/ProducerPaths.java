@@ -26,7 +26,7 @@ public final class ProducerPaths {
   }
 
   public static Path producer(String name) {
-    return home().resolve("producers").resolve(name);
+    return home().resolve("producers").resolve(segment("producer", name));
   }
 
   public static Path producerProfile(String name) {
@@ -34,6 +34,20 @@ public final class ProducerPaths {
   }
 
   public static Path batch(String producer, String batch) {
-    return producer(producer).resolve("batches").resolve(batch);
+    return producer(producer).resolve("batches").resolve(segment("batch", batch));
+  }
+
+  private static String segment(String label, String value) {
+    if (value == null || value.isEmpty()) {
+      throw new IllegalArgumentException(label + " name is required");
+    }
+    if (value.indexOf('/') >= 0 || value.indexOf('\\') >= 0) {
+      throw new IllegalArgumentException(label + " name must be a single path segment");
+    }
+    Path path = Paths.get(value);
+    if (path.isAbsolute() || path.getNameCount() != 1 || ".".equals(value) || "..".equals(value)) {
+      throw new IllegalArgumentException(label + " name must be a single path segment");
+    }
+    return value;
   }
 }

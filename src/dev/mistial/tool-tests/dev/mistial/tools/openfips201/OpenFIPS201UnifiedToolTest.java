@@ -226,4 +226,14 @@ class OpenFIPS201UnifiedToolTest {
       }
     }
   }
+
+  @Test
+  void producerPathsRejectTraversalAndNestedNames() {
+    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("../outside"));
+    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("parent/child"));
+    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("parent\\child"));
+    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("."));
+    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.batch("bigcorp_01", "../batch"));
+    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.batch("bigcorp_01", "batch/001"));
+  }
 }
