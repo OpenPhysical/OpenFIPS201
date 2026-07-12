@@ -46,7 +46,7 @@ public final class IssuerProfile {
   public static final class CardKeys {
     public String deriver = "pkcs11";
     public String kdf = "scp03-kdf3";
-    public int newKeyVersion = 1;
+    public int newKeyVersion = 2;
     public int keyLengthBytes = 32;
     public boolean replaceExisting = false;
     public String masterKeyEnv;

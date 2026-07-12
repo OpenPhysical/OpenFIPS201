@@ -18,6 +18,7 @@ import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.crypto.SigningKey;
+import dev.mistial.tools.openfips201.gp.CardKeyPreflightService;
 import dev.mistial.tools.openfips201.gp.CardKeyDerivationService;
 import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.CardDiversificationDataService;
@@ -62,11 +63,38 @@ public final class CardstockPreparationService {
       Path receiptDirectory,
       ScpConfig stockScpOverride)
       throws Exception {
+    return prepare(target, profile, signer, yes, batchName, receiptDirectory, stockScpOverride, null, null);
+  }
+
+  public Path prepare(
+      CardTarget target,
+      IssuerProfile profile,
+      SigningKey signer,
+      boolean yes,
+      String batchName,
+      Path receiptDirectory,
+      ScpConfig stockScpOverride,
+      String profilePath,
+      String stockScpKey)
+      throws Exception {
     if (!yes && !"emulator-dev".equals(profile.name)) {
       throw new IllegalArgumentException("cardstock prepare requires --yes for physical issuer profiles");
     }
 
     ScpConfig stockScp = stockScpOverride == null ? issuerCardKeys.stockScp(profile) : stockScpOverride;
+    byte[] preflightKdd = null;
+    if (!target.isZmq()) {
+      CardKeyPreflightService.Request preflightRequest = new CardKeyPreflightService.Request();
+      preflightRequest.target = target;
+      preflightRequest.current = stockScp;
+      preflightRequest.profile = profile;
+      preflightRequest.profilePath = profilePath;
+      preflightRequest.stockScpKey = stockScpKey;
+      CardKeyPreflightService.Result preflight =
+          new CardKeyPreflightService().preflight(preflightRequest);
+      preflightKdd = preflight.kdd;
+      writePreflight(preflightDirectory(profile, receiptDirectory), profile.name, preflight);
+    }
     CardstockReceipt receipt = new CardstockReceipt();
     receipt.profileName = profile.name;
     receipt.batchName = batchName;
@@ -141,9 +169,10 @@ public final class CardstockPreparationService {
     receipt.cplc = identity.cplc;
     receipt.cplcFields = identity.cplcFields;
 
-    CardDiversificationDataService.Result kdd = new CardDiversificationDataService().readKdd(target);
-    receipt.cardKdd = HexUtil.format(kdd.kdd);
-    DerivedScpKeys derived = deriveCardKeys(profile, receipt, kdd.kdd);
+    byte[] kddBytes =
+        preflightKdd == null ? new CardDiversificationDataService().readKdd(target).kdd : preflightKdd;
+    receipt.cardKdd = HexUtil.format(kddBytes);
+    DerivedScpKeys derived = deriveCardKeys(profile, receipt, kddBytes);
     receipt.newScpMode = "SCP03";
     receipt.newScpKeyVersion = profile.cardKeys.newKeyVersion;
     receipt.newScpKdf = "emulator-dev-local".equals(receipt.hsmDeriver)
@@ -170,6 +199,17 @@ public final class CardstockPreparationService {
     Path output = directory.resolve(profile.name + "-" + System.currentTimeMillis() + ".json");
     Files.write(output, GSON.toJson(receipt).getBytes(StandardCharsets.UTF_8));
     return output;
+  }
+
+  private static Path preflightDirectory(IssuerProfile profile, Path receiptDirectory) {
+    return receiptDirectory == null ? Paths.get(profile.receipts.directory) : receiptDirectory;
+  }
+
+  private static void writePreflight(
+      Path directory, String profileName, CardKeyPreflightService.Result preflight) throws Exception {
+    Files.createDirectories(directory);
+    Path output = directory.resolve(profileName + "-preflight-" + System.currentTimeMillis() + ".json");
+    Files.write(output, GSON.toJson(preflight).getBytes(StandardCharsets.UTF_8));
   }
 
   private DerivedScpKeys deriveCardKeys(

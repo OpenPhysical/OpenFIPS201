@@ -231,9 +231,10 @@ final class PIV {
     cspPIV = new PIVSecurityProvider();
 
     //#if ATTESTATION_ENABLED
-    // Attestation profile state (subject/validity are persistent; response buffer allocated
-    // on demand in attest()).
+    // Attestation profile state and response buffer are allocated at install time; strict
+    // JavaCard platforms may reject transient allocations during APDU processing.
     attestation = new PIVAttestation();
+    attestationResponse = PIVAttestation.allocateResponseBuffer();
     //#endif
 
     secureMessaging = new PIVSecureMessaging();
@@ -241,8 +242,7 @@ final class PIV {
     // Create our TLV objects (we don't care about the result, this is just to allocate)
     TLVReader.getInstance();
     TLVWriter.getInstance();
-    DERWriter.getInstance();
-    DERWriter.getNestedInstance();
+    DERWriter.initialize();
 
     // NOTE:
     // - Javacard does not specify the behaviour of an OwnerPIN that has not ever been
@@ -3642,9 +3642,21 @@ final class PIV {
         attestation.validateAuthority(authority, scratch);
         // Committing a new authority changes the card's trust root. Keep object definitions, but
         // clear data contents and non-F9 key material tied to the prior authority.
-        clearDataObjects();
-        cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
-        attestation.markAuthorityActive();
+        boolean transactionStarted = false;
+        try {
+          JCSystem.beginTransaction();
+          transactionStarted = true;
+          clearDataObjects();
+          cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
+          attestation.markAuthorityActive();
+          JCSystem.commitTransaction();
+          transactionStarted = false;
+        } catch (RuntimeException e) {
+          if (transactionStarted) {
+            JCSystem.abortTransaction();
+          }
+          throw e;
+        }
       }
     }
     //#endif
@@ -3696,9 +3708,6 @@ final class PIV {
 
     // PIVAttestation enforces generated-key origin. Imported keys may be valid PIV keys, but the
     // applet cannot truthfully attest that it generated or protected their origin.
-    if (attestationResponse == null) {
-      attestationResponse = PIVAttestation.allocateResponseBuffer();
-    }
     short length =
         attestation.buildCertificate(authority, target, slot, scratch, attestationResponse, ZERO);
     chainBuffer.setOutgoing(attestationResponse, ZERO, length, true);

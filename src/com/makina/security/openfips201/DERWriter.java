@@ -67,13 +67,18 @@ final class DERWriter {
     lengthOffsets = offsets;
   }
 
-  static DERWriter getInstance() {
+  static void initialize() {
     if (instance == null) instance = new DERWriter();
+    if (nestedInstance == null) nestedInstance = new DERWriter();
+  }
+
+  static DERWriter getInstance() {
+    if (instance == null) ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     return instance;
   }
 
   static DERWriter getNestedInstance() {
-    if (nestedInstance == null) nestedInstance = new DERWriter();
+    if (nestedInstance == null) ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     return nestedInstance;
   }
 

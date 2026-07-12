@@ -49,7 +49,9 @@ public final class CardProductionService {
                 yes,
                 batch,
                 receiptsDirectory,
-                stockScp);
+                stockScp,
+                profilePath.toString(),
+                stockScpKey);
     appendCsv(ProducerPaths.batch(producer, batch).resolve(metadata.receiptsCsv), receiptPath);
     return receiptPath;
   }

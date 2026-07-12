@@ -14,7 +14,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.gp.CardKeyDerivationService;
+import dev.mistial.tools.openfips201.gp.CardKeyPreflightService;
+import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
 import dev.mistial.tools.openfips201.producer.BatchCreateService;
 import dev.mistial.tools.openfips201.producer.ProducerPaths;
@@ -96,6 +99,42 @@ class OpenFIPS201UnifiedToolTest {
     String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
     assertTrue(help.contains("forward"));
     assertTrue(help.contains("backward"));
+  }
+
+  @Test
+  void gpKeysPreflightHelpExposesDirection() {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    commandLine.setOut(new PrintWriter(out, true));
+
+    assertEquals(0, commandLine.execute("gp", "keys", "preflight", "--help"));
+    String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
+    assertTrue(help.contains("--direction"));
+    assertTrue(help.contains("--stock-scp-key-version"));
+  }
+
+  @Test
+  void sameVersionRotationFailsBeforeCardAccess() throws Exception {
+    ScpConfig current =
+        ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 1, HexUtil.parse("404142434445464748494A4B4C4D4E4F"));
+    DerivedScpKeys target = DerivedScpKeys.fromConfig(current);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> new CardKeyRotationService().rotate(CardTarget.parse("pcsc:No Reader"), current, target));
+  }
+
+  @Test
+  void sameVersionPreflightFailsBeforeCardAccess() throws Exception {
+    ScpConfig current =
+        ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 1, HexUtil.parse("404142434445464748494A4B4C4D4E4F"));
+    CardKeyPreflightService.Request request = new CardKeyPreflightService.Request();
+    request.target = CardTarget.parse("pcsc:No Reader");
+    request.current = current;
+    request.targetKeys = DerivedScpKeys.fromConfig(current);
+    request.kdd = HexUtil.parse("00002345496554204839");
+
+    assertThrows(IllegalArgumentException.class, () -> new CardKeyPreflightService().preflight(request));
   }
 
   @Test
@@ -214,6 +253,7 @@ class OpenFIPS201UnifiedToolTest {
       String csv =
           new String(Files.readAllBytes(result.directory.resolve("receipts.csv")), StandardCharsets.UTF_8);
       assertTrue(metadata.contains("\"stockScpKcv\""));
+      assertTrue(metadata.contains("\"stockScpKeyVersion\": 1"));
       assertTrue(metadata.contains("\"receiptsCsv\""));
       assertTrue(csv.startsWith("timestamp,producer,batch,target,status,cplc,kdd"));
       assertTrue(result.stockScpKey.matches("[0-9A-F]{32}"));

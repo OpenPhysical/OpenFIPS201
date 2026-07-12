@@ -45,8 +45,9 @@ ant -f build/build.xml openfips201-tool \
 ```
 
 `batch create` prints the stock SCP03 master key once. The batch metadata stores
-the KCV and receipt paths, not the raw key. Use that printed key for cards that
-are initialized as stock for the batch.
+the key version, KCV, and receipt paths, not the raw key. New issuer batch keys
+default to key version 1. Use that printed key for cards that are initialized as
+stock for the batch.
 
 Produce one card:
 
@@ -163,7 +164,7 @@ private key material.
   "cardKeys": {
     "deriver": "pkcs11",
     "kdf": "scp03-kdf3",
-    "newKeyVersion": 1,
+    "newKeyVersion": 2,
     "masterKeyAlias": "bigcorp-card-master",
     "export": "none"
   },
@@ -311,8 +312,22 @@ ant -f build/build.xml openfips201-tool \
     --yes'
 ```
 
+Run `gp keys preflight` before manual keyrolls on physical cards:
+
+```sh
+ant -f build/build.xml openfips201-tool \
+  -Dargs='gp keys preflight \
+    --profile ~/.openfips201/producers/bigcorp_01/producer.json \
+    --target pcsc:JCOP \
+    --direction forward \
+    --stock-scp-key <printed-batch-key>'
+```
+
 The command reads KDD from the card by default. Pass `--kdd` when you already
-have the 10 diversification bytes from a receipt or diagnostic run. Pass
-`--stock-scp-key-version` when the stock or batch key lives at a version other
-than 0. Physical PC/SC targets require `--yes`; ZeroMQ emulator targets do not.
-Output is limited to KDD, key versions, and target KCVs.
+have the 10 diversification bytes from a receipt or diagnostic run. The
+stock/batch key version defaults to 1 for keys the issuer workflow writes onto
+cards; issuer-derived produced-card keys default to version 2. Physical-card
+preflight rejects any rotation where the current and target key versions are the
+same, before sending `PUT KEY`. Pass `--stock-scp-key-version` when the current
+factory key or rollback key lives at another version. Physical PC/SC keyroll
+targets require `--yes`; ZeroMQ emulator targets do not.

@@ -19,9 +19,11 @@ import dev.mistial.tools.openfips201.crypto.PemSigningKey;
 import dev.mistial.tools.openfips201.crypto.SigningKey;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
 import dev.mistial.tools.openfips201.gp.CardDiversificationDataService;
+import dev.mistial.tools.openfips201.gp.CardKeyPreflightService;
 import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.CardKeyRollService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
+import dev.mistial.tools.openfips201.gp.IssuerCardKeyService;
 import dev.mistial.tools.openfips201.gp.Scp03Kdf3DerivationService;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11Config;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11SigningKey;
@@ -259,7 +261,13 @@ public final class OpenFips201Tool implements Callable<Integer> {
     @Command(
         name = "keys",
         mixinStandardHelpOptions = true,
-        subcommands = {Keys.Derive.class, Keys.DeriveCard.class, Keys.Rotate.class, Keys.Keyroll.class})
+        subcommands = {
+          Keys.Derive.class,
+          Keys.DeriveCard.class,
+          Keys.Rotate.class,
+          Keys.Preflight.class,
+          Keys.Keyroll.class
+        })
     static final class Keys implements Callable<Integer> {
       @Override
       public Integer call() {
@@ -340,6 +348,75 @@ public final class OpenFips201Tool implements Callable<Integer> {
         }
       }
 
+      @Command(name = "preflight", mixinStandardHelpOptions = true, description = "Validate an issuer GP key rotation without mutating the card.")
+      static final class Preflight implements Callable<Integer> {
+        @Option(names = "--profile", required = true)
+        String profile;
+
+        @Option(names = "--target", required = true)
+        String target;
+
+        @Option(names = "--direction", required = true, description = "forward or backward")
+        String direction;
+
+        @Option(names = "--kdd", description = "10-byte card key diversification data hex; read from card by default.")
+        String kdd;
+
+        @Option(names = "--stock-scp", defaultValue = "scp03")
+        String stockScp;
+
+        @Option(names = "--stock-scp-key-version", defaultValue = "1")
+        int stockScpKeyVersion;
+
+        @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
+        String stockScpKey;
+
+        @Override
+        public Integer call() throws Exception {
+          IssuerProfile loaded = ProfileLoader.load(profile);
+          IssuerCardKeyService issuerKeys = new IssuerCardKeyService();
+          byte[] parsedKdd = kdd == null ? null : HexUtil.parse(kdd);
+          ScpConfig stock =
+              stockScpKey == null
+                  ? issuerKeys.stockScp(loaded)
+                  : ScpConfig.fromMaster(
+                      ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
+          DerivedScpKeys profileKeys =
+              parsedKdd == null ? null : issuerKeys.deriveCardKeys(loaded, parsedKdd);
+
+          CardKeyPreflightService.Request request = new CardKeyPreflightService.Request();
+          request.target = CardTarget.parse(target);
+          request.profile = loaded;
+          request.profilePath = profile;
+          request.kdd = parsedKdd;
+          request.stockScpKey = stockScpKey;
+          if ("forward".equalsIgnoreCase(direction)) {
+            request.current = stock;
+            request.targetKeys = profileKeys;
+          } else if ("backward".equalsIgnoreCase(direction)) {
+            if (profileKeys == null) {
+              throw new IllegalArgumentException("--kdd is required for backward preflight");
+            }
+            request.current = profileKeys.config;
+            request.targetKeys = DerivedScpKeys.fromConfig(stock);
+          } else {
+            throw new IllegalArgumentException("--direction must be forward or backward");
+          }
+          CardKeyPreflightService.Result result = new CardKeyPreflightService().preflight(request);
+          System.out.println("SCP key rotation preflight passed.");
+          System.out.println("KDD " + HexUtil.format(result.kdd));
+          System.out.println("Current key version " + result.currentKeyVersion);
+          System.out.println("Target key version " + result.targetKeyVersion);
+          System.out.println("ENC KCV " + result.targetEncKcv);
+          System.out.println("MAC KCV " + result.targetMacKcv);
+          System.out.println("DEK KCV " + result.targetDekKcv);
+          if (result.rollbackCommand != null) {
+            System.out.println("Rollback " + result.rollbackCommand);
+          }
+          return 0;
+        }
+      }
+
       @Command(
           name = "keyroll",
           mixinStandardHelpOptions = true,
@@ -368,7 +445,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
           @Option(names = "--stock-scp", defaultValue = "scp03")
           String stockScp;
 
-          @Option(names = "--stock-scp-key-version", defaultValue = "0")
+          @Option(names = "--stock-scp-key-version", defaultValue = "1")
           int stockScpKeyVersion;
 
           @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
@@ -455,7 +532,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Option(names = "--stock-scp", defaultValue = "scp03")
       String stockScp;
 
-      @Option(names = "--stock-scp-key-version", defaultValue = "0")
+      @Option(names = "--stock-scp-key-version", defaultValue = "1")
       int stockScpKeyVersion;
 
       @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
@@ -475,7 +552,16 @@ public final class OpenFips201Tool implements Callable<Integer> {
                     ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
         Path receipt =
             new CardstockPreparationService()
-                .prepare(CardTarget.parse(target), loaded, signingKey, yes, null, null, stockOverride);
+                .prepare(
+                    CardTarget.parse(target),
+                    loaded,
+                    signingKey,
+                    yes,
+                    null,
+                    null,
+                    stockOverride,
+                    profile,
+                    stockScpKey);
         System.out.println("Cardstock prepared. Receipt: " + receipt);
         return 0;
       }

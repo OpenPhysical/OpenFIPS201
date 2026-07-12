@@ -20,18 +20,25 @@ public final class CardKeyRollService {
   private final CardDiversificationDataService kddService;
   private final IssuerCardKeyService issuerKeys;
   private final CardKeyRotationService rotation;
+  private final CardKeyPreflightService preflight;
 
   public CardKeyRollService() {
-    this(new CardDiversificationDataService(), new IssuerCardKeyService(), new CardKeyRotationService());
+    this(
+        new CardDiversificationDataService(),
+        new IssuerCardKeyService(),
+        new CardKeyRotationService(),
+        new CardKeyPreflightService());
   }
 
   CardKeyRollService(
       CardDiversificationDataService kddService,
       IssuerCardKeyService issuerKeys,
-      CardKeyRotationService rotation) {
+      CardKeyRotationService rotation,
+      CardKeyPreflightService preflight) {
     this.kddService = kddService;
     this.issuerKeys = issuerKeys;
     this.rotation = rotation;
+    this.preflight = preflight;
   }
 
   public Result roll(Request request) throws Exception {
@@ -55,6 +62,12 @@ public final class CardKeyRollService {
       target = DerivedScpKeys.fromConfig(stock);
     }
 
+    CardKeyPreflightService.Request preflightRequest = new CardKeyPreflightService.Request();
+    preflightRequest.target = request.target;
+    preflightRequest.current = current;
+    preflightRequest.targetKeys = target;
+    preflightRequest.kdd = kdd;
+    preflight.preflight(preflightRequest);
     rotation.rotate(request.target, current, target, true);
     return new Result(request.direction, kdd, current.keyVersion, target.config.keyVersion, target);
   }

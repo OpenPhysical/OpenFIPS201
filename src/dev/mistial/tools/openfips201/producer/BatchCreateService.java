@@ -21,6 +21,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 public final class BatchCreateService {
   private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+  private static final int STOCK_SCP_KEY_VERSION = 1;
 
   public Result create(String producer, String name) throws Exception {
     if (!Files.exists(ProducerPaths.producerProfile(producer))) {
@@ -35,7 +36,7 @@ public final class BatchCreateService {
     metadata.name = name;
     metadata.created = Instant.now().toString();
     metadata.stockScpMode = "scp03";
-    metadata.stockScpKeyVersion = 0;
+    metadata.stockScpKeyVersion = STOCK_SCP_KEY_VERSION;
     metadata.stockScpKcv = kcv(stockKey);
     metadata.receiptsCsv = "receipts.csv";
     Files.write(

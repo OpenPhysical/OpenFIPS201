@@ -18,6 +18,10 @@ public final class CardKeyRotationService {
 
   public void rotate(CardTarget target, ScpConfig current, DerivedScpKeys derived, boolean replace)
       throws Exception {
+    if (current.keyVersion == derived.config.keyVersion) {
+      throw new IllegalArgumentException(
+          "Refusing same-version GP key rotation; choose a different target key version");
+    }
     try (GlobalPlatformSession session =
         GlobalPlatformSession.open(target, GlobalPlatformSession.ISD_AID, current)) {
       session.putKeys(derived.config.toPlaintextKeys(), replace);
