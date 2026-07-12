@@ -41,11 +41,10 @@ import javacard.security.AESKey;
  */
 final class PIVSecureMessaging {
   private static final short OFFSET_SM_ESTABLISHED = (short) 0;
-  private static final short OFFSET_PAIRING_VERIFIED = (short) 1;
-  private static final short OFFSET_VCI_ESTABLISHED = (short) 2;
-  private static final short OFFSET_LAST_CLA = (short) 3;
-  private static final short OFFSET_LAST_INS = (short) 4;
-  private static final short LENGTH_STATE = (short) 5;
+  private static final short OFFSET_VCI_ESTABLISHED = (short) 1;
+  private static final short OFFSET_LAST_CLA = (short) 2;
+  private static final short OFFSET_LAST_INS = (short) 3;
+  private static final short LENGTH_STATE = (short) 4;
   //#if VCI_CS2
   private static final short LENGTH_SESSION_KEY = (short) 16;
   //#else
@@ -66,7 +65,6 @@ final class PIVSecureMessaging {
   private static final short RESPONSE_PHASE_FINAL = (short) 3;
   private static final short LENGTH_BLOCK = (short) 16;
   private static final short LENGTH_SHORT_MAC = (short) 8;
-  static final short MAX_RESPONSE_PLAINTEXT = (short) 191;
   private static final byte CLA_SECURE_MESSAGING = (byte) 0x0C;
   private static final byte CLA_CHAINED_SECURE_MESSAGING = (byte) 0x1C;
   private static final byte INS_GET_RESPONSE = (byte) 0xC0;
@@ -124,7 +122,6 @@ final class PIVSecureMessaging {
 
   void clear() {
     state[OFFSET_SM_ESTABLISHED] = (byte) 0;
-    state[OFFSET_PAIRING_VERIFIED] = (byte) 0;
     state[OFFSET_VCI_ESTABLISHED] = (byte) 0;
     Util.arrayFillNonAtomic(commandMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(responseMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
@@ -148,7 +145,6 @@ final class PIVSecureMessaging {
 
   void markEstablished(boolean pairingRequired) {
     state[OFFSET_SM_ESTABLISHED] = (byte) 1;
-    state[OFFSET_PAIRING_VERIFIED] = (byte) 0;
     state[OFFSET_VCI_ESTABLISHED] = pairingRequired ? (byte) 0 : (byte) 1;
     Util.arrayFillNonAtomic(commandMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(responseMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
@@ -160,7 +156,6 @@ final class PIVSecureMessaging {
   }
 
   void markPairingVerified() {
-    state[OFFSET_PAIRING_VERIFIED] = (byte) 1;
     state[OFFSET_VCI_ESTABLISHED] = (byte) 1;
   }
 
@@ -192,13 +187,13 @@ final class PIVSecureMessaging {
     return PIVCrypto.doAesCmac(skCfrm, buffer, offset, length, out, outOffset);
   }
 
+  void clearConfirmationKey() {
+    skCfrm.clearKey();
+  }
+
   boolean isSecureMessagingCla(byte cla) {
     return (byte) (cla & (byte) 0x1C) == CLA_SECURE_MESSAGING
         || (byte) (cla & (byte) 0x1C) == CLA_CHAINED_SECURE_MESSAGING;
-  }
-
-  void markGetResponse() {
-    state[OFFSET_LAST_INS] = INS_GET_RESPONSE;
   }
 
   /**
@@ -231,6 +226,7 @@ final class PIVSecureMessaging {
     short encryptedValueLength = (short) 0;
     short macTlvOffset = (short) -1;
     short macValueOffset = (short) -1;
+    byte expectedTag = TAG_ENCRYPTED_DATA;
 
     // Any malformed, duplicated, misordered or unknown secure messaging data object in the
     // command data field is "secure messaging data objects are incorrect": '69 88' per NIST
@@ -243,6 +239,7 @@ final class PIVSecureMessaging {
       if (next > end) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
 
       if (tag == TAG_ENCRYPTED_DATA) {
+        if (expectedTag != TAG_ENCRYPTED_DATA) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         if (encryptedTlvOffset != (short) -1 || tlvLength < (short) 17) {
           ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
@@ -253,16 +250,20 @@ final class PIVSecureMessaging {
         if ((short) (encryptedValueLength % LENGTH_BLOCK) != (short) 0) {
           ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
+        expectedTag = TAG_LE;
       } else if (tag == TAG_LE) {
+        if (expectedTag == TAG_MAC) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         if (tlvLength != (short) 1 || apdu[valueOffset] != (byte) 0x00) {
           ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
+        expectedTag = TAG_MAC;
       } else if (tag == TAG_MAC) {
         if (macTlvOffset != (short) -1 || tlvLength != LENGTH_SHORT_MAC || next != end) {
           ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
         }
         macTlvOffset = cursor;
         macValueOffset = valueOffset;
+        expectedTag = (byte) 0;
       } else {
         ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
       }
@@ -278,9 +279,8 @@ final class PIVSecureMessaging {
     short macInputLength = buildCommandMacInput(apdu, offset, macTlvOffset, work, workOffset);
     PIVCrypto.doAesCmac(
         skMac, work, workOffset, macInputLength, work, (short) (workOffset + macInputLength));
-    if (Util.arrayCompare(
-            work, (short) (workOffset + macInputLength), apdu, macValueOffset, LENGTH_SHORT_MAC)
-        != (byte) 0) {
+    if (!PIVSecurityProvider.arrayEqualsConstantTime(
+        work, (short) (workOffset + macInputLength), apdu, macValueOffset, LENGTH_SHORT_MAC)) {
       // A C-MAC ('8E') that fails verification is an incorrect secure messaging data object:
       // '69 88' per NIST SP 800-73-5 Part 2 Section 4.2.7. ('69 82' is reserved for secure
       // messaging requested before session keys are established - Section 4.2.7 footnote.)

@@ -114,6 +114,7 @@ final class PIV {
   // PIV-specific ISO 7816 STATUS WORD (SW12) responses
   //
   static final short SW_RETRIES_REMAINING = (short) 0x63C0;
+  static final short SW_VERIFICATION_FAILED = (short) 0x6300;
 
   /*
    * PIV APPLICATION CONSTANTS
@@ -510,6 +511,10 @@ final class PIV {
     return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
   }
 
+  private boolean isVciSatisfied() {
+    return isSecureMessagingCommand() && secureMessaging.isVciEstablished();
+  }
+
   /**
    * The GET DATA card command retrieves the data content of the single data object whose tag is
    * given in the data field.
@@ -550,7 +555,7 @@ final class PIV {
     }
 
     // PRE-CONDITION 2 - The access rules must be satisfied for the requested object
-    if (!cspPIV.checkAccessModeObject(object, secureMessaging.isVciEstablished())) {
+    if (!cspPIV.checkAccessModeObject(object, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -697,7 +702,7 @@ final class PIV {
 
     // PRE-CONDITION 4 - The access rules must be satisfied for write access, either with an
     // administrative role or if the data object has explicit permission to write.
-    if (!cspPIV.checkAccessModeAdmin(object, secureMessaging.isVciEstablished())) {
+    if (!cspPIV.checkAccessModeAdmin(object, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -792,7 +797,7 @@ final class PIV {
     // that VCI state is established.
     if (cspPIV.getIsContactless()
         && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-        && !secureMessaging.isVciEstablished()) {
+        && !isVciSatisfied()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -866,8 +871,10 @@ final class PIV {
     //
 
     if (id == ID_CVM_PAIRING_CODE) {
-      if (!secureMessaging.isVciEstablished()) {
-        ISOException.throwIt(SW_RETRIES_REMAINING);
+      if (!isVciSatisfied()) {
+        // SP 800-85A-4 AS05.16A-R4 maps an incorrect pairing-code VERIFY to 63 00.
+        // A status check before pairing is satisfied is instead the normal security-status failure.
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       }
       return;
     }
@@ -1028,11 +1035,11 @@ final class PIV {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
-    // Compare with the provided PIN data
-    if (Util.arrayCompare(
-            object.content, (short) (contentOffset + 2), buffer, offset, (short) 8)
-        != (byte) 0) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    // SP 800-73-5 Part 2 / SP 800-85A-4 AS05.16A-R4 require 63 00 for a
+    // well-formed but non-matching pairing code. Pairing has no retry counter.
+    if (!PIVSecurityProvider.arrayEqualsConstantTime(
+        object.content, (short) (contentOffset + 2), buffer, offset, (short) 8)) {
+      ISOException.throwIt(SW_VERIFICATION_FAILED);
     }
 
     secureMessaging.markPairingVerified();
@@ -1498,7 +1505,7 @@ final class PIV {
 
     // PRE-CONDITION 2 - The access rules must be satisfied for the requested key
     // NOTE: A call to this method automatically clears the PIN ALWAYS status.
-    if (!cspPIV.checkAccessModeObject(key, secureMessaging.isVciEstablished())) {
+    if (!cspPIV.checkAccessModeObject(key, isVciSatisfied())) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return ZERO; // Keep compiler happy
@@ -1803,6 +1810,10 @@ final class PIV {
 
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offIdH, (short) 8);
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offQeh, pointLen);
+
+    if (!key.validatePublicPoint(smResponse, offQeh, pointLen, smResponse, offZ)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
 
     key.keyAgreement(smResponse, offQeh, pointLen, smResponse, offZ); // C5
     PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
@@ -2616,7 +2627,7 @@ final class PIV {
     }
 
     // PRE-CONDITION 6 - The access rules must be satisfied for administrative access
-    if (!cspPIV.checkAccessModeAdmin(key, secureMessaging.isVciEstablished())) {
+    if (!cspPIV.checkAccessModeAdmin(key, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -3424,16 +3435,24 @@ final class PIV {
     // COMMAND CHAIN HANDLING
     //
 
+    byte[] commandBuffer = scratch;
+    //#if VCI_CS7
+    // CS7 SM CVCs may be larger than LENGTH_SCRATCH. Keep the advertised CS7 CVC limit
+    // provisionable by reassembling that admin update into the larger OPACITY command buffer.
+    if (id == ID_KEY_SECURE_MESSAGING && mechanism == ID_ALG_ECC_SM) {
+      commandBuffer = smCommand;
+    }
+    //#endif
+
     // Pass the APDU to the chainBuffer instance first. It will return zero if there is store more
     // to of the chain to process, otherwise it will return the length of the large CDATA buffer
-    length = chainBuffer.processIncomingAPDU(buffer, offset, length, scratch, ZERO);
+    length = chainBuffer.processIncomingAPDU(buffer, offset, length, commandBuffer, ZERO);
 
     // If the length is zero, just return so the caller can keep sending
     if (length == 0) return;
 
-    // If we got this far, the scratch buffer now contains the incoming DATA. Keep in mind that the
-    // original buffer
-    // still contains the APDU header.
+    // If we got this far, commandBuffer now contains the incoming DATA. Keep in mind that the
+    // original buffer still contains the APDU header.
 
     //
     // SPECIAL CASE 1 - LOCAL PIN
@@ -3448,17 +3467,17 @@ final class PIV {
       // We deliberately ignore the value of CONFIG_PIN_ENABLE_LOCAL here as there may be a good
       // reason for setting a pre-defined PIN value with the anticipation of enabling it later
 
-      if (!verifyPinFormat(scratch, ZERO, length)) {
+      if (!verifyPinFormat(commandBuffer, ZERO, length)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
-      if (!verifyPinRules(scratch, ZERO, length)) {
+      if (!verifyPinRules(commandBuffer, ZERO, length)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       // Update the PIN
       // NOTE: We ignore the history check here since this is an administrative update
-      cspPIV.updatePIN(ID_CVM_LOCAL_PIN, scratch, ZERO, (byte) length, ZERO);
+      cspPIV.updatePIN(ID_CVM_LOCAL_PIN, commandBuffer, ZERO, (byte) length, ZERO);
       return; // Done
     }
 
@@ -3477,7 +3496,7 @@ final class PIV {
       // - No format verification required is for the PUK
 
       // Update the PUK
-      cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, (byte) length, ZERO);
+      cspPIV.updatePIN(ID_CVM_PUK, commandBuffer, ZERO, (byte) length, ZERO);
 
       return; // Done
     }
@@ -3513,7 +3532,7 @@ final class PIV {
 
     // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
     // This allows either SCP or prior successful authentication with the key's admin key.
-    if (!cspPIV.checkAccessModeAdmin(key, secureMessaging.isVciEstablished())) {
+    if (!cspPIV.checkAccessModeAdmin(key, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
     }
@@ -3522,14 +3541,14 @@ final class PIV {
     // post-generation PIV secure messaging CVC can be loaded onto the generated non-exportable VCI
     // key without enabling private-key import.
     if (!key.hasAttribute(PIVKeyObject.ATTR_IMPORTABLE)
-        && !isSecureMessagingCvcUpdate(key, scratch, ZERO, length)) {
+        && !isSecureMessagingCvcUpdate(key, commandBuffer, ZERO, length)) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
     }
 
     // Set up our TLV reader
     TLVReader reader = TLVReader.getInstance();
-    reader.init(scratch, ZERO, length);
+    reader.init(commandBuffer, ZERO, length);
 
     // PRE-CONDITION 4 - The parent tag MUST be of type SEQUENCE
     if (!reader.match(CONST_TAG_SEQUENCE)) {
@@ -3573,7 +3592,7 @@ final class PIV {
       attestation.updateElement(elementTag, scratch, elementOffset, elementLength);
     } else {
     //#endif
-      key.updateElement(elementTag, scratch, elementOffset, elementLength);
+      key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
       //#if ATTESTATION_ENABLED
       if (key.getId() == ID_KEY_ATTESTATION) {
         if (elementTag == PIVKeyObject.ELEMENT_CLEAR) {
@@ -3646,7 +3665,7 @@ final class PIV {
     if (target == null) {
       ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
-    if (!cspPIV.checkAccessModeObject(target, secureMessaging.isVciEstablished())) {
+    if (!cspPIV.checkAccessModeObject(target, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 

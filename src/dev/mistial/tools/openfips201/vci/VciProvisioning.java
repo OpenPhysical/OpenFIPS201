@@ -594,6 +594,22 @@ final class VciProvisioning {
     return new EstablishedSession(new VciSupport.SmSession(sessionKeys), pairingRequired, cvcRaw);
   }
 
+  static int submitOpacityWithHostPublicPoint(BIBO bibo, byte suite, byte[] hostPublicPoint)
+      throws Exception {
+    transceive(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256), "SELECT PIV");
+    byte[] witness = concat(new byte[] {0x00}, VciSupport.buildWitness(hostPublicPoint));
+    byte[] template =
+        VciSupport.tlv(
+            0x7C, concat(VciSupport.tlv(0x81, witness), VciSupport.tlv(0x82, new byte[0])));
+    ResponseAPDU response =
+        new ResponseAPDU(
+            bibo.transceive(
+                new CommandAPDU(
+                        0x00, 0x87, suite, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256)
+                    .getBytes()));
+    return response.getSW();
+  }
+
   /** Returns ALG_CS2, ALG_CS7, or 0 if neither is advertised in the APT. */
   private static byte detectAdvertisedSuite(byte[] apt) {
     if (containsSequence(apt, new byte[] {(byte) 0x80, 0x01, VciSupport.ALG_CS7})) {

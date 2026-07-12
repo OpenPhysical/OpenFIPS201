@@ -484,4 +484,13 @@ final class PIVSecurityProvider {
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0xFF);
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0x00);
   }
+
+  static boolean arrayEqualsConstantTime(
+      byte[] left, short leftOffset, byte[] right, short rightOffset, short length) {
+    byte diff = (byte) 0;
+    for (short i = (short) 0; i < length; i++) {
+      diff |= (byte) (left[(short) (leftOffset + i)] ^ right[(short) (rightOffset + i)]);
+    }
+    return diff == (byte) 0;
+  }
 }

@@ -8,11 +8,15 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import apdu4j.core.BIBO;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.bouncycastle.asn1.x9.X9ECParameters;
+import org.bouncycastle.math.ec.ECPoint;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -208,6 +212,18 @@ class OpenFIPS201VciEndToEndTest {
     }
   }
 
+  @Test
+  void cs2OpacityRejectsOffCurveHostPublicKey(@TempDir Path tempDir) throws Exception {
+    assumeTrue(isCs2Build(), "CS2 C4 validation test requires -Dvci.suite=CS2");
+    assertOffCurveHostPublicKeyRejected(tempDir, VciSupport.ALG_CS2);
+  }
+
+  @Test
+  void cs7OpacityRejectsOffCurveHostPublicKey(@TempDir Path tempDir) throws Exception {
+    assumeTrue(isCs7Build(), "CS7 C4 validation test requires -Dvci.suite=CS7");
+    assertOffCurveHostPublicKeyRejected(tempDir, VciSupport.ALG_CS7);
+  }
+
   /**
    * Before pairing, a VCI-gated object remains inaccessible over SM; after correct pairing, the
    * Discovery Object remains readable (ALWAYS) and establishes VCI for subsequent access policy.
@@ -251,5 +267,43 @@ class OpenFIPS201VciEndToEndTest {
 
   private static boolean isCs7Build() {
     return "CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
+  }
+
+  private void assertOffCurveHostPublicKeyRejected(Path tempDir, byte suite) throws Exception {
+    String caPrefix = tempDir.resolve("vci-ca-off-curve").toString();
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.provision(bibo, null, null, caPrefix, "12345678", null, suite);
+    }
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      byte[] offCurve = offCurveHostPublicPoint(suite);
+      assertEquals(
+          0x6A80,
+          VciProvisioning.submitOpacityWithHostPublicPoint(bibo, suite, offCurve),
+          "SP 800-73-5 Part 2 C4 requires invalid Q_eH to fail with 6A80");
+    }
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      assertNotNull(
+          VciProvisioning.establishSecureMessaging(bibo, caPrefix + ".crt"),
+          "failed C4 validation must not poison a later valid OPACITY establishment");
+    }
+  }
+
+  private static byte[] offCurveHostPublicPoint(byte suite) {
+    byte[] point = validHostPublicPoint(suite);
+    point[point.length - 1] ^= 0x01;
+    return point;
+  }
+
+  private static byte[] validHostPublicPoint(byte suite) {
+    X9ECParameters curve = VciSupport.curveForSuite(suite);
+    SecureRandom random = new SecureRandom();
+    BigInteger d;
+    do {
+      d = new BigInteger(curve.getN().bitLength(), random);
+    } while (d.signum() <= 0 || d.compareTo(curve.getN()) >= 0);
+    ECPoint hostPoint = curve.getG().multiply(d).normalize();
+    return VciSupport.encodePoint(hostPoint);
   }
 }
