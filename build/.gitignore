@@ -5,3 +5,6 @@ test-reports
 lib
 ivy
 ivy2
+jpp-bin
+jpp.jar
+preprocessed-src

@@ -2,6 +2,8 @@ package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
@@ -158,6 +160,7 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
   @Test
   void attestRejectsCommandData() {
+    assumeTrue(isAttestationEnabledBuild(), "ATTEST precondition test requires attestation build");
     assertSw(0x9000, selectApplet(), "SELECT before ATTEST length check");
 
     ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x00, hex("00"));
@@ -166,10 +169,20 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
   @Test
   void attestRejectsNonZeroP2() {
+    assumeTrue(isAttestationEnabledBuild(), "ATTEST precondition test requires attestation build");
     assertSw(0x9000, selectApplet(), "SELECT before ATTEST P2 check");
 
     ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x01);
     assertSw(0x6A86, response, "ATTEST requires P2=0x00");
+  }
+
+  @Test
+  void attestInstructionIsUnsupportedWhenAttestationIsDisabled() {
+    assumeFalse(isAttestationEnabledBuild(), "disabled-attestation behavior test");
+    assertSw(0x9000, selectApplet(), "SELECT before disabled ATTEST check");
+
+    ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x00);
+    assertSw(0x6D00, response, "ATTEST must not be dispatched when attestation is compiled out");
   }
 
   private static byte singleByteTlvValue(byte[] data, int offset, int end, int tag) {

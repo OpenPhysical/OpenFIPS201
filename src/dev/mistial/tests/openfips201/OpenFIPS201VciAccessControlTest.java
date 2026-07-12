@@ -20,7 +20,11 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
     (byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, (byte) 0x5A
   };
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
+  private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
+  private static final byte ACCESS_MODE_PIN = (byte) 0x01;
   private static final byte ACCESS_MODE_VCI = (byte) 0x08;
+  /** Contactless "VCI and PIN" per SP 800-73-5 Part 1 Table 2 (e.g. facial image, printed info). */
+  private static final byte ACCESS_MODE_VCI_AND_PIN = (byte) (ACCESS_MODE_VCI | ACCESS_MODE_PIN);
 
   /** Creates and populates a test data object with contact ALWAYS and the given contactless mode. */
   private void createObject(final byte contactlessMode) {
@@ -107,6 +111,70 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
           0x9000,
           response,
           "An ALWAYS object remains contactless-readable (no VCI bit, unaffected)");
+    }
+  }
+
+  /**
+   * Verifies that contactless "VCI and PIN" objects are denied without VCI (even before PIN).
+   *
+   * <p>NIST SP 800-73-5 Part 1 Table 2: Printed Information and Cardholder Facial Image require
+   * VCI and PIN over contactless. SD33 contactless vectors encapsulate {@code 6982} for these
+   * objects when PIN has not been verified over the secure channel.
+   */
+  @Test
+  void contactlessReadOfVciAndPinObjectIsDeniedWithoutVci() {
+    createObject(ACCESS_MODE_VCI_AND_PIN);
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+      assertSw(
+          0x6982,
+          blocked,
+          "Contactless GET DATA of a VCI+PIN object must fail closed before VCI is established");
+    }
+  }
+
+  /**
+   * Verifies that contactless NEVER objects remain unreadable even when ALWAYS contact mode is set.
+   *
+   * <p>NIST SP 800-73-5 Part 1 Table 2 separates contact and contactless columns; NEVER in the
+   * contactless column is independent of contact ALWAYS.
+   */
+  @Test
+  void contactlessReadOfNeverObjectIsDenied() {
+    createObject(ACCESS_MODE_NEVER);
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+      assertSw(0x6982, blocked, "Contactless NEVER object must not be readable");
+    }
+  }
+
+  /**
+   * Verifies that contactless PIN-only objects (no VCI bit) are still denied without PIN.
+   *
+   * <p>NIST SP 800-73-5 Part 1 Table 2: some objects require PIN over contactless without an
+   * explicit VCI bit when SM is not in use.
+   */
+  @Test
+  void contactlessReadOfPinOnlyObjectIsDeniedWithoutPin() {
+    createObject(ACCESS_MODE_PIN);
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+      assertSw(0x6982, blocked, "Contactless PIN-only object requires PIN verification");
     }
   }
 }

@@ -7,6 +7,8 @@
   <property name="SDK_BASE" value="tools/sdk"/>
   <property name="BUILD_SDK" value="${SDK_BASE}/jc310"/>
   <property name="TARGET_SDK" value="3.0.5"/>
+  <property name="vci.suite" value="CS2"/>
+  <property name="attestation.enabled" value="true"/>
 
   <!-- Use class-only GP API jar by default for JDK11+ compatibility. -->
   <property name="gp.version" value="gp211"/>
@@ -16,7 +18,8 @@
   <property name="gp.exportjar" value="${gp.home}/${gp.version}.jar"/>
   
   <property name="build.version" value="${VERSION_MAJOR}.${VERSION_MINOR}"/>
-  <property name="build.sourcepath" value="src/com/makina/security/openfips201"/>
+  <property name="applet.sourcepath" value="src/com/makina/security/openfips201"/>
+  <property name="build.sourcepath" value="build/preprocessed-src/com/makina/security/openfips201"/>
   <property name="build.outputpath" value="build/bin"/>
   <property name="build.outputfile" value="OpenFIPS201-${VERSION_REVISION}-${VERSION_MAJOR}.${VERSION_MINOR}.cap"/>
   <property name="build.outputfile_debug" value="OpenFIPS201-${VERSION_REVISION}-${VERSION_MAJOR}.${VERSION_MINOR}-DEBUG.cap"/>
@@ -34,6 +37,10 @@
   <property name="coverage.htmlpath" value="${coverage.outputpath}/html"/>
   <property name="coverage.minimum.openfips201.line" value="0.80"/>
   <property name="deps.outputpath" value="build/lib"/>
+  <property name="jpp.sourcepath" value="build/vendor/jpp/src/main/java"/>
+  <property name="jpp.antpath" value="build/vendor/jpp/src/main/ant"/>
+  <property name="jpp.outputpath" value="build/jpp-bin"/>
+  <property name="jpp.jar" value="build/jpp.jar"/>
   <property name="ivy.version" value="2.5.3"/>
   <property name="ivy.bootstrap.dir" value="build/ivy"/>
   <property name="ivy.default.ivy.user.dir" location="build/ivy2"/>
@@ -121,6 +128,7 @@
 
   <target name="clean">
     <delete dir="${build.outputpath}"/>
+    <delete dir="build/preprocessed-src"/>
     <delete dir="${docs.outputpath}"/>
     <delete dir="${test.outputpath}"/>
     <delete dir="${tool.outputpath}"/>
@@ -128,7 +136,59 @@
     <delete dir="${coverage.outputpath}"/>
   </target>
 
-  <target name="compile" depends="clean">
+  <target name="jpp-build">
+    <delete dir="${jpp.outputpath}"/>
+    <mkdir dir="${jpp.outputpath}"/>
+    <javac srcdir="${jpp.sourcepath}" destdir="${jpp.outputpath}" source="1.8" target="1.8" includeantruntime="true" encoding="UTF-8">
+      <compilerarg value="-Xlint:-options"/>
+    </javac>
+    <jar destfile="${jpp.jar}">
+      <fileset dir="${jpp.outputpath}"/>
+      <fileset dir="${jpp.antpath}"/>
+    </jar>
+  </target>
+
+  <target name="configure-vci-suite">
+    <condition property="VCI_CS2" value="true">
+      <equals arg1="${vci.suite}" arg2="CS2"/>
+    </condition>
+    <condition property="VCI_CS7" value="true">
+      <equals arg1="${vci.suite}" arg2="CS7"/>
+    </condition>
+  </target>
+
+  <target name="configure-attestation">
+    <condition property="ATTESTATION_ENABLED" value="true">
+      <equals arg1="${attestation.enabled}" arg2="true"/>
+    </condition>
+  </target>
+
+  <target name="preprocess-applet" depends="jpp-build,configure-vci-suite,configure-attestation">
+    <fail message="vci.suite must be CS2 or CS7, got '${vci.suite}'">
+      <condition>
+        <and>
+          <not><equals arg1="${vci.suite}" arg2="CS2"/></not>
+          <not><equals arg1="${vci.suite}" arg2="CS7"/></not>
+        </and>
+      </condition>
+    </fail>
+    <fail message="attestation.enabled must be true or false, got '${attestation.enabled}'">
+      <condition>
+        <and>
+          <not><equals arg1="${attestation.enabled}" arg2="true"/></not>
+          <not><equals arg1="${attestation.enabled}" arg2="false"/></not>
+        </and>
+      </condition>
+    </fail>
+    <delete dir="build/preprocessed-src"/>
+    <mkdir dir="${build.sourcepath}"/>
+    <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
+    <jpp destdir="${build.sourcepath}" force="true" readonly="false" verbose="false">
+      <fileset dir="${applet.sourcepath}" includes="**/*.java"/>
+    </jpp>
+  </target>
+
+  <target name="compile" depends="clean,preprocess-applet">
     <mkdir dir="${build.outputpath}" />
     <taskdef name="javacard" classname="pro.javacard.ant.JavaCard" classpath="tools/ant-javacard.jar"/>
     <javacard>
@@ -136,7 +196,7 @@
         <applet class="com.makina.security.openfips201.OpenFIPS201" aid="A000000308000010000100"/>
         <import exps="${gp.home}" jar="${gp.exportjar}"/>
       </cap>
-      <cap debug="true" targetsdk="${TARGET_SDK}" aid="A00000030800001000" output="${build.outputpath}/${build.outputfile_debug}" sources="${build.sourcepath}" version="${build.version}">
+      <cap targetsdk="${TARGET_SDK}" aid="A00000030800001000" output="${build.outputpath}/${build.outputfile_debug}" sources="${build.sourcepath}" version="${build.version}">
         <applet class="com.makina.security.openfips201.OpenFIPS201" aid="A000000308000010000100"/>
         <import exps="${gp.home}" jar="${gp.exportjar}"/>
       </cap>
@@ -152,7 +212,7 @@
     </javadoc>
   </target>
 
-  <target name="test-compile" depends="resolve-test-deps,tool-compile">
+  <target name="test-compile" depends="resolve-test-deps,tool-compile,preprocess-applet">
     <delete dir="${test.outputpath}" />
     <mkdir dir="${test.outputpath}" />
 
@@ -177,7 +237,7 @@
     </javac>
   </target>
 
-  <target name="tool-compile" depends="resolve-test-deps">
+  <target name="tool-compile" depends="resolve-test-deps,preprocess-applet">
     <delete dir="${tool.outputpath}" />
     <mkdir dir="${tool.outputpath}" />
     <!-- The emulator server tool installs the applet class into jCardEngine, so the applet
@@ -218,12 +278,39 @@
     </java>
   </target>
 
-  <target name="test" depends="test-compile">
+  <target name="test">
+    <antcall target="test-suite">
+      <param name="vci.suite" value="CS2"/>
+      <param name="test.reportpath" value="build/test-reports/CS2"/>
+      <param name="attestation.enabled" value="true"/>
+    </antcall>
+    <antcall target="test-suite">
+      <param name="vci.suite" value="CS7"/>
+      <param name="test.reportpath" value="build/test-reports/CS7"/>
+      <param name="attestation.enabled" value="true"/>
+    </antcall>
+    <antcall target="test-suite">
+      <param name="vci.suite" value="CS2"/>
+      <param name="test.reportpath" value="build/test-reports/CS2-no-attestation"/>
+      <param name="attestation.enabled" value="false"/>
+    </antcall>
+    <antcall target="test-suite">
+      <param name="vci.suite" value="CS7"/>
+      <param name="test.reportpath" value="build/test-reports/CS7-no-attestation"/>
+      <param name="attestation.enabled" value="false"/>
+    </antcall>
+  </target>
+
+  <target name="test-suite" depends="test-compile">
     <mkdir dir="${test.reportpath}" />
 
     <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow">
       <classpath refid="test.runtime.classpath"/>
       <testclasses outputdir="${test.reportpath}">
+        <fork>
+          <sysproperty key="vci.suite" value="${vci.suite}"/>
+          <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+        </fork>
         <fileset dir="${test.outputpath}">
           <include name="**/*Test.class"/>
         </fileset>
@@ -233,12 +320,39 @@
     </junitlauncher>
   </target>
 
-  <target name="test-all" depends="test-compile">
+  <target name="test-all">
+    <antcall target="test-all-suite">
+      <param name="vci.suite" value="CS2"/>
+      <param name="test.reportpath" value="build/test-reports/CS2-all"/>
+      <param name="attestation.enabled" value="true"/>
+    </antcall>
+    <antcall target="test-all-suite">
+      <param name="vci.suite" value="CS7"/>
+      <param name="test.reportpath" value="build/test-reports/CS7-all"/>
+      <param name="attestation.enabled" value="true"/>
+    </antcall>
+    <antcall target="test-all-suite">
+      <param name="vci.suite" value="CS2"/>
+      <param name="test.reportpath" value="build/test-reports/CS2-no-attestation-all"/>
+      <param name="attestation.enabled" value="false"/>
+    </antcall>
+    <antcall target="test-all-suite">
+      <param name="vci.suite" value="CS7"/>
+      <param name="test.reportpath" value="build/test-reports/CS7-no-attestation-all"/>
+      <param name="attestation.enabled" value="false"/>
+    </antcall>
+  </target>
+
+  <target name="test-all-suite" depends="test-compile">
     <mkdir dir="${test.reportpath}" />
 
     <junitlauncher printSummary="true" haltOnFailure="true">
       <classpath refid="test.runtime.classpath"/>
       <testclasses outputdir="${test.reportpath}">
+        <fork>
+          <sysproperty key="vci.suite" value="${vci.suite}"/>
+          <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+        </fork>
         <fileset dir="${test.outputpath}">
           <include name="**/*Test.class"/>
         </fileset>

@@ -43,8 +43,10 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Assumptions;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
@@ -73,6 +75,12 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
       Security.addProvider(new BouncyCastleProvider());
     }
+  }
+
+  @BeforeEach
+  void requireAttestationBuild() {
+    Assumptions.assumeTrue(
+        isAttestationEnabledBuild(), "attestation tests require -Dattestation.enabled=true");
   }
 
   @Test

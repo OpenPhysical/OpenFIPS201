@@ -25,6 +25,7 @@
 
 package com.makina.security.openfips201;
 
+//#if ATTESTATION_ENABLED
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
@@ -460,3 +461,4 @@ final class PIVAttestation {
       (short) (ATTESTATION_ACTIVATE_HASH_OFFSET + HASH_SHA256_LENGTH);
   private static final short ATTESTATION_ACTIVATE_SIGNATURE_MAX = (short) 0x48;
 }
+//#endif

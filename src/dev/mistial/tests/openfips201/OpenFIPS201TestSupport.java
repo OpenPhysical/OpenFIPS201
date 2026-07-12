@@ -58,6 +58,10 @@ abstract class OpenFIPS201TestSupport {
     return true;
   }
 
+  protected static boolean isAttestationEnabledBuild() {
+    return !"false".equalsIgnoreCase(System.getProperty("attestation.enabled", "true"));
+  }
+
   /**
    * Provisions the deterministic standard test card: sets the local PIN and PUK and creates and
    * loads the 9B card management key, all from {@link StandardCardProfile} over a mocked secure

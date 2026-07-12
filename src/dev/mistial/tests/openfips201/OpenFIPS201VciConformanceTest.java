@@ -1,11 +1,14 @@
 package dev.mistial.tests.openfips201;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 
 import javax.smartcardio.ResponseAPDU;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Conformance tests for Virtual Contact Interface (VCI) behavior.
@@ -19,9 +22,15 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
   private static final byte KEY_REF_SECURE_MESSAGING = (byte) 0x04;
   private static final byte ALG_CS2 = (byte) 0x27;
+  private static final byte ALG_CS7 = (byte) 0x2E;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte ATTR_NONE = (byte) 0x00;
   private static final byte ATTR_IMPORTABLE = (byte) 0x10;
+
+  @BeforeEach
+  void requireCs2Build() {
+    assumeTrue(isCs2Build(), "VCI conformance fixtures use the default CS2 applet build");
+  }
 
   /**
    * Verifies that invalid VCI modes are rejected.
@@ -141,6 +150,23 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     assertTrue(contains(selectAppletWithData().getData(), hex("800127")), "Imported VCI key advertises after CVC");
   }
 
+  @Test
+  void configuredCs2BuildRejectsCs7SecureMessagingKeyDefinition() {
+    configureVciMode((byte) 0x02);
+    ResponseAPDU response = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, ALG_CS7);
+    assertEquals(0x6A81, response.getSW(), "CS2 build must reject CS7 SM key definition");
+    assertFalse(contains(selectAppletWithData().getData(), hex("80012E")), "APT must not advertise CS7");
+  }
+
+  @Test
+  void configuredCs2BuildDoesNotAllowBothSecureMessagingSuites() {
+    configureVciMode((byte) 0x02);
+    createVciKeyOverScp(ATTR_IMPORTABLE, ALG_CS2);
+
+    ResponseAPDU secondSuite = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, ALG_CS7);
+    assertEquals(0x6A81, secondSuite.getSW(), "Card must not accept both CS2 and CS7 SM keys");
+  }
+
   private void configureVciMode(final byte mode) {
     withMockedScp(
         new Runnable() {
@@ -156,6 +182,15 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void createVciKeyOverScp(final byte attributes) {
+    createVciKeyOverScp(attributes, ALG_CS2);
+  }
+
+  private void createVciKeyOverScp(final byte attributes, final byte mechanism) {
+    assertSw(0x9000, createVciKeyOverScpForResponse(attributes, mechanism), "Create VCI key");
+  }
+
+  private ResponseAPDU createVciKeyOverScpForResponse(final byte attributes, final byte mechanism) {
+    final ResponseAPDU[] response = new ResponseAPDU[1];
     withMockedScp(
         new Runnable() {
           @Override
@@ -170,13 +205,14 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                           (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
                           (byte) 0x8D, (byte) 0x01, ACCESS_MODE_ALWAYS,
                           (byte) 0x91, (byte) 0x01, (byte) 0x9B,
-                          (byte) 0x8E, (byte) 0x01, ALG_CS2,
+                          (byte) 0x8E, (byte) 0x01, mechanism,
                           (byte) 0x8F, (byte) 0x01, ROLE_KEY_ESTABLISH,
                           (byte) 0x90, (byte) 0x01, attributes
                         }));
-            assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, request), "Create VCI key");
+            response[0] = transmit(0x84, 0xDB, 0x3F, 0x00, request);
           }
         });
+    return response[0];
   }
 
   private void createDiscoveryObject() {
@@ -193,29 +229,47 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void importVciPrivateKeyOverScp(byte[] privateScalar) {
+    importVciPrivateKeyOverScp(privateScalar, ALG_CS2);
+  }
+
+  private void importVciPrivateKeyOverScp(byte[] privateScalar, byte mechanism) {
     ResponseAPDU response =
-        changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x87, privateScalar)));
+        changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x87, privateScalar)), mechanism);
     assertSw(0x9000, response, "Import VCI private key");
   }
 
   private void importVciPublicKeyOverScp(byte[] publicPoint) {
+    importVciPublicKeyOverScp(publicPoint, ALG_CS2);
+  }
+
+  private void importVciPublicKeyOverScp(byte[] publicPoint, byte mechanism) {
     ResponseAPDU response =
-        changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x86, publicPoint)));
+        changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x86, publicPoint)), mechanism);
     assertSw(0x9000, response, "Import VCI public key");
   }
 
   private void loadVciCvcOverScp(byte[] cvc) {
-    ResponseAPDU response = changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x8A, cvc)));
+    loadVciCvcOverScp(cvc, ALG_CS2);
+  }
+
+  private void loadVciCvcOverScp(byte[] cvc, byte mechanism) {
+    ResponseAPDU response =
+        changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x8A, cvc)), mechanism);
     assertSw(0x9000, response, "Load VCI CVC");
   }
 
   private ResponseAPDU changeVciReferenceDataOverScp(final byte[] data) {
+    return changeVciReferenceDataOverScp(data, ALG_CS2);
+  }
+
+  private ResponseAPDU changeVciReferenceDataOverScp(final byte[] data, final byte mechanism) {
     final ResponseAPDU[] response = new ResponseAPDU[1];
     withMockedScp(
         new Runnable() {
           @Override
           public void run() {
-            response[0] = transmit(0x84, 0x24, ALG_CS2 & 0xFF, KEY_REF_SECURE_MESSAGING & 0xFF, data);
+            response[0] =
+                transmit(0x84, 0x24, mechanism & 0xFF, KEY_REF_SECURE_MESSAGING & 0xFF, data);
           }
         });
     return response[0];
@@ -262,5 +316,23 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         "04"
             + "6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296"
             + "4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5");
+  }
+
+  private static byte[] p384ScalarOne() {
+    byte[] scalar = new byte[48];
+    scalar[47] = 1;
+    return scalar;
+  }
+
+  private static byte[] p384BasePoint() {
+    // secp384r1 generator (uncompressed).
+    return hex(
+        "04"
+            + "AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7"
+            + "3617DE4A96262C6F5D9E98BF9292DC29F8F41DBD289A147CE9DA3113B5F0B8C00A60B1CE1D7E819D7A431D7C90EA0E5F");
+  }
+
+  private static boolean isCs2Build() {
+    return !"CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
   }
 }

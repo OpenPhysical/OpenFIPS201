@@ -76,7 +76,9 @@ final class PIVCrypto {
   private static Cipher cspAESCBC;
 
   private static MessageDigest cspSHA256;
+  //#if VCI_CS7
   private static MessageDigest cspSHA384;
+  //#endif
 
   private static KeyAgreement cspECDH;
 
@@ -97,7 +99,9 @@ final class PIVCrypto {
     cspECCSHA384 = null;
     cspAESCMAC = null;
     cspSHA256 = null;
+    //#if VCI_CS7
     cspSHA384 = null;
+    //#endif
 
     JCSystem.requestObjectDeletion();
   }
@@ -181,6 +185,7 @@ final class PIVCrypto {
       }
     }
 
+    //#if VCI_CS7
     if (cspSHA384 == null) {
       try {
         cspSHA384 = MessageDigest.getInstance(MessageDigest.ALG_SHA_384, false);
@@ -188,6 +193,7 @@ final class PIVCrypto {
         cspSHA384 = null;
       }
     }
+    //#endif
   }
 
   static boolean supportsMechanism(byte mechanism) {
@@ -213,10 +219,27 @@ final class PIVCrypto {
         return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
-        return (cspECDH != null && cspSHA256 != null && cspAES != null && cspAESCBC != null && cspAESCMAC != null);
+        //#if VCI_CS2
+        // OPACITY needs ECDH, AES (ECB/CBC/CMAC), and the suite hash (SHA-256 or SHA-384).
+        return (cspECDH != null
+            && cspAES != null
+            && cspAESCBC != null
+            && cspAESCMAC != null
+            && cspSHA256 != null);
+        //#else
+        return false;
+        //#endif
 
       case PIV.ID_ALG_ECC_CS7:
-        return (cspECDH != null && cspSHA384 != null);
+        //#if VCI_CS7
+        return (cspECDH != null
+            && cspAES != null
+            && cspAESCBC != null
+            && cspAESCMAC != null
+            && cspSHA384 != null);
+        //#else
+        return false;
+        //#endif
 
       default:
         return false;
@@ -366,9 +389,52 @@ final class PIVCrypto {
     return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
+  //#if VCI_CS7
+  static short doSha384(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    return cspSHA384.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+  //#endif
+
+  /**
+   * Suite hash for OPACITY KDF: SHA-256 when {@code fieldLen == 32} (CS2), SHA-384 when {@code
+   * fieldLen == 48} (CS7).
+   */
+  static short doSha(
+      short fieldLen,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    //#if VCI_CS2
+    return doSha256(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    //#else
+    if (fieldLen == (short) 32) {
+      return doSha256(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    }
+    return doSha384(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    //#endif
+  }
+
   static short doAesCmac(
       SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     cspAESCMAC.init(key, Signature.MODE_SIGN);
+    return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static void doAesCmacInit(SecretKey key) {
+    cspAESCMAC.init(key, Signature.MODE_SIGN);
+  }
+
+  static void doAesCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
+    if (inLength != (short) 0) {
+      cspAESCMAC.update(inBuffer, inOffset, inLength);
+    }
+  }
+
+  static short doAesCmacFinal(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
@@ -407,9 +473,17 @@ final class PIVCrypto {
   }
 
   static AESKey buildTransientAes128Key() {
+    return buildTransientAesKey(KeyBuilder.LENGTH_AES_128);
+  }
+
+  static AESKey buildTransientAes256Key() {
+    return buildTransientAesKey(KeyBuilder.LENGTH_AES_256);
+  }
+
+  /** Builds a clear-on-deselect AES key of the given bit length (128 or 256). */
+  static AESKey buildTransientAesKey(short keyLengthBits) {
     return (AESKey)
-        KeyBuilder.buildKey(
-            KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, KeyBuilder.LENGTH_AES_128, false);
+        KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, keyLengthBits, false);
   }
 
   /**

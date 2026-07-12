@@ -68,6 +68,8 @@ final class PIV {
 
   // PIV Secure Messaging key reference.
   static final byte ID_KEY_SECURE_MESSAGING = (byte) 0x04;
+  // Optional attestation authority key reference.
+  static final byte ID_KEY_ATTESTATION = (byte) 0xF9;
 
   // Keys
   static final byte ID_ALG_DEFAULT = (byte) 0x00; // This maps to TDEA_3KEY
@@ -81,6 +83,17 @@ final class PIV {
   static final byte ID_ALG_ECC_P384 = (byte) 0x14;
   static final byte ID_ALG_ECC_CS2 = (byte) 0x27; // Secure Messaging - ECCP256+SHA256
   static final byte ID_ALG_ECC_CS7 = (byte) 0x2E; // Secure Messaging - ECCP384+SHA384
+  //#if VCI_CS2
+  static final byte ID_ALG_ECC_SM = ID_ALG_ECC_CS2;
+  private static final byte OPACITY_KDF_ALG_ID = (byte) 0x09;
+  private static final short LENGTH_SM_RESPONSE = (short) 296;
+  private static final short OPACITY_HASH_TMP = (short) 160;
+  //#else
+  static final byte ID_ALG_ECC_SM = ID_ALG_ECC_CS7;
+  private static final byte OPACITY_KDF_ALG_ID = (byte) 0x0D;
+  private static final short LENGTH_SM_RESPONSE = (short) 448;
+  private static final short OPACITY_HASH_TMP = (short) 400;
+  //#endif
 
   // Cardholder Verification Methods
   static final byte ID_CVM_GLOBAL_PIN = (byte) 0x00;
@@ -167,8 +180,10 @@ final class PIV {
   private final PIVSecurityProvider cspPIV;
   // PERSISTENT - Configuration Store
   private final Config config;
+  //#if ATTESTATION_ENABLED
   // PERSISTENT - Attestation authority state
   private final PIVAttestation attestation;
+  //#endif
   // TRANSIENT - PIV secure messaging and VCI state
   private final PIVSecureMessaging secureMessaging;
   // PERSISTENT - Data Store
@@ -178,10 +193,12 @@ final class PIV {
   private final byte[] scratch;
   // TRANSIENT - Holds any authentication related intermediary state
   private final byte[] authenticationContext;
+  //#if ATTESTATION_ENABLED
   // TRANSIENT - Response buffer for attestation certificates. Allocated once per applet
   // selection (CLEAR_ON_DESELECT) and reused for all attestations in the session.
   private byte[] attestationResponse;
-  // TRANSIENT - Reusable response/work buffer for CS2 secure messaging establishment.
+  //#endif
+  // TRANSIENT - Reusable response/work buffer for OPACITY (CS2/CS7) establishment.
   private final byte[] smResponse;
   // TRANSIENT - Reassembled secure-messaging command data.
   private final byte[] smCommand;
@@ -197,8 +214,8 @@ final class PIV {
 
     // Create our transient buffers
     scratch = JCSystem.makeTransientByteArray(LENGTH_SCRATCH, JCSystem.CLEAR_ON_DESELECT);
-    smResponse = JCSystem.makeTransientByteArray((short) 448, JCSystem.CLEAR_ON_DESELECT);
-    smCommand = JCSystem.makeTransientByteArray((short) 448, JCSystem.CLEAR_ON_DESELECT);
+    smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
+    smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
     authenticationContext =
         JCSystem.makeTransientByteArray(LENGTH_AUTH_STATE, JCSystem.CLEAR_ON_DESELECT);
@@ -212,9 +229,11 @@ final class PIV {
     // Create our PIV Security Provider
     cspPIV = new PIVSecurityProvider();
 
+    //#if ATTESTATION_ENABLED
     // Attestation profile state (subject/validity are persistent; response buffer allocated
     // on demand in attest()).
     attestation = new PIVAttestation();
+    //#endif
 
     secureMessaging = new PIVSecureMessaging();
 
@@ -315,9 +334,6 @@ final class PIV {
   }
 
   void processOutgoingSecure(APDU apdu, short sw) {
-    if (apdu.getBuffer()[ISO7816.OFFSET_INS] == (byte) 0xC0) {
-      secureMessaging.markGetResponse();
-    }
     chainBuffer.processOutgoingSecure(apdu, secureMessaging, smResponse, sw);
   }
 
@@ -376,6 +392,11 @@ final class PIV {
       return length;
     }
 
+    PIVKeyObject smKey = getSecureMessagingKey();
+    if (smKey == null) {
+      return length;
+    }
+
     short insertOffset =
         (short)
             (TLVReader.getDataOffset(buffer, acOffset)
@@ -384,7 +405,8 @@ final class PIV {
         buffer, insertOffset, buffer, (short) (insertOffset + 3), (short) (end - insertOffset));
     buffer[insertOffset++] = (byte) 0x80;
     buffer[insertOffset++] = (byte) 0x01;
-    buffer[insertOffset] = ID_ALG_ECC_CS2;
+    // SP 800-73-5 Part 1 Appendix C.3: advertise exactly one of 0x27 or 0x2E.
+    buffer[insertOffset] = smKey.getMechanism();
 
     buffer[(short) (offset + 2)] += (byte) 3;
     buffer[(short) (acOffset + 1)] += (byte) 3;
@@ -392,11 +414,16 @@ final class PIV {
   }
 
   private boolean isSecureMessagingAdvertised() {
+    return getSecureMessagingKey() != null;
+  }
+
+  /** Returns the initialised SM key (CS2 or CS7), or null if VCI is off / key not ready. */
+  private PIVKeyObject getSecureMessagingKey() {
     if (!isVciConfigured()) {
-      return false;
+      return null;
     }
-    PIVKeyObject key = cspPIV.selectKey(ID_KEY_SECURE_MESSAGING, ID_ALG_ECC_CS2);
-    return key != null && key.isInitialised();
+    PIVKeyObject key = cspPIV.selectKey(ID_KEY_SECURE_MESSAGING, ID_ALG_ECC_SM);
+    return (key != null && key.isInitialised()) ? key : null;
   }
 
   /**
@@ -1460,7 +1487,7 @@ final class PIV {
     // F9 is the attestation authority and is not valid for GENERAL AUTHENTICATE operations; it is
     // deliberately handled as 'not found' so its presence is not observable through this command.
     PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[ISO7816.OFFSET_P1]);
-    if (key == null || buffer[ISO7816.OFFSET_P2] == PIVAttestation.ID_KEY_ATTESTATION) {
+    if (key == null || buffer[ISO7816.OFFSET_P2] == ID_KEY_ATTESTATION) {
       // If any key reference value is specified that is not supported by the card, the PIV Card
       // Application shall return the status word '6A 88'.
       cspPIV.setPINAlways(false); // Clear the PIN ALWAYS flag
@@ -1740,141 +1767,148 @@ final class PIV {
 
   // Variant A - Secure Messaging
   /**
-   * Performs the Key Establishment Protocol (Variant A - Secure Messaging).
+   * OPACITY ZKM key establishment (Part 2 Section 4.1, steps C1–C11).
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.1 (Key Establishment Protocol) and
-   * Section 4.1.2 Table 16 (Protocol Steps for PIV Card Application, C1-C11) under Cipher Suite 2 (CS2).
+   * <p>CS2 and CS7 share one path. Sizes follow the ECC field length of the SM key (32-byte field
+   * → CS2 / AES-128 / SHA-256; 48-byte field → CS7 / AES-256 / SHA-384) per Section 4.1.4 Table 18.
    */
   private short generalAuthenticateCase1A(
       PIVKeyObjectECC key, short challengeOffset, short challengeLength) {
-
-    // Reset any other authentication intermediate state
     authenticateReset();
-
     secureMessaging.clear();
 
-    // CS2 is defined in Section 4.1.4 Table 18.
-    if (key.getMechanism() != ID_ALG_ECC_CS2) {
+    if (key.getMechanism() != ID_ALG_ECC_SM) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    if (challengeLength != (short) 74
+    // Suite geometry from field length (Table 18).
+    final short field = key.getKeyLengthBytes(); // 32 (CS2) or 48 (CS7)
+    final short pointLen = (short) (1 + field + field); // uncompressed Q_eH
+    final short nLen = (short) (field / 2); // N_ICC
+    final short sessionKeyLen = (short) (field - 16); // AES-128 or AES-256
+    final short xyLen = (short) (field + field); // Q_eH without leading 0x04
+
+    // Witness: CB_H(1,0x00) || ID_sH(8) || Q_eH
+    if (challengeLength != (short) (9 + pointLen)
         || scratch[challengeOffset] != (byte) 0
         || scratch[(short) (challengeOffset + 9)] != PIVCrypto.CONST_EC_POINT_UNCOMPRESSED) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    final short offsetIdH = (short) 0;
-    final short offsetQeh = (short) 8;
-    final short offsetSharedSecret = (short) 80;
-    final short offsetNonce = (short) 112;
-    final short offsetIdSicc = (short) 128;
-    final short offsetDerived = (short) 160;
+    final short offIdH = ZERO;
+    final short offQeh = (short) 8;
+    final short offZ = (short) (offQeh + pointLen);
+    final short offN = (short) (offZ + field);
+    final short offIdSicc = (short) (offN + nLen);
 
-    Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offsetIdH, (short) 8);
-    Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offsetQeh, (short) 65);
+    Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offIdH, (short) 8);
+    Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offQeh, pointLen);
 
-    // Step C5: Z = ECC_CDH(d_sICC, Q_eH)
-    key.keyAgreement(smResponse, offsetQeh, (short) 65, smResponse, offsetSharedSecret);
-    
-    // Step C6: Generate random nonce N_ICC (16 bytes for CS2)
-    PIVCrypto.doGenerateRandom(smResponse, offsetNonce, (short) 16);
+    key.keyAgreement(smResponse, offQeh, pointLen, smResponse, offZ); // C5
+    PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
 
-    // Step C1: ID_sICC = T_8(SHA-256(C_ICC))
-    short cvcLength = key.getSmCvcLength();
-    key.getSmCvc(smResponse, offsetDerived);
-    PIVCrypto.doSha256(smResponse, offsetDerived, cvcLength, smResponse, offsetIdSicc);
+    // C1: ID_sICC = T_8(SHA-256(C_ICC)) — always SHA-256, both suites
+    short cvcLen = key.getSmCvcLength();
+    key.getSmCvc(scratch, ZERO);
+    PIVCrypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
 
-    // Step C7: SK_CFRM || SK_MAC || SK_ENC || SK_RMAC = KDF(Z, len, OtherInfo)
-    deriveCs2SessionKeys(offsetSharedSecret, offsetNonce, offsetIdH, offsetQeh, offsetIdSicc, offsetDerived);
-    secureMessaging.setSessionKeys(scratch, offsetDerived);
+    // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
+    deriveOpacitySessionKeys(field, sessionKeyLen, offZ, offN, nLen, offIdH, offQeh, offIdSicc);
+    secureMessaging.setSessionKeys(scratch, ZERO, sessionKeyLen);
 
-    // Step C9: AuthCryptogram_ICC = CMAC(SK_CFRM, "KC_1_V" || ID_sICC || ID_sH || Q_eH)
-    short authLength = buildCs2AuthenticationCryptogramInput(offsetIdH, offsetQeh, offsetIdSicc);
-    secureMessaging.computeConfirmationMac(scratch, ZERO, authLength, scratch, offsetDerived);
+    short authLen = buildOpacityAuthCryptogramInput(offIdH, offQeh, offIdSicc, xyLen);
+    secureMessaging.computeConfirmationMac(scratch, ZERO, authLen, scratch, ZERO);
 
-    // Step C11: Return CB_ICC || N_ICC || AuthCryptogram_ICC || C_ICC (Section 4.1.8 Data Field format)
+    // C11: CB_ICC || N_ICC || AuthCryptogram_ICC(16) || C_ICC
     TLVWriter writer = TLVWriter.getInstance();
-    writer.init(smResponse, ZERO, (short) 296, CONST_TAG_AUTH_TEMPLATE);
+    writer.init(smResponse, ZERO, LENGTH_SM_RESPONSE, CONST_TAG_AUTH_TEMPLATE);
     writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
-    writer.writeLength((short) (33 + cvcLength));
+    writer.writeLength((short) (1 + nLen + 16 + cvcLen));
     short out = writer.getOffset();
-    smResponse[out++] = (byte) 0; // CB_ICC (Step C2/C3 check CB_ICC == 0x00)
-    out = Util.arrayCopyNonAtomic(smResponse, offsetNonce, smResponse, out, (short) 16);
-    out = Util.arrayCopyNonAtomic(scratch, offsetDerived, smResponse, out, (short) 16);
+    smResponse[out++] = (byte) 0;
+    out = Util.arrayCopyNonAtomic(smResponse, offN, smResponse, out, nLen);
+    out = Util.arrayCopyNonAtomic(scratch, ZERO, smResponse, out, (short) 16);
     out = key.getSmCvc(smResponse, out);
     writer.setOffset(out);
     short length = writer.finish();
 
     secureMessaging.markEstablished(
         config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE);
-
     chainBuffer.setOutgoing(smResponse, ZERO, length, true);
-
     return length;
   }
 
   /**
-   * Derives Cipher Suite 2 (CS2) session keys using the KDF function defined in
-   * NIST SP 800-73-5 Part 2, Section 4.1.6.
+   * Concatenation KDF (Part 2 Section 4.1.6): Hash(i || Z || OtherInfo) rounds until 4 session
+   * keys are filled. Hash is SHA-256 (field=32) or SHA-384 (field=48). Output in {@code
+   * scratch[0..]}.
    */
-  private void deriveCs2SessionKeys(
-      short sharedSecretOffset,
-      short nonceOffset,
-      short idHOffset,
-      short qehOffset,
-      short idSiccOffset,
-      short outOffset) {
-    buildCs2KdfInput((byte) 1, sharedSecretOffset, nonceOffset, idHOffset, qehOffset, idSiccOffset);
-    PIVCrypto.doSha256(scratch, ZERO, (short) 97, scratch, outOffset);
-    buildCs2KdfInput((byte) 2, sharedSecretOffset, nonceOffset, idHOffset, qehOffset, idSiccOffset);
-    PIVCrypto.doSha256(scratch, ZERO, (short) 97, scratch, (short) (outOffset + 32));
+  private void deriveOpacitySessionKeys(
+      short field,
+      short sessionKeyLen,
+      short zOff,
+      short nOff,
+      short nLen,
+      short idHOff,
+      short qehOff,
+      short idSiccOff) {
+    final short outLen = (short) (sessionKeyLen * 4);
+    final short kdfBase = (short) 128; // after max 128-byte key material
+    short written = ZERO;
+    for (byte i = (byte) 1; written < outLen; i++) {
+      short inLen =
+          buildOpacityKdfInput(kdfBase, i, OPACITY_KDF_ALG_ID, zOff, field, nOff, nLen, idHOff, qehOff, idSiccOff);
+      PIVCrypto.doSha(field, scratch, kdfBase, inLen, smResponse, OPACITY_HASH_TMP);
+      short toCopy = field;
+      if ((short) (written + toCopy) > outLen) {
+        toCopy = (short) (outLen - written);
+      }
+      Util.arrayCopyNonAtomic(smResponse, OPACITY_HASH_TMP, scratch, written, toCopy);
+      written += toCopy;
+    }
   }
 
-  /**
-   * Constructs OtherInfo input for the CS2 Key Derivation Function (KDF)
-   * as specified in NIST SP 800-73-5 Part 2, Section 4.1.6 Table: OtherInfo CS2.
-   * KDF Input: Counter || Z || OtherInfo
-   */
-  private void buildCs2KdfInput(
+  /** Counter || Z || OtherInfo into {@code scratch[base..]}. Returns length. */
+  private short buildOpacityKdfInput(
+      short base,
       byte counter,
-      short sharedSecretOffset,
-      short nonceOffset,
-      short idHOffset,
-      short qehOffset,
-      short idSiccOffset) {
-    short out = ZERO;
+      byte algIdByte,
+      short zOff,
+      short zLen,
+      short nOff,
+      short nLen,
+      short idHOff,
+      short qehOff,
+      short idSiccOff) {
+    short out = base;
     scratch[out++] = (byte) 0;
     scratch[out++] = (byte) 0;
     scratch[out++] = (byte) 0;
     scratch[out++] = counter;
-    out = Util.arrayCopyNonAtomic(smResponse, sharedSecretOffset, scratch, out, (short) 32);
+    out = Util.arrayCopyNonAtomic(smResponse, zOff, scratch, out, zLen);
     scratch[out++] = (byte) 0x04;
-    scratch[out++] = (byte) 0x09;
-    scratch[out++] = (byte) 0x09;
-    scratch[out++] = (byte) 0x09;
-    scratch[out++] = (byte) 0x09;
+    scratch[out++] = algIdByte;
+    scratch[out++] = algIdByte;
+    scratch[out++] = algIdByte;
+    scratch[out++] = algIdByte;
     scratch[out++] = (byte) 0x08;
-    out = Util.arrayCopyNonAtomic(smResponse, idHOffset, scratch, out, (short) 8);
+    out = Util.arrayCopyNonAtomic(smResponse, idHOff, scratch, out, (short) 8);
     scratch[out++] = (byte) 0x01;
     scratch[out++] = (byte) 0x00;
     scratch[out++] = (byte) 0x10;
-    out = Util.arrayCopyNonAtomic(smResponse, (short) (qehOffset + 1), scratch, out, (short) 16);
+    out = Util.arrayCopyNonAtomic(smResponse, (short) (qehOff + 1), scratch, out, (short) 16);
     scratch[out++] = (byte) 0x08;
-    out = Util.arrayCopyNonAtomic(smResponse, idSiccOffset, scratch, out, (short) 8);
-    scratch[out++] = (byte) 0x10;
-    out = Util.arrayCopyNonAtomic(smResponse, nonceOffset, scratch, out, (short) 16);
+    out = Util.arrayCopyNonAtomic(smResponse, idSiccOff, scratch, out, (short) 8);
+    scratch[out++] = (byte) nLen;
+    out = Util.arrayCopyNonAtomic(smResponse, nOff, scratch, out, nLen);
     scratch[out++] = (byte) 0x01;
-    scratch[out] = (byte) 0x00;
+    scratch[out++] = (byte) 0x00;
+    return (short) (out - base);
   }
 
-  /**
-   * Constructs MacData_p input for Key Confirmation AuthCryptogram_ICC
-   * as specified in NIST SP 800-73-5 Part 2, Section 4.1.7.
-   * MacData_p: "KC_1_V" || ID_sICC || ID_sH || Q_eH
-   */
-  private short buildCs2AuthenticationCryptogramInput(
-      short idHOffset, short qehOffset, short idSiccOffset) {
+  /** {@code "KC_1_V" || ID_sICC || ID_sH || Q_eH.xy} (Section 4.1.7). */
+  private short buildOpacityAuthCryptogramInput(
+      short idHOff, short qehOff, short idSiccOff, short xyLen) {
     short out = ZERO;
     scratch[out++] = (byte) 0x4B;
     scratch[out++] = (byte) 0x43;
@@ -1882,9 +1916,9 @@ final class PIV {
     scratch[out++] = (byte) 0x31;
     scratch[out++] = (byte) 0x5F;
     scratch[out++] = (byte) 0x56;
-    out = Util.arrayCopyNonAtomic(smResponse, idSiccOffset, scratch, out, (short) 8);
-    out = Util.arrayCopyNonAtomic(smResponse, idHOffset, scratch, out, (short) 8);
-    out = Util.arrayCopyNonAtomic(smResponse, (short) (qehOffset + 1), scratch, out, (short) 64);
+    out = Util.arrayCopyNonAtomic(smResponse, idSiccOff, scratch, out, (short) 8);
+    out = Util.arrayCopyNonAtomic(smResponse, idHOff, scratch, out, (short) 8);
+    out = Util.arrayCopyNonAtomic(smResponse, (short) (qehOff + 1), scratch, out, xyLen);
     return out;
   }
 
@@ -2556,7 +2590,7 @@ final class PIV {
     // ECC keys have no parameter.
 
     // PRE-CONDITION 4A - F9 is the imported attestation authority and must never be generated.
-    if (buffer[ISO7816.OFFSET_P2] == PIVAttestation.ID_KEY_ATTESTATION) {
+    if (buffer[ISO7816.OFFSET_P2] == ID_KEY_ATTESTATION) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
@@ -3084,13 +3118,28 @@ final class PIV {
     // F9 is reserved for the attestation authority. It is still created through the normal
     // key-object definition path, but its shape is fixed so provisioning can use CHANGE REFERENCE
     // DATA without introducing an attestation-specific import APDU.
-    if (id == PIVAttestation.ID_KEY_ATTESTATION
+    if (id == ID_KEY_ATTESTATION
+        //#if ATTESTATION_ENABLED
         && (modeContact != PIVObject.ACCESS_MODE_NEVER
             || modeContactless != PIVObject.ACCESS_MODE_NEVER
             || keyMechanism != ID_ALG_ECC_P256
             || keyRole != PIVKeyObject.ROLE_SIGN
-            || keyAttribute != PIVKeyObject.ATTR_IMPORTABLE)) {
+            || keyAttribute != PIVKeyObject.ATTR_IMPORTABLE)
+        //#else
+        && true
+        //#endif
+        ) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    if (id == ID_KEY_SECURE_MESSAGING
+        && (keyMechanism == ID_ALG_ECC_CS2 || keyMechanism == ID_ALG_ECC_CS7)) {
+      if (keyMechanism != ID_ALG_ECC_SM) {
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+      }
+      if (cspPIV.keyExists(ID_KEY_SECURE_MESSAGING)) {
+        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      }
     }
 
     if (config.readFlag(Config.OPTION_RESTRICT_SINGLE_KEY)) {
@@ -3144,7 +3193,7 @@ final class PIV {
     byte id = reader.toByte();
     reader.moveNext();
 
-    if (id == PIVAttestation.ID_KEY_ATTESTATION) {
+    if (id == ID_KEY_ATTESTATION) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -3184,7 +3233,7 @@ final class PIV {
       PIVKeyObject key, byte[] buffer, short offset, short length) {
     if (!(key instanceof PIVKeyObjectECC)) return false;
     if (key.getId() != ID_KEY_SECURE_MESSAGING) return false;
-    if (key.getMechanism() != ID_ALG_ECC_CS2 && key.getMechanism() != ID_ALG_ECC_CS7) return false;
+    if (key.getMechanism() != ID_ALG_ECC_SM) return false;
     if (length < (short) 4 || buffer[offset] != (byte) 0x30) return false;
 
     short sequenceLength = TLVReader.getLength(buffer, offset);
@@ -3455,10 +3504,12 @@ final class PIV {
     // F9 carries the authority private scalar and issuer profile. A prior management-key
     // authentication may authorize ordinary key rotation, but it must not downgrade authority
     // import to plaintext.
-    if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION && !cspPIV.getIsSecureChannel()) {
+    //#if ATTESTATION_ENABLED
+    if (key.getId() == ID_KEY_ATTESTATION && !cspPIV.getIsSecureChannel()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
     }
+    //#endif
 
     // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
     // This allows either SCP or prior successful authentication with the key's admin key.
@@ -3515,23 +3566,30 @@ final class PIV {
     }
 
     // STEP 3 - Update the relevant key element.
-    if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION
+    //#if ATTESTATION_ENABLED
+    if (key.getId() == ID_KEY_ATTESTATION
         && (elementTag == PIVAttestation.ELEMENT_SUBJECT
             || elementTag == PIVAttestation.ELEMENT_VALIDITY)) {
       attestation.updateElement(elementTag, scratch, elementOffset, elementLength);
     } else {
+    //#endif
       key.updateElement(elementTag, scratch, elementOffset, elementLength);
-      if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION) {
+      //#if ATTESTATION_ENABLED
+      if (key.getId() == ID_KEY_ATTESTATION) {
         if (elementTag == PIVKeyObject.ELEMENT_CLEAR) {
           attestation.clearProfile();
         } else {
           attestation.noteKeyElementUpdated(elementTag);
         }
       }
+      //#endif
+    //#if ATTESTATION_ENABLED
     }
+    //#endif
     key.markImported();
 
-    if (key.getId() == PIVAttestation.ID_KEY_ATTESTATION) {
+    //#if ATTESTATION_ENABLED
+    if (key.getId() == ID_KEY_ATTESTATION) {
       if (!(key instanceof PIVKeyObjectECC)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
@@ -3541,15 +3599,17 @@ final class PIV {
         // Committing a new authority changes the card's trust root. Keep object definitions, but
         // clear data contents and non-F9 key material tied to the prior authority.
         clearDataObjects();
-        cspPIV.clearKeyMaterialExcept(PIVAttestation.ID_KEY_ATTESTATION);
+        cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
         attestation.markAuthorityActive();
       }
     }
+    //#endif
 
     // STEP 4 - Clear any prior key-authenticated session after a key value change.
     cspPIV.clearAuthenticatedKey();
   }
 
+  //#if ATTESTATION_ENABLED
   /**
    * Builds an attestation certificate for an on-card generated key.
    *
@@ -3577,7 +3637,7 @@ final class PIV {
     }
 
     PIVKeyObjectECC authority =
-        (PIVKeyObjectECC) cspPIV.selectKey(PIVAttestation.ID_KEY_ATTESTATION, ID_ALG_ECC_P256);
+        (PIVKeyObjectECC) cspPIV.selectKey(ID_KEY_ATTESTATION, ID_ALG_ECC_P256);
     if (authority == null || !attestation.isAuthorityActive()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
@@ -3625,6 +3685,7 @@ final class PIV {
   private static final byte[] ATTESTABLE_KEY_MECHANISMS = {
     ID_ALG_RSA_1024, ID_ALG_RSA_2048, ID_ALG_ECC_P256, ID_ALG_ECC_P384
   };
+  //#endif
 
   private short processGetVersion(TLVWriter writer) {
 

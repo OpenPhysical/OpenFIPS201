@@ -47,7 +47,12 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   // The PIV secure messaging CVC element tag (OpenFIPS201 ASN.1 smCVC [10]).
   static final byte ELEMENT_SM_CVC = (byte) 0x8A;
 
+  //#if VCI_CS2
   private static final short LENGTH_SM_CVC_MAX = (short) 256;
+  //#else
+  // CS7 (P-384) production CVCs are ~275 bytes; allow headroom for encoding variance.
+  private static final short LENGTH_SM_CVC_MAX = (short) 384;
+  //#endif
 
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
@@ -405,7 +410,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     writer.begin((byte) 0x30);
     writer.begin((byte) 0x30);
     writer.writeTlv((byte) 0x06, OID_EC_PUBLIC_KEY, (short) 0x00, (short) OID_EC_PUBLIC_KEY.length);
-    if (getMechanism() == PIV.ID_ALG_ECC_P256) {
+    if (getKeyLengthBits() == KeyBuilder.LENGTH_EC_FP_256) {
       writer.writeTlv((byte) 0x06, OID_PRIME256V1, (short) 0x00, (short) OID_PRIME256V1.length);
     } else {
       writer.writeTlv((byte) 0x06, OID_SECP384R1, (short) 0x00, (short) OID_SECP384R1.length);

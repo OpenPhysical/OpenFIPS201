@@ -73,6 +73,7 @@ final class ChainBuffer {
 
   // Indicates whether the chain is operating inside a transaction
   private static final short CONTEXT_TRANSACTION = (short) 6;
+  private static final short CONTEXT_SECURE_OUTGOING = (short) 7;
 
   // The APDU header used for tracking incoming data
   // NOTE: It's cheaper to use 4 shorts in this array than to allocate a separate 4 bytes, as the
@@ -142,6 +143,7 @@ final class ChainBuffer {
     context[CONTEXT_REMAINING] = (short) 0;
     context[CONTEXT_LENGTH] = (short) 0;
     context[CONTEXT_CLEAR_ON_COMPLETE] = (short) 0;
+    context[CONTEXT_SECURE_OUTGOING] = (short) 0;
     context[CONTEXT_APDU_CLASS] = (short) 0;
     context[CONTEXT_APDU_P1P2] = (short) 0;
     context[CONTEXT_TRANSACTION] = (short) 0;
@@ -532,56 +534,52 @@ final class ChainBuffer {
       APDU apdu, PIVSecureMessaging secureMessaging, byte[] buffer, short sw) throws ISOException {
 
     byte[] apduBuffer = apdu.getBuffer();
-    byte[] plaintextBuffer = buffer;
     short plaintextOffset = (short) 0;
-    short plaintextLength = (short) 0;
-    short responseSw = sw;
+    short plaintextRemaining = (short) 0;
 
     if (context[CONTEXT_STATE] == STATE_OUTGOING) {
       if (apduBuffer[ISO7816.OFFSET_INS] != INS_GET_RESPONSE
-          && context[CONTEXT_REMAINING] != context[CONTEXT_LENGTH]) {
+          && context[CONTEXT_SECURE_OUTGOING] != (short) 0) {
         reset();
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
-      plaintextBuffer = (byte[]) dataPtr[0];
       plaintextOffset = context[CONTEXT_OFFSET];
-      // 191 plaintext bytes pad to 192 encrypted bytes. With response DOs, MAC input, and the
-      // temporary 16-byte CMAC output, this fits the 448-byte secure-messaging response buffer.
-      plaintextLength =
-          (context[CONTEXT_REMAINING] > PIVSecureMessaging.MAX_RESPONSE_PLAINTEXT)
-              ? PIVSecureMessaging.MAX_RESPONSE_PLAINTEXT
-              : context[CONTEXT_REMAINING];
-
-      context[CONTEXT_REMAINING] -= plaintextLength;
-      context[CONTEXT_OFFSET] += plaintextLength;
-
-      if (context[CONTEXT_REMAINING] == (short) 0) {
-        reset();
-      } else {
-        short sw2 =
-            (context[CONTEXT_REMAINING] > (short) 0x00FF)
-                ? (short) 0x00FF
-                : context[CONTEXT_REMAINING];
-        responseSw = (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
+      plaintextRemaining = context[CONTEXT_REMAINING];
+      if (context[CONTEXT_SECURE_OUTGOING] == (short) 0) {
+        secureMessaging.beginResponseStream(plaintextRemaining, sw);
+        context[CONTEXT_SECURE_OUTGOING] = (short) 1;
       }
     } else if (context[CONTEXT_STATE] != STATE_NONE) {
       resetAbort();
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    } else {
+      secureMessaging.beginResponseStream((short) 0, sw);
+      context[CONTEXT_SECURE_OUTGOING] = (short) 1;
     }
 
+    short le = apdu.setOutgoing();
+    if (le == (short) 0) le = (short) 256;
     short length =
-        secureMessaging.wrapResponse(
-            plaintextBuffer,
+        secureMessaging.writeResponseStreamChunk(
+            context[CONTEXT_STATE] == STATE_OUTGOING ? (byte[]) dataPtr[0] : buffer,
             plaintextOffset,
-            plaintextLength,
-            responseSw,
             buffer,
-            (short) 0);
+            (short) 0,
+            le);
+    short consumed = secureMessaging.getResponseStreamPlaintextConsumed();
+    if (consumed > (short) 0) {
+      context[CONTEXT_OFFSET] += consumed;
+      context[CONTEXT_REMAINING] -= consumed;
+    }
 
-    apdu.setOutgoing();
     apdu.setOutgoingLength(length);
     apdu.sendBytesLong(buffer, (short) 0, length);
-    ISOException.throwIt(ISO7816.SW_NO_ERROR);
+    short responseSw = secureMessaging.getResponseStreamStatusWord();
+    if (secureMessaging.isResponseStreamComplete()) {
+      reset();
+    }
+
+    ISOException.throwIt(responseSw);
   }
 }

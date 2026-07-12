@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
@@ -42,10 +43,15 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   @BeforeEach
   void setUpCard() {
+    assumeTrue(isCs2Build(), "white-box SM dispatch tests use CS2 session-key fixtures");
     PIVCrypto.init();
     engine = JavaCardEngine.create();
     engine.installApplet(OPENFIPS201_AID, OpenFIPS201.class, new byte[0]);
     session = engine.connect();
+  }
+
+  private static boolean isCs2Build() {
+    return !"CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
   }
 
   @AfterEach
@@ -55,88 +61,83 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
-  /**
-   * Verifies that secure outgoing response chunks fit the secure messaging response buffer.
-   *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6. Outgoing plaintext blocks are capped to
-   * leave sufficient room for secure messaging envelope tags ('87', '99', '8E') and padding.
-   */
   @Test
-  void secureOutgoingChunksFitSecureMessagingResponseBuffer() throws Exception {
-    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
-    Object piv = field(realApplet, "piv").get(realApplet);
-    Object chainBuffer = field(piv, "chainBuffer").get(piv);
+  void secureOutgoingStreamsProtectedResponseAcrossPhysicalGetResponse() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, new byte[64], (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-    byte[] outgoing = new byte[256];
-    method(
-            chainBuffer.getClass(),
-            "setOutgoing",
-            byte[].class,
-            short.class,
-            short.class,
-            boolean.class)
-        .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+      byte[] outgoing = new byte[256];
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
 
-    byte[] apduBuffer = new byte[5];
-    apduBuffer[ISO7816.OFFSET_INS] = (byte) 0xC0;
-    APDU apdu = Mockito.mock(APDU.class);
-    when(apdu.getBuffer()).thenReturn(apduBuffer);
+      byte[] apduBuffer = new byte[5];
+      apduBuffer[ISO7816.OFFSET_INS] = (byte) 0xCB;
+      APDU apdu = Mockito.mock(APDU.class);
+      when(apdu.getBuffer()).thenReturn(apduBuffer);
+      when(apdu.setOutgoing()).thenReturn((short) 256);
 
-    Class<?> secureMessagingClass =
-        chainBuffer.getClass().getClassLoader().loadClass(PIVSecureMessaging.class.getName());
-    Object secureMessaging = Mockito.mock(secureMessagingClass);
-    byte[] secureResponse = new byte[448];
-    final short[] wrappedPlaintextLength = new short[] {(short) -1};
-    Method wrapResponse =
-        method(
-            secureMessagingClass,
-            "wrapResponse",
-            byte[].class,
-            short.class,
-            short.class,
-            short.class,
-            byte[].class,
-            short.class);
-    doAnswer(
-            invocation -> {
-              wrappedPlaintextLength[0] = (Short) invocation.getArgument(2);
-              return (short) 16;
-            })
-        .when(secureMessaging);
-    wrapResponse.invoke(
-        secureMessaging,
-        Mockito.any(byte[].class),
-        Mockito.anyShort(),
-        Mockito.anyShort(),
-        Mockito.anyShort(),
-        Mockito.same(secureResponse),
-        Mockito.eq((short) 0));
+      final short[] sentLength = new short[] {(short) 0};
+      final byte[][] sent = new byte[][] {new byte[256]};
+      doAnswer(
+              invocation -> {
+                byte[] source = invocation.getArgument(0);
+                short offset = invocation.getArgument(1);
+                short length = invocation.getArgument(2);
+                sentLength[0] = length;
+                System.arraycopy(source, offset, sent[0], 0, length);
+                return null;
+              })
+          .when(apdu)
+          .sendBytesLong(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort());
 
-    Method processOutgoingSecure =
-        method(
-            chainBuffer.getClass(),
-            "processOutgoingSecure",
-            APDU.class,
-            secureMessagingClass,
-            byte[].class,
-            short.class);
-    InvocationTargetException thrown =
-        assertThrows(
-            InvocationTargetException.class,
-            () ->
-                processOutgoingSecure.invoke(
-                    chainBuffer, apdu, secureMessaging, secureResponse, ISO7816.SW_NO_ERROR));
+      Method processOutgoingSecure =
+          method(
+              chainBuffer.getClass(),
+              "processOutgoingSecure",
+              APDU.class,
+              secureMessagingClass,
+              byte[].class,
+              short.class);
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  processOutgoingSecure.invoke(
+                      chainBuffer, apdu, secureMessaging, new byte[448], ISO7816.SW_NO_ERROR));
 
-    assertTrue(
-        thrown.getCause() instanceof ISOException, "Chain completion should throw SW_NO_ERROR");
-    assertEquals(
-        ISO7816.SW_NO_ERROR,
-        ((ISOException) thrown.getCause()).getReason(),
-        "Successful wrap completes by ISOException");
-    assertEquals(
-        MAX_SAFE_SECURE_RESPONSE_PLAINTEXT,
-        wrappedPlaintextLength[0],
-        "Secure outgoing chunks must leave room for response wrapping overhead");
+      assertTrue(first.getCause() instanceof ISOException);
+      assertEquals((short) 0x6123, ((ISOException) first.getCause()).getReason());
+      assertEquals((short) 256, sentLength[0]);
+      assertEquals((byte) 0x87, sent[0][0]);
+      assertEquals((byte) 0x82, sent[0][1]);
+      assertEquals((byte) 0x01, sent[0][2]);
+      assertEquals((byte) 0x11, sent[0][3]);
+      assertEquals((byte) 0x01, sent[0][4]);
+
+      apduBuffer[ISO7816.OFFSET_INS] = (byte) 0xC0;
+      InvocationTargetException second =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  processOutgoingSecure.invoke(
+                      chainBuffer, apdu, secureMessaging, new byte[448], ISO7816.SW_NO_ERROR));
+      assertTrue(second.getCause() instanceof ISOException);
+      assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
+      assertEquals((short) 35, sentLength[0]);
+    }
   }
 
   /**
@@ -408,15 +409,14 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * Verifies that a plain GET RESPONSE command does not increment the encryption counter.
+   * Verifies that a secure response stream increments the encryption counter once when the
+   * logical response completes.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.2 (Encryption counter increment
    * exceptions).
    */
   @Test
-  void plainGetResponseSecureContinuationDoesNotIncrementEncryptionCounter() throws Exception {
-    // SP 800-73-5 Part 2 Section 4.2.2 states that the encryption counter is not
-    // incremented for GET RESPONSE in a secure-messaging response chain.
+  void secureResponseStreamIncrementsEncryptionCounterOnceOnCompletion() throws Exception {
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
@@ -459,10 +459,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
       assertSw(0x9000, response, "Plain GET RESPONSE secure continuation");
 
+      byte[] expectedCounter = counterBeforeGetResponse.clone();
+      expectedCounter[15]++;
       assertArrayEquals(
-          counterBeforeGetResponse,
+          expectedCounter,
           counter(secureMessaging),
-          "Plain GET RESPONSE secure continuation must not increment the encryption counter");
+          "Completing a secure response stream must increment the logical command counter once");
     }
   }
 
