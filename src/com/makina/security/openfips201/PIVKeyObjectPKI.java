@@ -76,6 +76,9 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
    */
   abstract short generate(byte[] outBuffer, short outOffset);
 
+  /** Returns whether this key object currently has usable private key material. */
+  abstract boolean isInitialised();
+
   /**
    * Writes the public key as an X.509 SubjectPublicKeyInfo structure.
    *

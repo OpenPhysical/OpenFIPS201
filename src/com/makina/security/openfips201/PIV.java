@@ -3702,6 +3702,14 @@ final class PIV {
   private PIVKeyObjectPKI selectAttestableTarget(byte slot) {
     for (byte i = (byte) 0x00; i < ATTESTABLE_KEY_MECHANISMS.length; i++) {
       PIVKeyObject target = cspPIV.selectKey(slot, ATTESTABLE_KEY_MECHANISMS[i]);
+      if (target instanceof PIVKeyObjectPKI
+          && target.isGenerated()
+          && ((PIVKeyObjectPKI) target).isInitialised()) {
+        return (PIVKeyObjectPKI) target;
+      }
+    }
+    for (byte i = (byte) 0x00; i < ATTESTABLE_KEY_MECHANISMS.length; i++) {
+      PIVKeyObject target = cspPIV.selectKey(slot, ATTESTABLE_KEY_MECHANISMS[i]);
       if (target instanceof PIVKeyObjectPKI) return (PIVKeyObjectPKI) target;
     }
     return null;

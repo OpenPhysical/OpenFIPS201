@@ -51,18 +51,21 @@ public final class AttestationProofService {
   }
 
   private static void createProofKey(CardSession session, byte slot) {
-    byte[] definition =
+    AttestationAuthorityService.transmitExpect(
+        session, new CommandAPDU(0x84, 0xDB, 0x3F, 0x00, proofKeyDefinition(slot)), true);
+  }
+
+  static byte[] proofKeyDefinition(byte slot) {
+    return
         AttestationSupport.tlv(
             0x66,
             AttestationSupport.concat(
                 AttestationSupport.tlv(0x8B, new byte[] {slot}),
                 AttestationSupport.tlv(0x8C, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
-                AttestationSupport.tlv(0x8D, new byte[] {AttestationSupport.ACCESS_NEVER}),
+                AttestationSupport.tlv(0x8D, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
                 AttestationSupport.tlv(0x8E, new byte[] {AttestationSupport.ALG_ECC_P256}),
                 AttestationSupport.tlv(0x8F, new byte[] {AttestationSupport.ROLE_SIGN}),
                 AttestationSupport.tlv(0x90, new byte[] {0x00})));
-    AttestationAuthorityService.transmitExpect(
-        session, new CommandAPDU(0x84, 0xDB, 0x3F, 0x00, definition), true);
   }
 
   private static boolean deleteProofKey(CardSession session, byte slot) {

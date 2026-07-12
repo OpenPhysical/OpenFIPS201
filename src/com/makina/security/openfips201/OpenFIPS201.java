@@ -201,11 +201,18 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       return;
     }
 
-    // SPECIAL CASE 1 - GET RESPONSE
-    // We handle the GET RESPONSE command differently because it is the only ISO 7816 Case 1 / 3
-    // command this applet supports and we don't care about secure channel processing.
-    if (buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE
-        && !piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA])) {
+    boolean pivSecureMessagingCla = piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA]);
+    boolean gpSecureMessagingCla = apdu.isSecureMessagingCLA();
+    boolean plaintextGetResponse =
+        buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE
+            && !pivSecureMessagingCla
+            && !gpSecureMessagingCla;
+
+    // SPECIAL CASE 1 - plaintext GET RESPONSE
+    // We handle plaintext GET RESPONSE before incoming-data processing because it carries no
+    // command data. A GP SCP-protected GET RESPONSE must not take this shortcut: the platform
+    // secure-channel layer has to unwrap it so the host and card SCP state stay synchronized.
+    if (plaintextGetResponse) {
       piv.processOutgoing(apdu);
       return;
     }
@@ -235,9 +242,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // Default to no secure channel until the APDU unwrap confirms one.
     piv.setIsSecureChannel(false);
     piv.clearSecureMessagingCommand();
-
-    boolean pivSecureMessagingCla = piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA]);
-    boolean gpSecureMessagingCla = apdu.isSecureMessagingCLA();
 
     if (pivSecureMessagingCla) {
       length = piv.unwrapSecureMessagingCommand(buffer, offset, length);

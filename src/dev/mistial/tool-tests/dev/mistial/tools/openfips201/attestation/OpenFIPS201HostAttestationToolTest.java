@@ -34,6 +34,7 @@ import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.crypto.Passphrases;
+import dev.mistial.tools.openfips201.crypto.PemSigningKey;
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -85,6 +86,13 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   @Test
+  void proofKeyDefinitionAllowsProofAttestationOnContactAndContactlessReaders() {
+    assertArrayEquals(
+        hex("66128B01828C017F8D017F8E01118F0104900100"),
+        AttestationProofService.proofKeyDefinition((byte) 0x82));
+  }
+
+  @Test
   void issuerCertificateObjectUsesFullThreeByteObjectIdentifier() {
     byte[] objectId = hex("5FFF01");
     byte[] cert = hex("010203");
@@ -116,6 +124,29 @@ class OpenFIPS201HostAttestationToolTest {
     assertTrue(
         profile.validityDer.length > 0,
         "Validity DER should be uploaded from the issuer certificate");
+  }
+
+  @Test
+  void generatedF9AuthorityUsesConfiguredRootAndF9Subjects() throws Exception {
+    KeyPair root = AttestationSupport.generateF9KeyPair();
+    CommonRecordingSession session = new CommonRecordingSession();
+
+    AttestationAuthorityService.Result result =
+        new AttestationAuthorityService()
+            .importGeneratedAuthority(
+                session,
+                new PemSigningKey(root.getPrivate(), root.getPublic(), "test-root"),
+                "O=Example,CN=Example Root",
+                "OU=Factory,CN=Line 7 F9",
+                365,
+                AttestationSupport.DEFAULT_ISSUER_OBJECT_ID);
+
+    assertArrayEquals(
+        new X500Name("O=Example,CN=Example Root").getEncoded(),
+        X500Name.getInstance(result.issuerCertificate.getIssuerX500Principal().getEncoded()).getEncoded());
+    assertArrayEquals(
+        new X500Name("OU=Factory,CN=Line 7 F9").getEncoded(),
+        X500Name.getInstance(result.issuerCertificate.getSubjectX500Principal().getEncoded()).getEncoded());
   }
 
   @Test
@@ -277,6 +308,20 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   private static final class RecordingSession implements CardSession {
+    final List<CommandAPDU> commands = new ArrayList<CommandAPDU>();
+
+    @Override
+    public ResponseAPDU transmit(CommandAPDU command) {
+      commands.add(command);
+      return ResponseAPDU.OK;
+    }
+
+    @Override
+    public void close() {}
+  }
+
+  private static final class CommonRecordingSession
+      implements dev.mistial.tools.openfips201.common.CardSession {
     final List<CommandAPDU> commands = new ArrayList<CommandAPDU>();
 
     @Override

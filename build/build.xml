@@ -257,7 +257,7 @@
     </javac>
   </target>
 
-  <target name="openfips201-tool" depends="tool-compile">
+  <target name="openfips201-tool" depends="compile,tool-compile">
     <java classname="dev.mistial.tools.openfips201.OpenFips201Tool" fork="true" failonerror="true">
       <classpath refid="tool.runtime.classpath"/>
       <arg line="${args}"/>
