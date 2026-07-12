@@ -17,7 +17,7 @@ import pro.javacard.gp.GPCardKeys;
 
 public final class Scp03Kdf3DerivationService {
   private static final int KDD_LENGTH = 10;
-  private static final int KEY_LENGTH = 32;
+  private static final int DEFAULT_KEY_LENGTH = 32;
   private static final byte PURPOSE_ENC = 0x01;
   private static final byte PURPOSE_MAC = 0x02;
   private static final byte PURPOSE_DEK = 0x03;
@@ -33,12 +33,22 @@ public final class Scp03Kdf3DerivationService {
   }
 
   public DerivedScpKeys derive(Pkcs11Config masterKey, byte[] kdd, int keyVersion) {
+    return derive(masterKey, kdd, keyVersion, DEFAULT_KEY_LENGTH);
+  }
+
+  public DerivedScpKeys derive(Pkcs11Config masterKey, byte[] kdd, int keyVersion, int keyLength) {
     if (kdd == null || kdd.length != KDD_LENGTH) {
       throw new IllegalArgumentException("SCP03 KDF3 KDD must be 10 bytes");
+    }
+    if (keyLength != 16 && keyLength != 24 && keyLength != 32) {
+      throw new IllegalArgumentException("SCP03 card key length must be 16, 24, or 32 bytes");
     }
     byte[] enc = deriveOne(masterKey, PURPOSE_ENC, kdd);
     byte[] mac = deriveOne(masterKey, PURPOSE_MAC, kdd);
     byte[] dek = deriveOne(masterKey, PURPOSE_DEK, kdd);
+    enc = slice(enc, 0, keyLength);
+    mac = slice(mac, 0, keyLength);
+    dek = slice(dek, 0, keyLength);
     ScpConfig config = new ScpConfig(ScpConfig.Mode.SCP03, keyVersion, enc, mac, dek);
     return new DerivedScpKeys(
         config,
@@ -49,11 +59,11 @@ public final class Scp03Kdf3DerivationService {
 
   private byte[] deriveOne(Pkcs11Config masterKey, byte purpose, byte[] kdd) {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
-    for (int counter = 1; out.size() < KEY_LENGTH; counter++) {
+    for (int counter = 1; out.size() < DEFAULT_KEY_LENGTH; counter++) {
       byte[] round = cmac.sign(masterKey, roundInput(counter, purpose, kdd));
       out.write(round, 0, round.length);
     }
-    return slice(out.toByteArray(), 0, KEY_LENGTH);
+    return slice(out.toByteArray(), 0, DEFAULT_KEY_LENGTH);
   }
 
   static byte[] roundInput(int counter, byte purpose, byte[] kdd) {

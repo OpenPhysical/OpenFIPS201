@@ -3712,11 +3712,6 @@ final class PIV {
     }
     return slot >= (byte) 0x82 && slot <= (byte) 0x95;
   }
-
-  // Attestable mechanisms must provide SubjectPublicKeyInfo emission and key-origin tracking.
-  private static final byte[] ATTESTABLE_KEY_MECHANISMS = {
-    ID_ALG_RSA_1024, ID_ALG_RSA_2048, ID_ALG_ECC_P256, ID_ALG_ECC_P384
-  };
   //#endif
 
   private short processGetVersion(TLVWriter writer) {

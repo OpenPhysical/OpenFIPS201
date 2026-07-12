@@ -24,7 +24,7 @@ public final class AppletInstallService {
       tryDelete(session, packageAid);
     }
 
-    session.installCap(cap, packageAid, appletAid, instanceAid, null, request.loadCap);
+    session.installCap(cap, packageAid, appletAid, instanceAid, new byte[0], request.loadCap);
   }
 
   private static void tryDelete(GlobalPlatformSession session, AID aid) {

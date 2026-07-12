@@ -79,11 +79,28 @@ public final class CardTarget {
           return terminal;
         }
       }
-      throw new IllegalArgumentException("No PC/SC reader matched: " + readerFilter);
+      throw new IllegalArgumentException(
+          "No PC/SC reader matched: " + readerFilter + "; available readers: " + terminalNames(terminals));
     }
     if (terminals.size() == 1) {
       return terminals.get(0);
     }
-    throw new IllegalArgumentException("Use --target pcsc:<reader> when zero or multiple PC/SC readers are present");
+    throw new IllegalArgumentException(
+        "Use --target pcsc:<reader> when zero or multiple PC/SC readers are present; available readers: "
+            + terminalNames(terminals));
+  }
+
+  private static String terminalNames(List<CardTerminal> terminals) {
+    if (terminals.isEmpty()) {
+      return "(none)";
+    }
+    StringBuilder names = new StringBuilder();
+    for (CardTerminal terminal : terminals) {
+      if (names.length() > 0) {
+        names.append(", ");
+      }
+      names.append(terminal.getName());
+    }
+    return names.toString();
   }
 }

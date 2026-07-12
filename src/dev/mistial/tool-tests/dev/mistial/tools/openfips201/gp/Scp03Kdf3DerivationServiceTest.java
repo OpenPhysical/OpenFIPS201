@@ -52,6 +52,21 @@ class Scp03Kdf3DerivationServiceTest {
     assertEquals(1, keys.config.keyVersion);
   }
 
+  @Test
+  void canDeriveAes128CardKeysFromAes256MasterRounds() {
+    Pkcs11Config config = new Pkcs11Config();
+    config.keyAlias = "scp03-master-known";
+    byte[] kdd = HexUtil.parse("00002345496554204839");
+    Scp03Kdf3DerivationService service =
+        new Scp03Kdf3DerivationService(new FixtureCmacService());
+
+    DerivedScpKeys keys = service.derive(config, kdd, 1, 16);
+
+    assertArrayEquals(HexUtil.parse("B622ECDF65A3B1304A6279100936B5FA"), keys.config.encKey);
+    assertArrayEquals(HexUtil.parse("004442D5B39EE449DE126616AE9D13F0"), keys.config.macKey);
+    assertArrayEquals(HexUtil.parse("49D2D0F5601CF238C4CAF3A2E611A357"), keys.config.dekKey);
+  }
+
   private static final class FixtureCmacService extends Pkcs11AesCmacService {
     private final Map<String, byte[]> rounds = new HashMap<String, byte[]>();
 

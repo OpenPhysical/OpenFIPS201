@@ -38,7 +38,7 @@ public final class IssuerProfile {
     public String rootSubject;
     public String issuerSubject = "CN=OpenFIPS201 Cardstock";
     public int issuerValidityDays = 3650;
-    public String proofSlot = "82";
+    public String proofSlot = "9A";
     public boolean deleteProofKey = true;
     public String issuerObjectId = "5FFF01";
   }
@@ -47,6 +47,8 @@ public final class IssuerProfile {
     public String deriver = "pkcs11";
     public String kdf = "scp03-kdf3";
     public int newKeyVersion = 1;
+    public int keyLengthBytes = 32;
+    public boolean replaceExisting = false;
     public String masterKeyEnv;
     public String masterKeyAlias;
     public String masterKeyId;

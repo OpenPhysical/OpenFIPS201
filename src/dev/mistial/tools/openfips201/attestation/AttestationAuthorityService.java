@@ -25,6 +25,9 @@ import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.ContentSigner;
 
 public final class AttestationAuthorityService {
+  private static final int SW_NO_ERROR = 0x9000;
+  private static final int SW_PUT_DATA_OBJECT_EXISTS = 0x6E27;
+
   public Result importGeneratedAuthority(
       CardSession session,
       SigningKey issuerSigner,
@@ -118,7 +121,7 @@ public final class AttestationAuthorityService {
         .getCertificate(holder);
   }
 
-  private static void provisionAuthority(
+  static void provisionAuthority(
       CardSession session, F9Profile profile, byte[] issuerCertificateDer, byte[] issuerObjectId) {
     try {
       transmitExpect(
@@ -179,11 +182,35 @@ public final class AttestationAuthorityService {
 
   static void transmitExpect(CardSession session, apdu4j.core.CommandAPDU command, boolean existsOk) {
     apdu4j.core.ResponseAPDU response = session.transmit(command);
-    if (response.getSW() == 0x9000 || (existsOk && response.getSW() == 0x6E27)) {
+    if (response.getSW() == SW_NO_ERROR
+        || (existsOk && response.getSW() == SW_PUT_DATA_OBJECT_EXISTS)) {
       return;
     }
     throw new IllegalStateException(
         "APDU failed SW=" + String.format("0x%04X", response.getSW())
+            + " (" + statusMeaning(response.getSW()) + ")"
             + " command=" + command.toLogString());
+  }
+
+  private static String statusMeaning(int sw) {
+    switch (sw) {
+      case 0x6982:
+        return "security status not satisfied; check SCP and target access policy";
+      case 0x6985:
+        return "authority or target state is incomplete, or target key was not generated on-card";
+      case 0x6A80:
+        return "malformed authority data, malformed DER, unsupported authority field, or key-pair"
+            + " mismatch";
+      case 0x6A84:
+        return "configured subject, validity, or generated object exceeds applet limits";
+      case 0x6A86:
+        return "invalid command parameters";
+      case 0x6A88:
+        return "target slot or key reference not found";
+      case SW_PUT_DATA_OBJECT_EXISTS:
+        return "object already exists";
+      default:
+        return "see docs/ATTESTATION.md status words";
+    }
   }
 }

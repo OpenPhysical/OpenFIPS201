@@ -13,9 +13,14 @@ import dev.mistial.tools.openfips201.common.ScpConfig;
 
 public final class CardKeyRotationService {
   public void rotate(CardTarget target, ScpConfig current, DerivedScpKeys derived) throws Exception {
+    rotate(target, current, derived, false);
+  }
+
+  public void rotate(CardTarget target, ScpConfig current, DerivedScpKeys derived, boolean replace)
+      throws Exception {
     try (GlobalPlatformSession session =
         GlobalPlatformSession.open(target, GlobalPlatformSession.ISD_AID, current)) {
-      session.putKeys(derived.config.toPlaintextKeys(), false);
+      session.putKeys(derived.config.toPlaintextKeys(), replace);
     }
     try (GlobalPlatformSession ignored =
         GlobalPlatformSession.open(target, GlobalPlatformSession.ISD_AID, derived.config)) {

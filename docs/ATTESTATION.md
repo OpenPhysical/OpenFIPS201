@@ -125,9 +125,9 @@ ant -f build/build.xml openfips201-tool -Dargs="--help"
 ```
 
 The producer flow imports F9 into the applet, asks the configured PKCS#11 root key to certify the
-F9 public key, generates a temporary proof key, attests that proof key, and records the proof
-certificate in the cardstock receipt. See [OPENFIPS201_TOOL.md](OPENFIPS201_TOOL.md) for command
-examples.
+F9 public key, generates a temporary proof key in `9A` by default, attests that proof key, records
+the proof certificate in the cardstock receipt, and deletes the proof key. See
+[OPENFIPS201_TOOL.md](OPENFIPS201_TOOL.md) for command examples.
 
 For PKCS#11-backed issuers, the host tool calls Cryptoki directly. The ECDSA issuer key remains
 non-extractable, and the token must also contain the matching X.509 certificate object so the tool

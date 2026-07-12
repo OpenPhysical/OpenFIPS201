@@ -23,8 +23,7 @@ import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.CardDiversificationDataService;
 import dev.mistial.tools.openfips201.gp.CardIdentityService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
-import dev.mistial.tools.openfips201.gp.Scp03Kdf3DerivationService;
-import dev.mistial.tools.openfips201.pkcs11.Pkcs11Config;
+import dev.mistial.tools.openfips201.gp.IssuerCardKeyService;
 import dev.mistial.tools.openfips201.profiles.IssuerProfile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -36,6 +35,7 @@ import java.util.Base64;
 
 public final class CardstockPreparationService {
   private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+  private final IssuerCardKeyService issuerCardKeys = new IssuerCardKeyService();
 
   public Path prepare(CardTarget target, IssuerProfile profile, SigningKey signer, boolean yes)
       throws Exception {
@@ -66,7 +66,7 @@ public final class CardstockPreparationService {
       throw new IllegalArgumentException("cardstock prepare requires --yes for physical issuer profiles");
     }
 
-    ScpConfig stockScp = stockScpOverride == null ? stockScp(profile) : stockScpOverride;
+    ScpConfig stockScp = stockScpOverride == null ? issuerCardKeys.stockScp(profile) : stockScpOverride;
     CardstockReceipt receipt = new CardstockReceipt();
     receipt.profileName = profile.name;
     receipt.batchName = batchName;
@@ -92,6 +92,8 @@ public final class CardstockPreparationService {
 
     AttestationProofService.Result proof;
     AttestationAuthorityService.Result authority;
+    byte proofSlot = (byte) Integer.parseInt(profile.attestation.proofSlot, 16);
+    boolean proofKeyCreated = false;
     try (GlobalPlatformSession piv =
         GlobalPlatformSession.open(target, HexUtil.parse(profile.applet.instanceAid), stockScp)) {
       authority =
@@ -106,16 +108,33 @@ public final class CardstockPreparationService {
                   profile.attestation.issuerValidityDays,
                   HexUtil.parse(profile.attestation.issuerObjectId));
       receipt.operationsPerformed.add("F9 authority imported");
-      proof =
+      new AttestationProofService().createAndGenerateProofKey(piv, proofSlot);
+      proofKeyCreated = true;
+    }
+
+    try {
+      byte[] proofCertificate =
           new AttestationProofService()
-              .prove(
-                  piv,
-                  (byte) Integer.parseInt(profile.attestation.proofSlot, 16),
-                  profile.attestation.deleteProofKey);
-      if (profile.attestation.deleteProofKey && !proof.proofKeyDeleted) {
-        throw new IllegalStateException("proof key deletion failed");
+              .collectPlainProof(target, HexUtil.parse(profile.applet.instanceAid), proofSlot);
+      boolean proofKeyDeleted = false;
+      if (profile.attestation.deleteProofKey) {
+        try (GlobalPlatformSession cleanup =
+            GlobalPlatformSession.open(target, HexUtil.parse(profile.applet.instanceAid), stockScp)) {
+          proofKeyDeleted = new AttestationProofService().deleteCreatedProofKey(cleanup, proofSlot);
+        }
       }
+      proof = new AttestationProofService.Result(proofCertificate, proofKeyDeleted);
       receipt.operationsPerformed.add("attestation proof collected");
+    } catch (Exception e) {
+      if (profile.attestation.deleteProofKey && proofKeyCreated) {
+        try (GlobalPlatformSession cleanup =
+            GlobalPlatformSession.open(target, HexUtil.parse(profile.applet.instanceAid), stockScp)) {
+          new AttestationProofService().deleteCreatedProofKey(cleanup, proofSlot);
+        } catch (Exception cleanupFailure) {
+          e.addSuppressed(cleanupFailure);
+        }
+      }
+      throw e;
     }
 
     CardIdentityService.Result identity = new CardIdentityService().read(target);
@@ -134,7 +153,7 @@ public final class CardstockPreparationService {
     receipt.newScpMacKcv = derived.macKcv;
     receipt.newScpDekKcv = derived.dekKcv;
 
-    new CardKeyRotationService().rotate(target, stockScp, derived);
+    new CardKeyRotationService().rotate(target, stockScp, derived, profile.cardKeys.replaceExisting);
     receipt.operationsPerformed.add("SCP keys rotated and verified");
 
     receipt.f9IssuerCertificateSha256 =
@@ -153,17 +172,7 @@ public final class CardstockPreparationService {
     return output;
   }
 
-  private static ScpConfig stockScp(IssuerProfile profile) {
-    if ("emulator-dev".equals(profile.name) && profile.stockScp.masterKeyEnv == null) {
-      return ScpConfig.defaultTestScp03();
-    }
-    return ScpConfig.fromMaster(
-        ScpConfig.parseMode(profile.stockScp.mode),
-        profile.stockScp.keyVersion,
-        secret(profile.stockScp.masterKeyEnv));
-  }
-
-  private static DerivedScpKeys deriveCardKeys(
+  private DerivedScpKeys deriveCardKeys(
       IssuerProfile profile, CardstockReceipt receipt, byte[] kdd) throws Exception {
     if ("emulator-dev".equals(profile.name)
         && (profile.cardKeys.masterKeyEnv == null
@@ -175,75 +184,8 @@ public final class CardstockPreparationService {
               deriveContext(profile, receipt),
               profile.cardKeys.newKeyVersion);
     }
-    if (!"pkcs11".equals(profile.cardKeys.deriver)
-        || !"scp03-kdf3".equals(profile.cardKeys.kdf)) {
-      throw new IllegalArgumentException("cardKeys must use deriver=pkcs11 and kdf=scp03-kdf3");
-    }
-    Pkcs11Config master = cardMasterKey(profile);
-    receipt.hsmDeriver = "pkcs11:" + describeKey(master);
-    return new Scp03Kdf3DerivationService().derive(master, kdd, profile.cardKeys.newKeyVersion);
-  }
-
-  private static Pkcs11Config cardMasterKey(IssuerProfile profile) {
-    Pkcs11Config base =
-        profile.cardKeys.pkcs11 == null ? profile.pkcs11.copy() : merge(profile.pkcs11, profile.cardKeys.pkcs11);
-    if (profile.cardKeys.masterKeyAlias != null) {
-      base.keyAlias = profile.cardKeys.masterKeyAlias;
-    }
-    if (profile.cardKeys.masterKeyId != null) {
-      base.keyId = profile.cardKeys.masterKeyId;
-    }
-    if ((base.keyAlias == null || base.keyAlias.isEmpty()) && (base.keyId == null || base.keyId.isEmpty())) {
-      throw new IllegalArgumentException("cardKeys must set masterKeyAlias or masterKeyId");
-    }
-    return base;
-  }
-
-  private static Pkcs11Config merge(Pkcs11Config defaults, Pkcs11Config override) {
-    Pkcs11Config result = defaults.copy();
-    if (override.module != null) {
-      result.module = override.module;
-    }
-    if (override.tokenLabel != null) {
-      result.tokenLabel = override.tokenLabel;
-    }
-    if (override.slot != null) {
-      result.slot = override.slot;
-    }
-    if (override.keyAlias != null) {
-      result.keyAlias = override.keyAlias;
-    }
-    if (override.keyId != null) {
-      result.keyId = override.keyId;
-    }
-    if (override.pinEnv != null) {
-      result.pinEnv = override.pinEnv;
-    }
-    if (override.pinFile != null) {
-      result.pinFile = override.pinFile;
-    }
-    if (override.softhsmConfig != null) {
-      result.softhsmConfig = override.softhsmConfig;
-    }
-    return result;
-  }
-
-  private static String describeKey(Pkcs11Config config) {
-    if (config.keyAlias != null && !config.keyAlias.isEmpty()) {
-      return config.keyAlias;
-    }
-    return "id:" + config.keyId;
-  }
-
-  private static byte[] secret(String env) {
-    if (env == null || env.isEmpty()) {
-      throw new IllegalArgumentException("profile must name an environment variable for secret material");
-    }
-    String value = System.getenv(env);
-    if (value == null) {
-      throw new IllegalArgumentException("Environment variable is not set: " + env);
-    }
-    return HexUtil.parse(value);
+    receipt.hsmDeriver = "pkcs11:" + issuerCardKeys.describeCardMasterKey(profile);
+    return issuerCardKeys.deriveCardKeys(profile, kdd);
   }
 
   private static String deriveContext(IssuerProfile profile, CardstockReceipt receipt) {

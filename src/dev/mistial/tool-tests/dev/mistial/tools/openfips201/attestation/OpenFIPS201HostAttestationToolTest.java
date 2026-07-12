@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.common.CardSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.crypto.Passphrases;
 import dev.mistial.tools.openfips201.crypto.PemSigningKey;
@@ -82,14 +83,15 @@ class OpenFIPS201HostAttestationToolTest {
   @Test
   void proofKeyDeletePayloadNamesSlotAndMechanism() {
     assertArrayEquals(
-        hex("67068B01828E0111"), AttestationProofService.deleteProofKeyPayload((byte) 0x82));
+        hex("67068B019A8E0111"),
+        AttestationProofService.deleteProofKeyPayload(AttestationProofService.DEFAULT_PROOF_SLOT));
   }
 
   @Test
   void proofKeyDefinitionAllowsProofAttestationOnContactAndContactlessReaders() {
     assertArrayEquals(
-        hex("66128B01828C017F8D017F8E01118F0104900100"),
-        AttestationProofService.proofKeyDefinition((byte) 0x82));
+        hex("66128B019A8C017F8D017F8E01118F0104900100"),
+        AttestationProofService.proofKeyDefinition(AttestationProofService.DEFAULT_PROOF_SLOT));
   }
 
   @Test
@@ -176,7 +178,7 @@ class OpenFIPS201HostAttestationToolTest {
             utcDate("2030-01-01"));
     RecordingSession session = new RecordingSession();
 
-    OpenFips201Provisioner.provisionAuthority(
+    AttestationAuthorityService.provisionAuthority(
         session,
         AttestationSupport.profileFromIssuer(keyPair.getPrivate(), certificate),
         AttestationSupport.der(certificate),
@@ -228,7 +230,7 @@ class OpenFIPS201HostAttestationToolTest {
     byte[] largeCertificate = new byte[0x0300];
     RecordingSession session = new RecordingSession();
 
-    OpenFips201Provisioner.provisionAuthority(
+    AttestationAuthorityService.provisionAuthority(
         session, profile, largeCertificate, AttestationSupport.DEFAULT_ISSUER_OBJECT_ID);
 
     for (CommandAPDU command : session.commands) {
@@ -278,12 +280,78 @@ class OpenFIPS201HostAttestationToolTest {
         assertThrows(
             IllegalStateException.class,
             () ->
-                OpenFips201Provisioner.provisionAuthority(
+                AttestationAuthorityService.provisionAuthority(
                     session,
                     profile,
                     new byte[] {(byte) 0x01},
                     AttestationSupport.DEFAULT_ISSUER_OBJECT_ID));
     assertTrue(failure.getMessage().contains("malformed authority data"));
+  }
+
+  @Test
+  void proofServiceDeletesTemporaryKeyWhenGenerationFails() throws Exception {
+    ProofCleanupSession session = new ProofCleanupSession(0x6A80, 0x9000);
+
+    IllegalStateException failure =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                new AttestationProofService()
+                    .prove(session, AttestationProofService.DEFAULT_PROOF_SLOT, true));
+
+    assertTrue(failure.getMessage().contains("generate proof key failed SW=0x6A80"));
+    assertEquals(1, session.deleteCommands, "Failed proof generation must still delete 9A");
+  }
+
+  @Test
+  void proofServiceTreatsDeleteWarningAsCleanupFailure() throws Exception {
+    ProofCleanupSession session = new ProofCleanupSession(0x6A80, 0x6985);
+
+    IllegalStateException failure =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                new AttestationProofService()
+                    .prove(session, AttestationProofService.DEFAULT_PROOF_SLOT, true));
+
+    assertTrue(failure.getMessage().contains("delete proof key failed SW=0x6985"));
+    assertEquals(1, session.deleteCommands, "Cleanup failure must not be ignored");
+  }
+
+  @Test
+  void proofServiceFailsWhenProofSlotAlreadyExists() throws Exception {
+    ProofCleanupSession session = new ProofCleanupSession(0x9000, 0x9000);
+    session.createStatus = 0x6E27;
+
+    IllegalStateException failure =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                new AttestationProofService()
+                    .prove(session, AttestationProofService.DEFAULT_PROOF_SLOT, true));
+
+    assertTrue(failure.getMessage().contains("APDU failed SW=0x6E27"));
+    assertEquals(0, session.deleteCommands, "The tool must not delete a key it did not create");
+  }
+
+  @Test
+  void proofServiceKeepsAttestationAndContinuationUnderScp() throws Exception {
+    KeyPair keyPair = AttestationSupport.generateF9KeyPair();
+    X509Certificate certificate =
+        AttestationSupport.createIssuerCertificate(
+            keyPair,
+            new X500Name("CN=Proof Transport"),
+            utcDate("2026-01-01"),
+            utcDate("2030-01-01"));
+    ProofTransportSession session = new ProofTransportSession(AttestationSupport.der(certificate));
+
+    new AttestationProofService().prove(session, AttestationProofService.DEFAULT_PROOF_SLOT, true);
+
+    assertCommand(session.commands.get(0), 0x84, 0xDB, 0x3F, 0x00);
+    assertCommand(session.commands.get(1), 0x84, 0x47, 0x00, 0x9A);
+    assertCommand(session.commands.get(2), 0x84, 0xF9, 0x9A, 0x00);
+    assertCommand(session.commands.get(3), 0x84, 0xC0, 0x00, 0x00);
+    assertCommand(session.commands.get(4), 0x84, 0xDB, 0x3F, 0x00);
   }
 
   private static void assertCommand(CommandAPDU command, int cla, int ins, int p1, int p2) {
@@ -320,8 +388,7 @@ class OpenFIPS201HostAttestationToolTest {
     public void close() {}
   }
 
-  private static final class CommonRecordingSession
-      implements dev.mistial.tools.openfips201.common.CardSession {
+  private static final class CommonRecordingSession implements CardSession {
     final List<CommandAPDU> commands = new ArrayList<CommandAPDU>();
 
     @Override
@@ -413,7 +480,7 @@ class OpenFIPS201HostAttestationToolTest {
             utcDate("2030-01-01"));
     AlreadyExistsSession session = new AlreadyExistsSession();
 
-    OpenFips201Provisioner.provisionAuthority(
+    AttestationAuthorityService.provisionAuthority(
         session,
         AttestationSupport.profileFromIssuer(keyPair.getPrivate(), certificate),
         AttestationSupport.der(certificate),
@@ -478,6 +545,77 @@ class OpenFIPS201HostAttestationToolTest {
 
     @Override
     public void close() {}
+  }
+
+  private static final class ProofCleanupSession implements CardSession {
+    private final int generateStatus;
+    private final int deleteStatus;
+    int createStatus = 0x9000;
+    int deleteCommands;
+
+    ProofCleanupSession(int generateStatus, int deleteStatus) {
+      this.generateStatus = generateStatus;
+      this.deleteStatus = deleteStatus;
+    }
+
+    @Override
+    public ResponseAPDU transmit(CommandAPDU command) {
+      if (command.getINS() == 0xDB && command.getP1() == 0x3F && command.getP2() == 0x00) {
+        byte[] data = command.getData();
+        if (data.length > 0 && data[0] == (byte) 0x67) {
+          deleteCommands++;
+          return sw(deleteStatus);
+        }
+        return sw(createStatus);
+      }
+      if (command.getINS() == 0x47) {
+        return sw(generateStatus);
+      }
+      return ResponseAPDU.OK;
+    }
+
+    @Override
+    public void close() {}
+  }
+
+  private static final class ProofTransportSession implements CardSession {
+    private final byte[] certificate;
+    final List<CommandAPDU> commands = new ArrayList<CommandAPDU>();
+
+    ProofTransportSession(byte[] certificate) {
+      this.certificate = certificate.clone();
+    }
+
+    @Override
+    public ResponseAPDU transmit(CommandAPDU command) {
+      commands.add(command);
+      if (command.getINS() == 0x47) {
+        return response(new byte[] {0x01}, 0x9000);
+      }
+      if (command.getINS() == 0xF9) {
+        return sw(0x6100 | Math.min(certificate.length, 0xFF));
+      }
+      if (command.getINS() == 0xC0) {
+        return response(certificate, 0x9000);
+      }
+      return ResponseAPDU.OK;
+    }
+
+    @Override
+    public void close() {}
+  }
+
+  private static ResponseAPDU sw(int statusWord) {
+    return new ResponseAPDU(
+        new byte[] {(byte) (statusWord >>> 8), (byte) statusWord});
+  }
+
+  private static ResponseAPDU response(byte[] data, int statusWord) {
+    byte[] response = new byte[data.length + 2];
+    System.arraycopy(data, 0, response, 0, data.length);
+    response[response.length - 2] = (byte) (statusWord >>> 8);
+    response[response.length - 1] = (byte) statusWord;
+    return new ResponseAPDU(response);
   }
 
   private static final class OversizedEcPrivateKey
