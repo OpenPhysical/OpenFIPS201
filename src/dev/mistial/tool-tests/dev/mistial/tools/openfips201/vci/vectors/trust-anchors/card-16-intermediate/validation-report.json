@@ -1,0 +1,121 @@
+{
+  "summary": {
+    "status": "passed",
+    "message": "PD validation passed using the intermediate path. The ACU should receive CVC IIN 6F8FF48F42B3E22E and anchor IIN 4CC9C7B3A4F1C83E.",
+    "pd_path": "intermediate",
+    "trust_anchor": "RSA-2048 IIN 4CC9C7B3A4F1C83E",
+    "secure_cvc_iin": "6F8FF48F42B3E22E",
+    "selected_anchor_iin": "4CC9C7B3A4F1C83E"
+  },
+  "result": {
+    "passed": true,
+    "reason": null
+  },
+  "reported_to_acu": {
+    "vci_cvc_iin": "6F8FF48F42B3E22E",
+    "vci_anchor_iin": "4CC9C7B3A4F1C83E"
+  },
+  "pd_validation": {
+    "path": "intermediate",
+    "checks": [
+      {
+        "check": "secure_cvc_iin_matches_anchor_iin",
+        "description": "Secure messaging CVC tag 42 matches the loaded trust anchor IIN.",
+        "passed": false,
+        "reason": null
+      },
+      {
+        "check": "secure_cvc_iin_matches_intermediate_subject_identifier",
+        "description": "Secure messaging CVC tag 42 matches the Intermediate CVC subject identifier tag 5F20.",
+        "passed": true,
+        "reason": null
+      },
+      {
+        "check": "intermediate_role_is_12",
+        "description": "Intermediate CVC role identifier tag 5F4C is 0x12.",
+        "passed": true,
+        "reason": null
+      },
+      {
+        "check": "intermediate_iin_matches_anchor_iin",
+        "description": "Intermediate CVC tag 42 matches the loaded trust anchor IIN.",
+        "passed": true,
+        "reason": null
+      },
+      {
+        "check": "intermediate_cvc_signature_with_anchor",
+        "description": "Intermediate CVC signature verifies with the loaded trust anchor public key.",
+        "passed": true,
+        "reason": null
+      },
+      {
+        "check": "secure_cvc_signature_with_intermediate",
+        "description": "Secure messaging CVC signature verifies with the Intermediate CVC public key.",
+        "passed": true,
+        "reason": null
+      }
+    ],
+    "plain_english_scope": "The PD validates the direct or intermediate CVC chain needed to establish VCI. It does not perform X.509 path, time, policy, or revocation checks; those are ACU policy checks.",
+    "validates_vci_cvc_chain_only": true,
+    "does_not_validate_x509_time_path_policy_or_revocation": true
+  },
+  "acu_validation": {
+    "x509_certificate_present": true,
+    "time_validation": "not_checked_no_validation_time",
+    "path_validation": "not_checked_no_ca_bundle",
+    "policy_validation": "reported",
+    "revocation_validation": "not_checked_no_revocation_source",
+    "notes": [],
+    "subject": "CN=Test PIV-I Content Signer 1,OU=Test CA,O=Test Certificates 2020,C=US",
+    "issuer": "CN=Test PIV-I RSA 2048-bit CA for Test PIV Cards v2,OU=Test CA,O=Test Certificates 2020,C=US",
+    "serial_number": "0x6",
+    "subject_key_identifier": "4CC9C7B3A4F1C83EC10D7C93263FFAE77774789F",
+    "certificate_iin": "4CC9C7B3A4F1C83E",
+    "certificate_iin_matches_anchor": true,
+    "certificate_spki_matches_anchor": true,
+    "eku_oids": [
+      "2.16.840.1.101.3.8.7"
+    ],
+    "content_signing_eku_present": true,
+    "policy_oids": [
+      "2.16.840.1.101.3.2.1.48.73"
+    ]
+  },
+  "inputs": {
+    "anchor": "test-vectors/vci-trust-anchors/card-16-intermediate/vci-trust-anchor-record.bin",
+    "cvc": "test-vectors/vci-trust-anchors/card-16-intermediate/secure-messaging-cvc-7f21.bin",
+    "smcs": "test-vectors/vci-trust-anchors/card-16-intermediate/smcs-5fc122.bin",
+    "ca_bundle": null,
+    "validation_time": null
+  },
+  "trust_anchor": {
+    "iin": "4CC9C7B3A4F1C83E",
+    "algorithm": "RSA-2048",
+    "spki_length": 294,
+    "record_length": 317
+  },
+  "cvc": {
+    "length": 273,
+    "profile": "80",
+    "iin": "6F8FF48F42B3E22E",
+    "subject_identifier": "E51FAF0114D7471D83E169E5D725BA64",
+    "role": "00",
+    "public_key_curve_oid": "1.3.132.0.34",
+    "signature_algorithm_oid": "1.2.840.10045.4.3.3"
+  },
+  "intermediate_cvc": {
+    "length": 428,
+    "profile": "80",
+    "iin": "4CC9C7B3A4F1C83E",
+    "subject_identifier": "6F8FF48F42B3E22E",
+    "role": "12",
+    "public_key_curve_oid": "1.3.132.0.34",
+    "signature_algorithm_oid": "1.2.840.113549.1.1.11"
+  },
+  "source_fixture": {
+    "source_file": "nist_special_database_33_card_16.json",
+    "source_sha256": "cfe61d9ef43da635518d2c2c1d420804a92ff9342682afc849f09aeded6af8b3",
+    "public_test_fixture": true,
+    "warning": "This byte-complete source vector may contain PINs, pairing codes, ephemeral private keys, shared secrets, and derived session keys from public test cards. Do not use it as operational secret material."
+  }
+}

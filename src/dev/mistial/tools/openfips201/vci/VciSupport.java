@@ -49,21 +49,28 @@ import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.math.ec.ECPoint;
 
 /**
- * Host-side helpers for the PIV VCI (secure messaging, OPACITY ZKM CS2) flow used by the VCI tool.
+ * Host-side helpers for the PIV VCI (secure messaging, OPACITY ZKM) flow used by the VCI tool and
+ * known-answer vector tests.
  *
  * <p>This deliberately mirrors the byte-level contract implemented by the applet
  * ({@code PIV.generalAuthenticateCase1A} / {@code PIVSecureMessaging}) and by the OpenPhysical .NET
- * stack ({@code PivSecureMessagingBootstrapper} / {@code PivSecureMessagingProvider}). It only
- * supports Cipher Suite 2 (ECC P-256, AES-128, SHA-256), which is what the applet advertises.
+ * stack ({@code PivSecureMessagingBootstrapper} / {@code PivSecureMessagingProvider}).
+ *
+ * <p>Cipher Suite 2 (ECC P-256, AES-128, SHA-256) and Cipher Suite 7 (ECC P-384, AES-256, SHA-384)
+ * match the applet's OPACITY/SM implementation. Host tools may still default to CS2 for
+ * provisioning; CS7 is fully supported for known-answer tests and SM wrap/unwrap.
  *
  * <p>The CVC profile is the cross-repo contract documented in the VCI plan: a {@code 7F21} card
- * verifiable certificate carrying the card SM public key in {@code 7F49/86} and an ECDSA-SHA256
- * signature in {@code 5F37} over all preceding bytes of the {@code 7F21} value.
+ * verifiable certificate carrying the card SM public key in {@code 7F49/86} and an ECDSA signature
+ * in {@code 5F37} over all preceding bytes of the {@code 7F21} value.
  */
 final class VciSupport {
 
   static final byte ALG_CS2 = (byte) 0x27;
+  static final byte ALG_CS7 = (byte) 0x2E;
   static final byte KEY_REF_SECURE_MESSAGING = (byte) 0x04;
+
+
 
   // CVC tags (SP 800-73-4-shaped).
   static final int TAG_CVC = 0x7F21;
@@ -80,54 +87,89 @@ final class VciSupport {
   // Role byte per the secure-messaging CVC profile, matching production PIV cards (0x00).
   static final byte CVC_ROLE_KEY_ESTABLISHMENT = (byte) 0x00;
 
-  // Named-curve OID content placed in the 7F49 public-key template (tag 06), as production cards do.
-  // CS2 uses prime256v1 / secp256r1 (1.2.840.10045.3.1.7).
+  // Named-curve OID content in 7F49/06 (production cards).
   private static final byte[] CURVE_OID_P256 = {
     0x2A, (byte) 0x86, 0x48, (byte) 0xCE, 0x3D, 0x03, 0x01, 0x07
-  };
+  }; // prime256v1
+  private static final byte[] CURVE_OID_P384 = {
+    0x2B, (byte) 0x81, 0x04, 0x00, 0x22
+  }; // secp384r1
 
   private static final byte[] KEY_CONFIRMATION_CONTEXT = {0x4B, 0x43, 0x5F, 0x31, 0x5F, 0x56};
-  private static final int COORD_LENGTH = 32;
-  private static final int KEY_LENGTH = 16;
+  private static final int COORD_LENGTH_CS2 = 32;
+  private static final int COORD_LENGTH_CS7 = 48;
 
   private VciSupport() {}
+
+  static boolean isCs2(byte suite) {
+    return suite == ALG_CS2;
+  }
+
+  static boolean isCs7(byte suite) {
+    return suite == ALG_CS7;
+  }
+
+  /** ECC field length in bytes: 32 (CS2) or 48 (CS7). */
+  static int coordLength(byte suite) {
+    if (isCs2(suite)) {
+      return COORD_LENGTH_CS2;
+    }
+    if (isCs7(suite)) {
+      return COORD_LENGTH_CS7;
+    }
+    throw new IllegalArgumentException("Unsupported cipher suite 0x" + Integer.toHexString(suite & 0xFF));
+  }
+
+  /** AES session-key length: field − 16 (16 for CS2, 32 for CS7). */
+  static int sessionKeyLength(byte suite) {
+    return coordLength(suite) - 16;
+  }
+
+  /** OtherInfo algorithmID second byte: 0x09 (CS2) or 0x0D (CS7). */
+  private static byte opacityAlgIdByte(byte suite) {
+    return (byte) (coordLength(suite) == COORD_LENGTH_CS2 ? 0x09 : 0x0D);
+  }
 
   // ---------------------------------------------------------------------------------------------
   // CVC build / verify
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Builds the body (the value of the outer {@code 7F21}) preceding the signature, for the card SM
-   * public key.
+   * Builds the CVC body (value of outer {@code 7F21}) for the card SM public point. Curve OID is
+   * selected from point length (65 → P-256/CS2, 97 → P-384/CS7).
    */
   static byte[] buildCvcBody(byte[] cardPublicPoint, byte[] issuerId, byte[] subjectId) {
+    byte[] curveOid =
+        cardPublicPoint.length == 1 + COORD_LENGTH_CS7 * 2 ? CURVE_OID_P384 : CURVE_OID_P256;
     ByteArrayOutputStream body = new ByteArrayOutputStream();
     writeTlv(body, TAG_CVC_PROFILE, new byte[] {CVC_PROFILE_IDENTIFIER});
     writeTlv(body, TAG_CVC_ISSUER_ID, issuerId);
     writeTlv(body, TAG_CVC_SUBJECT_ID, subjectId);
-    // 7F49 public-key template: named-curve OID (tag 06) followed by the uncompressed point
-    // (tag 86), matching the encoding production PIV cards present.
     ByteArrayOutputStream keyTemplate = new ByteArrayOutputStream();
-    writeTlv(keyTemplate, TAG_CVC_PUBLIC_KEY_OID, CURVE_OID_P256);
+    writeTlv(keyTemplate, TAG_CVC_PUBLIC_KEY_OID, curveOid);
     writeTlv(keyTemplate, TAG_CVC_PUBLIC_POINT, cardPublicPoint);
     writeTlv(body, TAG_CVC_PUBLIC_KEY, keyTemplate.toByteArray());
     writeTlv(body, TAG_CVC_ROLE, new byte[] {CVC_ROLE_KEY_ESTABLISHMENT});
     return body.toByteArray();
   }
 
-  /**
-   * Assembles the complete CVC ({@code 7F21}) from its signed body and the raw DER ECDSA-Sig-Value.
-   * The {@code 5F37} signature is encoded as an X.509 SignatureValue
-   * (SEQUENCE&#123; AlgorithmIdentifier(ecdsa-with-SHA256), BIT STRING&#123;ECDSA-Sig-Value&#125; &#125;),
-   * the format production PIV cards present and that SP 800-73-5 relying parties expect.
-   */
+  /** Assembles a CVC with ECDSA-SHA256 (CS2 default). */
   static byte[] assembleCvc(byte[] cvcBody, byte[] ecdsaSigValueDer) {
+    return assembleCvc(cvcBody, ecdsaSigValueDer, ALG_CS2);
+  }
+
+  /**
+   * Assembles {@code 7F21} with {@code 5F37} as AlgorithmIdentifier + BIT STRING(ECDSA-Sig-Value).
+   * CS2 uses ecdsa-with-SHA256; CS7 uses ecdsa-with-SHA384.
+   */
+  static byte[] assembleCvc(byte[] cvcBody, byte[] ecdsaSigValueDer, byte suite) {
     try {
       ByteArrayOutputStream value = new ByteArrayOutputStream();
       value.write(cvcBody, 0, cvcBody.length);
 
       ASN1EncodableVector algorithmId = new ASN1EncodableVector();
-      algorithmId.add(X9ObjectIdentifiers.ecdsa_with_SHA256);
+      algorithmId.add(
+          isCs7(suite) ? X9ObjectIdentifiers.ecdsa_with_SHA384 : X9ObjectIdentifiers.ecdsa_with_SHA256);
       ASN1EncodableVector signatureValue = new ASN1EncodableVector();
       signatureValue.add(new DERSequence(algorithmId));
       signatureValue.add(new DERBitString(ecdsaSigValueDer));
@@ -142,11 +184,8 @@ final class VciSupport {
   }
 
   /**
-   * Verifies a card CVC against the signer public key per the documented profile: the trailing
-   * {@code 5F37} signature must verify (ECDSA-SHA256) over all bytes of the {@code 7F21} value that
-   * precede it.
-   *
-   * @return true if the signature is present and valid.
+   * Verifies a card CVC against the signer public key. Accepts ECDSA-SHA256 or ECDSA-SHA384
+   * (CS2 / CS7 production encodings).
    */
   static boolean verifyCvc(byte[] cvc, PublicKey signerPublicKey) {
     try {
@@ -162,17 +201,27 @@ final class VciSupport {
         return false;
       }
       int signatureTagOffset = signature[0];
-      // The signature must be the final element of the body.
       if (signature[1] + signature[2] != valueOffset + valueLength) {
         return false;
       }
 
       int signedLength = signatureTagOffset - valueOffset;
-      Signature verifier = Signature.getInstance("SHA256withECDSA");
-      verifier.initVerify(signerPublicKey);
-      verifier.update(cvc, valueOffset, signedLength);
       byte[] signatureField = Arrays.copyOfRange(cvc, signature[1], signature[1] + signature[2]);
-      return verifier.verify(unwrapCvcSignature(signatureField));
+      byte[] rawSig = unwrapCvcSignature(signatureField);
+      // Try both suite hashes; production CS2=SHA256, CS7=SHA384.
+      for (String jca : new String[] {"SHA256withECDSA", "SHA384withECDSA"}) {
+        try {
+          Signature verifier = Signature.getInstance(jca);
+          verifier.initVerify(signerPublicKey);
+          verifier.update(cvc, valueOffset, signedLength);
+          if (verifier.verify(rawSig)) {
+            return true;
+          }
+        } catch (Exception ignored) {
+          // try next
+        }
+      }
+      return false;
     } catch (Exception e) {
       return false;
     }
@@ -240,17 +289,35 @@ final class VciSupport {
     return SECNamedCurves.getByName("secp256r1");
   }
 
-  /** Encodes a P-256 public point as the uncompressed {@code 04 || X || Y} octet string. */
+  static X9ECParameters p384() {
+    return SECNamedCurves.getByName("secp384r1");
+  }
+
+  static X9ECParameters curveForSuite(byte suite) {
+    return isCs7(suite) ? p384() : p256();
+  }
+
+  /** Uncompressed {@code 04 || X || Y} for P-256 or P-384. */
   static byte[] encodePoint(ECPoint point) {
     return point.getEncoded(false);
   }
 
-  /** Builds the 74-byte witness payload ({@code idH(8 zeros) || 04 || Xeh || Yeh}). */
+  /** Witness body: {@code idH(8 zeros) || Q_eH}. Caller prefixes CB_H (0x00). */
   static byte[] buildWitness(byte[] hostPublicPoint) {
     ByteArrayOutputStream out = new ByteArrayOutputStream();
-    out.write(new byte[8], 0, 8); // idH = 8 zero bytes
+    out.write(new byte[8], 0, 8);
     out.write(hostPublicPoint, 0, hostPublicPoint.length);
     return out.toByteArray();
+  }
+
+  /** JCA signature algorithm for signing a CVC of the given suite. */
+  static String cvcSignatureAlgorithm(byte suite) {
+    return isCs7(suite) ? "SHA384withECDSA" : "SHA256withECDSA";
+  }
+
+  /** Named curve for suite CA / host ephemeral keys. */
+  static String namedCurve(byte suite) {
+    return isCs7(suite) ? "secp384r1" : "secp256r1";
   }
 
   /** SHA-256 of the raw CVC bytes, first 8 bytes (idSicc). */
@@ -259,51 +326,82 @@ final class VciSupport {
   }
 
   /**
-   * Derives the four CS2 session keys exactly as the applet's {@code deriveCs2SessionKeys} and the
-   * .NET {@code DeriveOpacityKeys}: two SHA-256 rounds over a 97-byte input. The KDF input ends with
-   * {@code 10 || NIcc(16) || 01 || cbIcc(00)}, where NIcc is the card-supplied nonce.
+   * Derives CS2 session keys (AES-128 / SHA-256).
    *
-   * @param sharedSecret 32-byte ECDH shared secret (Z)
-   * @param idH 8-byte host identifier (zeros in this profile)
-   * @param hostPublicPoint host ephemeral point {@code 04 || X || Y}
-   * @param idSicc SHA-256(CVC)[0:8]
-   * @param nIcc 16-byte card nonce returned in the GENERAL AUTHENTICATE response
+   * @see #deriveSessionKeys(byte, byte[], byte[], byte[], byte[], byte[])
    */
   static SessionKeys deriveSessionKeys(
       byte[] sharedSecret, byte[] idH, byte[] hostPublicPoint, byte[] idSicc, byte[] nIcc) {
-    byte[] derived = new byte[64];
-    System.arraycopy(round(sharedSecret, (byte) 1, idH, hostPublicPoint, idSicc, nIcc), 0, derived, 0, 32);
-    System.arraycopy(round(sharedSecret, (byte) 2, idH, hostPublicPoint, idSicc, nIcc), 0, derived, 32, 32);
-    return new SessionKeys(
-        Arrays.copyOfRange(derived, 0, 16),
-        Arrays.copyOfRange(derived, 16, 32),
-        Arrays.copyOfRange(derived, 32, 48),
-        Arrays.copyOfRange(derived, 48, 64));
+    return deriveSessionKeys(ALG_CS2, sharedSecret, idH, hostPublicPoint, idSicc, nIcc);
   }
 
-  private static byte[] round(
-      byte[] sharedSecret, byte counter, byte[] idH, byte[] hostPublicPoint, byte[] idSicc, byte[] nIcc) {
+  /**
+   * Derives OPACITY session keys for CS2 or CS7 (Part 2 Section 4.1.6). One path for both suites;
+   * geometry follows ECC field length (32 → SHA-256/AES-128, 48 → SHA-384/AES-256).
+   */
+  static SessionKeys deriveSessionKeys(
+      byte suite,
+      byte[] sharedSecret,
+      byte[] idH,
+      byte[] hostPublicPoint,
+      byte[] idSicc,
+      byte[] nIcc) {
+    int field = coordLength(suite);
+    int keyLen = sessionKeyLength(suite);
+    int totalLen = keyLen * 4;
+    byte[] otherInfo = buildOtherInfo(suite, idH, hostPublicPoint, idSicc, nIcc);
+    byte[] derived = new byte[totalLen];
+    int written = 0;
+    for (int i = 1; written < totalLen; i++) {
+      byte[] hash = kdfRound(suite, i, sharedSecret, otherInfo);
+      int toCopy = Math.min(hash.length, totalLen - written);
+      System.arraycopy(hash, 0, derived, written, toCopy);
+      written += toCopy;
+    }
+    return new SessionKeys(
+        Arrays.copyOfRange(derived, 0, keyLen),
+        Arrays.copyOfRange(derived, keyLen, keyLen * 2),
+        Arrays.copyOfRange(derived, keyLen * 2, keyLen * 3),
+        Arrays.copyOfRange(derived, keyLen * 3, keyLen * 4));
+  }
+
+  /** Builds OPACITY OtherInfo (algorithmID || PartyUInfo || PartyVInfo). */
+  static byte[] buildOtherInfo(
+      byte suite, byte[] idH, byte[] hostPublicPoint, byte[] idSicc, byte[] nIcc) {
+    byte alg = opacityAlgIdByte(suite);
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    out.write(0x04);
+    out.write(alg);
+    out.write(alg);
+    out.write(alg);
+    out.write(alg);
+    out.write(0x08);
+    out.write(idH, 0, 8);
+    out.write(0x01);
+    out.write(0x00);
+    out.write(0x10);
+    out.write(hostPublicPoint, 1, 16); // T16(QeH)
+    out.write(0x08);
+    out.write(idSicc, 0, 8);
+    out.write(nIcc.length);
+    out.write(nIcc, 0, nIcc.length);
+    out.write(0x01);
+    out.write(0x00);
+    return out.toByteArray();
+  }
+
+  /** Single KDF round: Hash(counter_be32 || Z || OtherInfo); hash follows field length. */
+  static byte[] kdfRound(byte suite, int counter, byte[] sharedSecret, byte[] otherInfo) {
     ByteArrayOutputStream input = new ByteArrayOutputStream();
-    input.write(0);
-    input.write(0);
-    input.write(0);
-    input.write(counter);
-    input.write(sharedSecret, 0, 32);
-    // algorithmId for CS2: 04 09 09 09 09
-    input.write(new byte[] {0x04, 0x09, 0x09, 0x09, 0x09}, 0, 5);
-    input.write(0x08);
-    input.write(idH, 0, 8);
-    input.write(0x01);
-    input.write(0x00);
-    input.write(0x10);
-    input.write(hostPublicPoint, 1, 16); // X[0..16)
-    input.write(0x08);
-    input.write(idSicc, 0, 8);
-    input.write(0x10);
-    input.write(nIcc, 0, 16);
-    input.write(0x01);
-    input.write(0x00);
-    return sha256(input.toByteArray());
+    input.write((counter >> 24) & 0xFF);
+    input.write((counter >> 16) & 0xFF);
+    input.write((counter >> 8) & 0xFF);
+    input.write(counter & 0xFF);
+    input.write(sharedSecret, 0, sharedSecret.length);
+    input.write(otherInfo, 0, otherInfo.length);
+    return coordLength(suite) == COORD_LENGTH_CS2
+        ? sha256(input.toByteArray())
+        : sha384(input.toByteArray());
   }
 
   /**
@@ -317,7 +415,7 @@ final class VciSupport {
     input.write(idSicc, 0, 8);
     input.write(idH, 0, 8);
     // Xeh || Yeh = hostPublicPoint without the leading 0x04
-    input.write(hostPublicPoint, 1, 64);
+    input.write(hostPublicPoint, 1, hostPublicPoint.length - 1);
     return aesCmac(skCfrm, input.toByteArray());
   }
 
@@ -346,7 +444,7 @@ final class VciSupport {
 
   /**
    * Wraps a plaintext APDU (header + optional data + Le) into an SM-protected command APDU with CLA
-   * 0x0C.
+   * 0x0C. Uses short or extended length encoding depending on the SM data field size.
    */
   static byte[] wrapCommand(
       SmSession session, byte ins, byte p1, byte p2, byte[] data, boolean expectLe) {
@@ -393,10 +491,83 @@ final class VciSupport {
     apdu.write(ins & 0xFF);
     apdu.write(p1 & 0xFF);
     apdu.write(p2 & 0xFF);
-    apdu.write(body.length);
-    apdu.write(body, 0, body.length);
-    apdu.write(0x00); // Le
+    if (body.length <= 255) {
+      apdu.write(body.length);
+      apdu.write(body, 0, body.length);
+      apdu.write(0x00); // short Le = 256
+    } else {
+      // Extended length: outer Le of 0x0100 requests 256 bytes (matching production captures and
+      // the OpenPhysical.Net SM provider). Note Le=0x0000 means 65536, not 256.
+      apdu.write(0x00);
+      apdu.write((body.length >> 8) & 0xFF);
+      apdu.write(body.length & 0xFF);
+      apdu.write(body, 0, body.length);
+      apdu.write(0x01);
+      apdu.write(0x00);
+    }
     return apdu.toByteArray();
+  }
+
+  /**
+   * Parses a plaintext command APDU into INS/P1/P2/data/Le for re-wrapping.
+   *
+   * @return {@code {ins, p1, p2, data, hasLe}} where data is a byte[] and hasLe is Boolean
+   */
+  static Object[] parsePlainCommand(byte[] plain) {
+    if (plain == null) {
+      throw new IllegalArgumentException("plain command is null");
+    }
+    if (plain.length < 4) {
+      throw new IllegalArgumentException("plain command too short");
+    }
+    byte ins = plain[1];
+    byte p1 = plain[2];
+    byte p2 = plain[3];
+    byte[] data = new byte[0];
+    boolean hasLe = false;
+    if (plain.length == 4) {
+      // Case 1: no Lc, no Le
+    } else if (plain.length == 5) {
+      hasLe = true; // Case 2: Le only
+    } else if (plain[4] == 0x00) {
+      // Extended length
+      if (plain.length < 7) {
+        throw new IllegalArgumentException("extended plain command too short");
+      }
+      int lc = ((plain[5] & 0xFF) << 8) | (plain[6] & 0xFF);
+      if (lc == 0) {
+        if (plain.length != 7) {
+          throw new IllegalArgumentException("extended Le-only command has trailing bytes");
+        }
+        hasLe = true;
+        return new Object[] {ins, p1, p2, data, hasLe};
+      }
+      if (plain.length < 7 + lc) {
+        throw new IllegalArgumentException("extended plain command truncated");
+      }
+      data = Arrays.copyOfRange(plain, 7, 7 + lc);
+      if (plain.length == 7 + lc) {
+        hasLe = false;
+      } else if (plain.length == 7 + lc + 2) {
+        hasLe = true;
+      } else {
+        throw new IllegalArgumentException("extended plain command has invalid Le length");
+      }
+    } else {
+      int lc = plain[4] & 0xFF;
+      if (plain.length < 5 + lc) {
+        throw new IllegalArgumentException("short plain command truncated");
+      }
+      data = Arrays.copyOfRange(plain, 5, 5 + lc);
+      if (plain.length == 5 + lc) {
+        hasLe = false;
+      } else if (plain.length == 5 + lc + 1) {
+        hasLe = true;
+      } else {
+        throw new IllegalArgumentException("short plain command has trailing bytes");
+      }
+    }
+    return new Object[] {ins, p1, p2, data, hasLe};
   }
 
   /** Holds the plaintext result of an unwrapped SM response. */
@@ -512,6 +683,14 @@ final class VciSupport {
   static byte[] sha256(byte[] input) {
     try {
       return MessageDigest.getInstance("SHA-256").digest(input);
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  static byte[] sha384(byte[] input) {
+    try {
+      return MessageDigest.getInstance("SHA-384").digest(input);
     } catch (Exception e) {
       throw new IllegalStateException(e);
     }

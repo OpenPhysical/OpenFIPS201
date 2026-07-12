@@ -29,6 +29,7 @@ import apdu4j.core.BIBO;
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
+import java.io.ByteArrayOutputStream;
 import java.io.Reader;
 import java.io.Writer;
 import java.math.BigInteger;
@@ -84,6 +85,41 @@ final class VciProvisioning {
 
   private static final byte[] PIV_AID = Hex.decode("A000000308000010000100");
   private static final byte[] PAIRING_OBJECT_ID = {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
+  private static final byte[][] INSPECTION_OBJECT_SWEEP = {
+    Hex.decode("5FC102"),
+    Hex.decode("5FC105"),
+    Hex.decode("5FC103"),
+    Hex.decode("5FC106"),
+    Hex.decode("5FC108"),
+    Hex.decode("5FC101"),
+    Hex.decode("5FC10A"),
+    Hex.decode("5FC10B"),
+    Hex.decode("5FC109"),
+    Hex.decode("5FC10C"),
+    Hex.decode("5FC10D"),
+    Hex.decode("5FC10E"),
+    Hex.decode("5FC10F"),
+    Hex.decode("5FC110"),
+    Hex.decode("5FC111"),
+    Hex.decode("5FC112"),
+    Hex.decode("5FC113"),
+    Hex.decode("5FC114"),
+    Hex.decode("5FC115"),
+    Hex.decode("5FC116"),
+    Hex.decode("5FC117"),
+    Hex.decode("5FC118"),
+    Hex.decode("5FC119"),
+    Hex.decode("5FC11A"),
+    Hex.decode("5FC11B"),
+    Hex.decode("5FC11C"),
+    Hex.decode("5FC11D"),
+    Hex.decode("5FC11E"),
+    Hex.decode("5FC11F"),
+    Hex.decode("5FC120"),
+    Hex.decode("5FC121"),
+    Hex.decode("7F61")
+  };
+  private static final byte[] SM_SIGNER_OBJECT_ID = {(byte) 0x5F, (byte) 0xC1, (byte) 0x22};
   private static final int MAX_CHUNK = 0x80;
   private static final int CLA_CHAINING = 0x10;
   private static final byte ACCESS_ALWAYS = (byte) 0x7F;
@@ -106,9 +142,14 @@ final class VciProvisioning {
   }
 
   static CaMaterial makeCa(String outPrefix, String subjectDn) throws Exception {
+    return makeCa(outPrefix, subjectDn, VciSupport.ALG_CS2);
+  }
+
+  /** Creates a VCI signer CA on the curve matching the cipher suite (P-256 or P-384). */
+  static CaMaterial makeCa(String outPrefix, String subjectDn, byte suite) throws Exception {
     ensureProvider();
     KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
-    generator.initialize(new ECGenParameterSpec("secp256r1"), new SecureRandom());
+    generator.initialize(new ECGenParameterSpec(VciSupport.namedCurve(suite)), new SecureRandom());
     KeyPair keyPair = generator.generateKeyPair();
 
     X500Name subject = new X500Name(subjectDn);
@@ -123,7 +164,7 @@ final class VciProvisioning {
     builder.addExtension(
         Extension.keyUsage, true, new KeyUsage(KeyUsage.keyCertSign | KeyUsage.digitalSignature));
     ContentSigner signer =
-        new JcaContentSignerBuilder("SHA256withECDSA")
+        new JcaContentSignerBuilder(VciSupport.cvcSignatureAlgorithm(suite))
             .setProvider(BouncyCastleProvider.PROVIDER_NAME)
             .build(keyPair.getPrivate());
     X509CertificateHolder holder = builder.build(signer);
@@ -168,13 +209,32 @@ final class VciProvisioning {
       String pairingCode,
       String scp03KeyHex)
       throws Exception {
+    provision(bibo, caCertPath, caKeyPath, caOutPrefix, pairingCode, scp03KeyHex, VciSupport.ALG_CS2);
+  }
+
+  /**
+   * Provisions VCI SM key + CVC + pairing for the given cipher suite ({@link VciSupport#ALG_CS2} or
+   * {@link VciSupport#ALG_CS7}).
+   */
+  static void provision(
+      BIBO bibo,
+      String caCertPath,
+      String caKeyPath,
+      String caOutPrefix,
+      String pairingCode,
+      String scp03KeyHex,
+      byte suite)
+      throws Exception {
     requirePairingCode(pairingCode);
+    if (!VciSupport.isCs2(suite) && !VciSupport.isCs7(suite)) {
+      throw new IllegalArgumentException("suite must be CS2 (0x27) or CS7 (0x2E)");
+    }
 
     CaMaterial ca;
     if (caCertPath != null && caKeyPath != null) {
       ca = loadCa(caCertPath, caKeyPath);
     } else if (caOutPrefix != null) {
-      ca = makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Signer");
+      ca = makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Signer", suite);
       System.out.println(
           "Generated VCI signer CA: " + caOutPrefix + ".key / " + caOutPrefix + ".crt");
     } else {
@@ -213,8 +273,7 @@ final class VciProvisioning {
                 0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
         "Set standard PUK");
 
-    // STEP 1 - Define the SM key: reference 04, CS2, key-establishment role, non-importable so the
-    // private key can only ever exist on-card.
+    // STEP 1 - Define the SM key: reference 04, CS2/CS7, key-establishment role, non-importable.
     byte[] keyDefinition =
         VciSupport.tlv(
             0x66,
@@ -223,7 +282,7 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
-                VciSupport.tlv(0x8E, new byte[] {VciSupport.ALG_CS2}),
+                VciSupport.tlv(0x8E, new byte[] {suite}),
                 VciSupport.tlv(0x8F, new byte[] {ROLE_KEY_ESTABLISH}),
                 VciSupport.tlv(0x90, new byte[] {ATTR_NONE})));
     expect(gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, keyDefinition)), "Define SM key 04");
@@ -237,7 +296,7 @@ final class VciProvisioning {
                     0x47,
                     0x00,
                     VciSupport.KEY_REF_SECURE_MESSAGING,
-                    new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, VciSupport.ALG_CS2},
+                    new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, suite},
                     256)),
             "Generate SM key on card");
     byte[] cardPublicPoint = parseGeneratedPublicPoint(generated.getData());
@@ -250,12 +309,12 @@ final class VciProvisioning {
     // card identity deterministic across provisioning runs.
     byte[] subjectId = StandardCardProfile.CVC_SUBJECT;
     byte[] cvcBody = VciSupport.buildCvcBody(cardPublicPoint, issuerId, subjectId);
-    Signature signer = Signature.getInstance("SHA256withECDSA");
+    Signature signer = Signature.getInstance(VciSupport.cvcSignatureAlgorithm(suite));
     signer.initSign(ca.privateKey);
     signer.update(cvcBody);
-    byte[] cvc = VciSupport.assembleCvc(cvcBody, signer.sign());
-    if (cvc.length > 256) {
-      throw new IllegalStateException("CVC exceeds the applet's 256-byte limit: " + cvc.length);
+    byte[] cvc = VciSupport.assembleCvc(cvcBody, signer.sign(), suite);
+    if (cvc.length > 384) {
+      throw new IllegalStateException("CVC exceeds the applet's 384-byte SM CVC limit: " + cvc.length);
     }
     if (!VciSupport.verifyCvc(cvc, ca.certificate.getPublicKey())) {
       throw new IllegalStateException("Freshly signed CVC failed self-verification");
@@ -267,7 +326,7 @@ final class VciProvisioning {
     sendChained(
         gp,
         0x24,
-        VciSupport.ALG_CS2 & 0xFF,
+        suite & 0xFF,
         VciSupport.KEY_REF_SECURE_MESSAGING & 0xFF,
         VciSupport.tlv(0x30, VciSupport.tlv(0x8A, cvc)),
         "Load SM CVC");
@@ -277,12 +336,11 @@ final class VciProvisioning {
     // Table 43: 0x70 X.509 cert, 0x71 CertInfo). A relying party reads this object to validate the
     // card CVC; making it readable lets the host trust the card's secure-messaging credential
     // without an out-of-band CA. The certificate is the VCI signer CA generated/loaded above.
-    byte[] smSignerObjectId = {(byte) 0x5F, (byte) 0xC1, (byte) 0x22};
     byte[] smSignerDefinition =
         VciSupport.tlv(
             0x64,
             concat(
-                VciSupport.tlv(0x8B, smSignerObjectId),
+                VciSupport.tlv(0x8B, SM_SIGNER_OBJECT_ID),
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x91, new byte[] {(byte) 0x9B})));
@@ -292,7 +350,7 @@ final class VciProvisioning {
 
     byte[] smSignerValue =
         concat(
-            VciSupport.tlv(0x5C, smSignerObjectId),
+            VciSupport.tlv(0x5C, SM_SIGNER_OBJECT_ID),
             VciSupport.tlv(
                 0x53,
                 concat(
@@ -347,7 +405,10 @@ final class VciProvisioning {
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, discoveryDefinition)),
         "Define Discovery Object");
 
-    System.out.println("VCI provisioning complete (pairing-code mode).");
+    System.out.println(
+        "VCI provisioning complete (pairing-code mode, suite 0x"
+            + Integer.toHexString(suite & 0xFF)
+            + ").");
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -356,34 +417,113 @@ final class VciProvisioning {
 
   static boolean probe(BIBO bibo, String caCertPath, String pairingCode) throws Exception {
     requirePairingCode(pairingCode);
+    EstablishedSession established = establishSecureMessaging(bibo, caCertPath);
+    if (established == null) {
+      return false;
+    }
+    VciSupport.SmSession session = established.session;
+
+    // Pairing over the SM channel.
+    VciSupport.SmResponse verifyResponse =
+        verifyReferenceDataOverSm(
+            bibo, session, (byte) 0x98, pairingCode.getBytes(StandardCharsets.US_ASCII));
+    if (verifyResponse.statusWord != 0x9000) {
+      System.out.println(
+          String.format("FAIL: pairing VERIFY returned 0x%04X", verifyResponse.statusWord));
+      return false;
+    }
+    System.out.println("Pairing code verified over secure messaging; VCI established.");
+
+    // A wrapped GET DATA proves command decryption and response encryption both work.
+    byte[] wrappedGetData =
+        VciSupport.wrapCommand(
+            session, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, Hex.decode("5C017E"), true);
+    VciSupport.SmResponse dataResponse =
+        VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrappedGetData));
+    if (dataResponse.statusWord != 0x9000 || dataResponse.data.length == 0) {
+      System.out.println(
+          String.format("FAIL: wrapped GET DATA returned 0x%04X", dataResponse.statusWord));
+      return false;
+    }
+
+    for (byte[] objectId : INSPECTION_OBJECT_SWEEP) {
+      VciSupport.SmResponse missingResponse = readProtectedDataObject(bibo, session, objectId);
+      if (missingResponse.statusWord != 0x6A82) {
+        System.out.println(
+            String.format(
+                "FAIL: wrapped GET DATA %s returned 0x%04X",
+                Hex.toHexString(objectId).toUpperCase(), missingResponse.statusWord));
+        return false;
+      }
+    }
+
+    VciSupport.SmResponse signerResponse = readProtectedDataObject(bibo, session, SM_SIGNER_OBJECT_ID);
+    if (signerResponse.statusWord != 0x9000 || signerResponse.data.length == 0) {
+      System.out.println(
+          String.format(
+              "FAIL: wrapped Secure Messaging Certificate Signer returned 0x%04X",
+              signerResponse.statusWord));
+      return false;
+    }
+    System.out.println(
+        "Wrapped GET DATA succeeded over VCI ("
+            + dataResponse.data.length
+            + " plaintext bytes). All probes passed.");
+    return true;
+  }
+
+  /**
+   * Result of OPACITY establishment + CVC validation without pairing. Used by probe and by tests
+   * that exercise pairing/PIN negatives on an already-established SM session.
+   */
+  static final class EstablishedSession {
+    final VciSupport.SmSession session;
+    final boolean pairingRequired;
+    final byte[] cvcRaw;
+
+    EstablishedSession(VciSupport.SmSession session, boolean pairingRequired, byte[] cvcRaw) {
+      this.session = session;
+      this.pairingRequired = pairingRequired;
+      this.cvcRaw = cvcRaw;
+    }
+  }
+
+  /**
+   * Establishes secure messaging using the suite advertised in the APT (CS2 or CS7) and validates
+   * the card CVC against {@code caCertPath}. Does not submit the pairing code.
+   *
+   * @return established session, or null on failure
+   */
+  static EstablishedSession establishSecureMessaging(BIBO bibo, String caCertPath) throws Exception {
     ensureProvider();
     X509Certificate caCertificate = readCertificate(Paths.get(caCertPath));
 
-    // SELECT and confirm the card advertises CS2.
     ResponseAPDU select =
         transceive(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256), "SELECT PIV");
-    if (!containsSequence(select.getData(), new byte[] {(byte) 0x80, 0x01, VciSupport.ALG_CS2})) {
-      System.out.println("FAIL: APT does not advertise CS2 (SM key or CVC missing)");
-      return false;
+    byte suite = detectAdvertisedSuite(select.getData());
+    if (suite == 0) {
+      System.out.println("FAIL: APT does not advertise CS2 or CS7 (SM key or CVC missing)");
+      return null;
     }
-    System.out.println("APT advertises CS2 secure messaging.");
+    System.out.println(
+        "APT advertises suite 0x" + Integer.toHexString(suite & 0xFF) + " secure messaging.");
 
     ResponseAPDU discovery =
         transceive(
             bibo,
             new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, Hex.decode("5C017E"), 256),
             "GET DATA Discovery Object");
-    // The PIN usage policy (5F2F) is nested inside the 7E template; locate its 2-byte value.
     byte[] policyBytes = locatePinUsagePolicy(discovery.getData());
     if (policyBytes == null || (policyBytes[0] & 0x08) == 0) {
       System.out.println("FAIL: Discovery Object does not advertise VCI");
-      return false;
+      return null;
     }
     boolean pairingRequired = (policyBytes[0] & 0x04) == 0;
     System.out.println("Discovery Object: VCI advertised, pairing required = " + pairingRequired);
 
-    // OPACITY establishment.
-    X9ECParameters curve = VciSupport.p256();
+    int field = VciSupport.coordLength(suite);
+    int nLen = field / 2;
+    X9ECParameters curve = VciSupport.curveForSuite(suite);
     ECDomainParameters domain =
         new ECDomainParameters(curve.getCurve(), curve.getG(), curve.getN(), curve.getH());
     SecureRandom random = new SecureRandom();
@@ -399,35 +539,37 @@ final class VciProvisioning {
     byte[] template =
         VciSupport.tlv(
             0x7C, concat(VciSupport.tlv(0x81, witness), VciSupport.tlv(0x82, new byte[0])));
-    ResponseAPDU ga =
-        transceive(
-            bibo,
+    // Use raw transport: CS7 CVC responses often continue with GET RESPONSE (61 XX).
+    byte[] gaFirst =
+        bibo.transceive(
             new CommandAPDU(
-                0x00, 0x87, VciSupport.ALG_CS2, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256),
-            "GENERAL AUTHENTICATE (SM establishment)");
+                    0x00, 0x87, suite, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256)
+                .getBytes());
+    byte[] gaData = reassembleGaResponse(bibo, new ResponseAPDU(gaFirst));
 
-    byte[] gaData = ga.getData();
     int[] outer = VciSupport.locateTlv(gaData, 0, 0x7C);
     if (outer == null) {
       System.out.println("FAIL: establishment response missing 7C template");
-      return false;
+      return null;
     }
     int[] challenge = VciSupport.locateTlv(gaData, outer[1], 0x82);
-    if (challenge == null || challenge[2] < 1 + 16 + 16 + 1) {
+    // cb(1) + N + authCryptogram(16) + at least 1 byte of CVC
+    if (challenge == null || challenge[2] < 1 + nLen + 16 + 1) {
       System.out.println("FAIL: establishment response missing 82 challenge");
-      return false;
+      return null;
     }
     int valueOffset = challenge[1];
     byte cbIcc = gaData[valueOffset];
-    byte[] nIcc = Arrays.copyOfRange(gaData, valueOffset + 1, valueOffset + 17);
-    byte[] cryptogram = Arrays.copyOfRange(gaData, valueOffset + 17, valueOffset + 33);
-    byte[] cvcRaw = Arrays.copyOfRange(gaData, valueOffset + 33, valueOffset + challenge[2]);
+    byte[] nIcc = Arrays.copyOfRange(gaData, valueOffset + 1, valueOffset + 1 + nLen);
+    byte[] cryptogram =
+        Arrays.copyOfRange(gaData, valueOffset + 1 + nLen, valueOffset + 1 + nLen + 16);
+    byte[] cvcRaw =
+        Arrays.copyOfRange(gaData, valueOffset + 1 + nLen + 16, valueOffset + challenge[2]);
     System.out.println("Card CVC received (" + cvcRaw.length + " bytes).");
 
-    // Validate the CVC signature against the signer CA: this is the card's credential.
     if (!VciSupport.verifyCvc(cvcRaw, caCertificate.getPublicKey())) {
       System.out.println("FAIL: card CVC signature did not verify against the signer CA");
-      return false;
+      return null;
     }
     System.out.println("Card CVC verified against signer CA.");
 
@@ -436,55 +578,73 @@ final class VciProvisioning {
     ECDHBasicAgreement agreement = new ECDHBasicAgreement();
     agreement.init(new ECPrivateKeyParameters(d, domain));
     BigInteger z = agreement.calculateAgreement(new ECPublicKeyParameters(cardPoint, domain));
-    byte[] sharedSecret = toFixedLength(z, 32);
+    byte[] sharedSecret = toFixedLength(z, field);
 
     byte[] idSicc = VciSupport.computeIdSicc(cvcRaw);
     VciSupport.SessionKeys sessionKeys =
-        VciSupport.deriveSessionKeys(sharedSecret, idH, hostPublicPoint, idSicc, nIcc);
+        VciSupport.deriveSessionKeys(suite, sharedSecret, idH, hostPublicPoint, idSicc, nIcc);
 
     byte[] expectedCryptogram =
         VciSupport.computeAuthCryptogram(sessionKeys.skCfrm, idSicc, idH, hostPublicPoint);
     if (!Arrays.equals(Arrays.copyOf(expectedCryptogram, 16), cryptogram)) {
       System.out.println("FAIL: card authentication cryptogram mismatch (cbIcc=" + cbIcc + ")");
-      return false;
+      return null;
     }
     System.out.println("Authentication cryptogram verified; SM session keys derived.");
+    return new EstablishedSession(new VciSupport.SmSession(sessionKeys), pairingRequired, cvcRaw);
+  }
 
-    // Pairing over the SM channel.
-    VciSupport.SmSession session = new VciSupport.SmSession(sessionKeys);
-    byte[] wrappedVerify =
-        VciSupport.wrapCommand(
-            session,
-            (byte) 0x20,
-            (byte) 0x00,
-            (byte) 0x98,
-            pairingCode.getBytes(StandardCharsets.US_ASCII),
-            false);
-    VciSupport.SmResponse verifyResponse =
-        VciSupport.unwrapResponse(session, bibo.transceive(wrappedVerify));
-    if (verifyResponse.statusWord != 0x9000) {
-      System.out.println(
-          String.format("FAIL: pairing VERIFY returned 0x%04X", verifyResponse.statusWord));
-      return false;
+  /** Returns ALG_CS2, ALG_CS7, or 0 if neither is advertised in the APT. */
+  private static byte detectAdvertisedSuite(byte[] apt) {
+    if (containsSequence(apt, new byte[] {(byte) 0x80, 0x01, VciSupport.ALG_CS7})) {
+      return VciSupport.ALG_CS7;
     }
-    System.out.println("Pairing code verified over secure messaging; VCI established.");
+    if (containsSequence(apt, new byte[] {(byte) 0x80, 0x01, VciSupport.ALG_CS2})) {
+      return VciSupport.ALG_CS2;
+    }
+    return 0;
+  }
 
-    // A wrapped GET DATA proves command decryption and response encryption both work.
-    byte[] wrappedGetData =
+  /** Reassembles a GA response that may span GET RESPONSE (61 XX). */
+  private static byte[] reassembleGaResponse(BIBO bibo, ResponseAPDU first) {
+    ByteArrayOutputStream logical = new ByteArrayOutputStream();
+    byte[] response = first.getBytes();
+    while (true) {
+      if (response.length < 2) {
+        throw new IllegalStateException("Card returned a malformed GA response");
+      }
+      int sw =
+          ((response[response.length - 2] & 0xFF) << 8) | (response[response.length - 1] & 0xFF);
+      logical.write(response, 0, response.length - 2);
+      if ((sw & 0xFF00) != 0x6100) {
+        return logical.toByteArray();
+      }
+      int le = sw & 0xFF;
+      if (le == 0) {
+        le = 256;
+      }
+      response = bibo.transceive(new byte[] {0x00, (byte) 0xC0, 0x00, 0x00, (byte) le});
+    }
+  }
+
+  /**
+   * Submits VERIFY for the given key reference over the established SM session (pairing code 0x98,
+   * PIV PIN 0x80, Global PIN 0x00, etc.).
+   */
+  static VciSupport.SmResponse verifyReferenceDataOverSm(
+      BIBO bibo, VciSupport.SmSession session, byte keyRef, byte[] referenceData) throws Exception {
+    byte[] wrapped =
+        VciSupport.wrapCommand(session, (byte) 0x20, (byte) 0x00, keyRef, referenceData, false);
+    return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrapped));
+  }
+
+  /** Wrapped GET DATA of the Discovery Object over the SM session. */
+  static VciSupport.SmResponse getDiscoveryOverSm(BIBO bibo, VciSupport.SmSession session)
+      throws Exception {
+    byte[] wrapped =
         VciSupport.wrapCommand(
             session, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, Hex.decode("5C017E"), true);
-    VciSupport.SmResponse dataResponse =
-        VciSupport.unwrapResponse(session, bibo.transceive(wrappedGetData));
-    if (dataResponse.statusWord != 0x9000 || dataResponse.data.length == 0) {
-      System.out.println(
-          String.format("FAIL: wrapped GET DATA returned 0x%04X", dataResponse.statusWord));
-      return false;
-    }
-    System.out.println(
-        "Wrapped GET DATA succeeded over VCI ("
-            + dataResponse.data.length
-            + " plaintext bytes). All probes passed.");
-    return true;
+    return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrapped));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -497,14 +657,52 @@ final class VciProvisioning {
     }
   }
 
+  private static VciSupport.SmResponse readProtectedDataObject(
+      BIBO bibo, VciSupport.SmSession session, byte[] objectId) {
+    byte[] wrappedGetData =
+        VciSupport.wrapCommand(
+            session,
+            (byte) 0xCB,
+            (byte) 0x3F,
+            (byte) 0xFF,
+            VciSupport.tlv(0x5C, objectId),
+            true);
+    return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrappedGetData));
+  }
+
+  private static byte[] transceiveWithPhysicalChaining(BIBO bibo, byte[] command) {
+    ByteArrayOutputStream logical = new ByteArrayOutputStream();
+    byte[] response = bibo.transceive(command);
+    while (true) {
+      if (response.length < 2) {
+        throw new IllegalStateException("Card returned a malformed response APDU");
+      }
+
+      int sw = ((response[response.length - 2] & 0xFF) << 8) | (response[response.length - 1] & 0xFF);
+      logical.write(response, 0, response.length - 2);
+      if ((sw & 0xFF00) != 0x6100) {
+        logical.write((sw >> 8) & 0xFF);
+        logical.write(sw & 0xFF);
+        return logical.toByteArray();
+      }
+
+      int le = sw & 0xFF;
+      response = bibo.transceive(new byte[] {0x00, (byte) 0xC0, 0x00, 0x00, (byte) le});
+    }
+  }
+
   private static byte[] parseGeneratedPublicPoint(byte[] response) {
     int[] template = VciSupport.locateTlv(response, 0, 0x7F49);
     if (template == null) {
       throw new IllegalStateException("GENERATE response missing 7F49 template");
     }
     int[] point = VciSupport.locateTlv(response, template[1], 0x86);
-    if (point == null || point[2] != 65) {
-      throw new IllegalStateException("GENERATE response missing 65-byte 86 public point");
+    // CS2: 65-byte point; CS7: 97-byte point.
+    if (point == null || (point[2] != 65 && point[2] != 97)) {
+      throw new IllegalStateException(
+          "GENERATE response missing 65- or 97-byte 86 public point (got "
+              + (point == null ? "null" : point[2])
+              + ")");
     }
     return Arrays.copyOfRange(response, point[1], point[1] + point[2]);
   }
