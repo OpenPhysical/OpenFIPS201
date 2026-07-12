@@ -371,42 +371,21 @@ final class PIVAttestation {
   }
 
   private static short derObjectEnd(byte[] buffer, short offset, short limit) {
-    short contentOffset = derContentOffset(buffer, offset, limit);
-    short length = derLength(buffer, offset, limit);
-    short end = (short) (contentOffset + length);
-    if (end > limit || end < contentOffset) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    return end;
+    try {
+      return TLV.objectEnd(buffer, offset, limit, true);
+    } catch (ISOException e) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return (short) 0x00;
+    }
   }
 
   private static short derContentOffset(byte[] buffer, short offset, short limit) {
-    short lengthOffset = (short) (offset + 1);
-    if (lengthOffset >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    byte lengthByte = buffer[lengthOffset];
-    if ((lengthByte & (byte) 0x80) == (byte) 0) return (short) (lengthOffset + 1);
-    byte count = (byte) (lengthByte & (byte) 0x7F);
-    if (count == (byte) 0 || count > (byte) 2) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    short contentOffset = (short) (lengthOffset + 1 + count);
-    if (contentOffset > limit || contentOffset < lengthOffset) {
+    try {
+      return TLV.dataOffset(buffer, offset, limit, true);
+    } catch (ISOException e) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return (short) 0x00;
     }
-    return contentOffset;
-  }
-
-  private static short derLength(byte[] buffer, short offset, short limit) {
-    short lengthOffset = (short) (offset + 1);
-    if (lengthOffset >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    byte lengthByte = buffer[lengthOffset];
-    if ((lengthByte & (byte) 0x80) == (byte) 0) return (short) (lengthByte & 0x7F);
-    byte count = (byte) (lengthByte & (byte) 0x7F);
-    short valueOffset = (short) (lengthOffset + 1);
-    short valueEnd = (short) (valueOffset + count);
-    if (count == (byte) 0 || count > (byte) 2 || valueEnd > limit || valueEnd < valueOffset) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-    if (count == (byte) 1) return (short) (buffer[valueOffset] & 0xFF);
-    if (count == (byte) 2) return Util.getShort(buffer, valueOffset);
-    ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    return (short) 0x00;
   }
 
   // Certificate profile, mirrored from docs/ATTESTATION.md:

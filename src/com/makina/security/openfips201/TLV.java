@@ -26,6 +26,10 @@
 
 package com.makina.security.openfips201;
 
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
+import javacard.framework.Util;
+
 final class TLV {
   private TLV() {
     // Prevent instantiation
@@ -73,4 +77,94 @@ final class TLV {
   // Type Values
   static final byte TRUE = (byte) 0xFF;
   static final byte FALSE = (byte) 0x00;
+
+  static short encodedLengthSize(short length) {
+    if (length < (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    if (length <= LENGTH_1BYTE_MAX) return LENGTH_1BYTE;
+    if (length <= LENGTH_2BYTE_MAX) return LENGTH_2BYTE;
+    return LENGTH_3BYTE;
+  }
+
+  static short writeLength(byte[] buffer, short offset, short length) {
+    if (length < (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    if (length <= LENGTH_1BYTE_MAX) {
+      buffer[offset] = (byte) length;
+      return LENGTH_1BYTE;
+    }
+    if (length <= LENGTH_2BYTE_MAX) {
+      buffer[offset++] = (byte) 0x81;
+      buffer[offset] = (byte) length;
+      return LENGTH_2BYTE;
+    }
+    buffer[offset++] = (byte) 0x82;
+    Util.setShort(buffer, offset, length);
+    return LENGTH_3BYTE;
+  }
+
+  static short readLength(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    short lengthOffset = lengthOffset(buffer, tlvOffset, limit);
+    byte lengthByte = buffer[lengthOffset];
+    if ((lengthByte & MASK_LONG_LENGTH) != MASK_LONG_LENGTH) {
+      return (short) (lengthByte & 0xFF);
+    }
+
+    byte count = (byte) (lengthByte & MASK_LENGTH);
+    short valueOffset = (short) (lengthOffset + 1);
+    short valueEnd = (short) (valueOffset + count);
+    if (count == (byte) 0 || count > (byte) 2 || valueEnd > limit || valueEnd < valueOffset) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    short length;
+    if (count == (byte) 1) {
+      length = (short) (buffer[valueOffset] & 0xFF);
+      if (strictDer && length <= LENGTH_1BYTE_MAX) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return length;
+    }
+
+    length = Util.getShort(buffer, valueOffset);
+    if (length < (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    if (strictDer && length <= LENGTH_2BYTE_MAX) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    return length;
+  }
+
+  static short dataOffset(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    short lengthOffset = lengthOffset(buffer, tlvOffset, limit);
+    byte lengthByte = buffer[lengthOffset];
+    if ((lengthByte & MASK_LONG_LENGTH) != MASK_LONG_LENGTH) {
+      return (short) (lengthOffset + 1);
+    }
+
+    byte count = (byte) (lengthByte & MASK_LENGTH);
+    short offset = (short) (lengthOffset + 1 + count);
+    if (count == (byte) 0 || count > (byte) 2 || offset > limit || offset < lengthOffset) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    if (strictDer) {
+      readLength(buffer, tlvOffset, limit, true);
+    }
+    return offset;
+  }
+
+  static short objectEnd(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    short contentOffset = dataOffset(buffer, tlvOffset, limit, strictDer);
+    short length = readLength(buffer, tlvOffset, limit, strictDer);
+    short end = (short) (contentOffset + length);
+    if (end > limit || end < contentOffset) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    return end;
+  }
+
+  private static short lengthOffset(byte[] buffer, short tlvOffset, short limit) {
+    if (tlvOffset < (short) 0 || tlvOffset >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    short cursor = tlvOffset;
+    if ((buffer[cursor] & MASK_TAG_MULTI_BYTE) == MASK_TAG_MULTI_BYTE) {
+      do {
+        cursor++;
+        if (cursor >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      } while ((buffer[cursor] & MASK_HIGH_TAG_MOREDATA) == MASK_HIGH_TAG_MOREDATA);
+    }
+    cursor++;
+    if (cursor >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    return cursor;
+  }
 }

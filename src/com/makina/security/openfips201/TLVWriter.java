@@ -427,24 +427,9 @@ final class TLVWriter {
   short writeLength(short length) {
 
     byte[] data = (byte[]) dataPtr[0];
-
-    // Set the LENGTH
-    if (length >= 0 && length <= 127) {
-      // Single-byte length
-      data[context[CONTEXT_OFFSET]++] = (byte) length;
-      return (short) 1;
-    } else if (length > 127 && length <= 255) {
-      // Double-byte length
-      data[context[CONTEXT_OFFSET]++] = (byte) 0x81;
-      data[context[CONTEXT_OFFSET]++] = (byte) length;
-      return (short) 2;
-    } else {
-      // Triple-byte length
-      data[context[CONTEXT_OFFSET]++] = (byte) 0x82;
-      Util.setShort(data, context[CONTEXT_OFFSET], length);
-      context[CONTEXT_OFFSET] += (short) 2;
-      return (short) 3;
-    }
+    short written = TLV.writeLength(data, context[CONTEXT_OFFSET], length);
+    context[CONTEXT_OFFSET] += written;
+    return written;
   }
 
   /**

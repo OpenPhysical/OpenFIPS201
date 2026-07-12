@@ -191,20 +191,9 @@ final class DERWriter {
   }
 
   void writeLength(short length) {
-    if (length < (short) 0x00) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-    if (length < (short) 0x80) {
-      requireCapacity((short) 0x01);
-      buffer[offset++] = (byte) length;
-    } else if (length < (short) 0x0100) {
-      requireCapacity((short) 0x02);
-      buffer[offset++] = (byte) 0x81;
-      buffer[offset++] = (byte) length;
-    } else {
-      requireCapacity((short) 0x03);
-      buffer[offset++] = (byte) 0x82;
-      Util.setShort(buffer, offset, length);
-      offset += (short) 0x02;
-    }
+    short encodedLength = TLV.encodedLengthSize(length);
+    requireCapacity(encodedLength);
+    offset += TLV.writeLength(buffer, offset, length);
   }
 
   private void requireCapacity(short length) {

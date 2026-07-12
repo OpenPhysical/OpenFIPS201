@@ -497,38 +497,14 @@ final class ChainBuffer {
     // Transmit the next frame up to a maximum of 'LE' bytes
     //
 
-    short le = apdu.setOutgoing();
-
-    //
-    // !! HACK !!
-    // Most applets completely ignore this value and so interface developers have gotten lazy about
-    // whether or not they include an LE byte when they expect response data.
-    // This treats the absence of an LE byte (case 3) as if it were a case 4 byte with LE == '00',
-    // which maps to 256 bytes.
-    //
-    if (le == 0) le = 256;
-
+    short le = outgoingLength(apdu);
     short length = (context[CONTEXT_REMAINING] > le) ? le : context[CONTEXT_REMAINING];
 
-    apdu.setOutgoingLength(length);
-    apdu.sendBytesLong((byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-
-    context[CONTEXT_REMAINING] -= length;
-    context[CONTEXT_OFFSET] += length;
+    sendOutgoing(apdu, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
+    advanceOutgoing(length);
 
     // If we have nothing left to send, clear our context and return 9000
-    if (context[CONTEXT_REMAINING] == 0) {
-      reset();
-      ISOException.throwIt(ISO7816.SW_NO_ERROR);
-    }
-    // Otherwise, notify the caller we have xx remaining bytes (up to 255)
-    else {
-      short sw2 =
-          (context[CONTEXT_REMAINING] > (short) 0x00FF)
-              ? (short) 0x00FF
-              : context[CONTEXT_REMAINING];
-      ISOException.throwIt((short) (ISO7816.SW_BYTES_REMAINING_00 | sw2));
-    }
+    ISOException.throwIt(outgoingStatusWord());
   }
 
   void processOutgoingSecure(
@@ -559,8 +535,7 @@ final class ChainBuffer {
       context[CONTEXT_SECURE_OUTGOING] = (short) 1;
     }
 
-    short le = apdu.setOutgoing();
-    if (le == (short) 0) le = (short) 256;
+    short le = outgoingLength(apdu);
     short length =
         secureMessaging.writeResponseStreamChunk(
             context[CONTEXT_STATE] == STATE_OUTGOING ? (byte[]) dataPtr[0] : buffer,
@@ -570,17 +545,49 @@ final class ChainBuffer {
             le);
     short consumed = secureMessaging.getResponseStreamPlaintextConsumed();
     if (consumed > (short) 0) {
-      context[CONTEXT_OFFSET] += consumed;
-      context[CONTEXT_REMAINING] -= consumed;
+      advanceOutgoing(consumed);
     }
 
-    apdu.setOutgoingLength(length);
-    apdu.sendBytesLong(buffer, (short) 0, length);
+    sendOutgoing(apdu, buffer, (short) 0, length);
     short responseSw = secureMessaging.getResponseStreamStatusWord();
     if (secureMessaging.isResponseStreamComplete()) {
       reset();
     }
 
     ISOException.throwIt(responseSw);
+  }
+
+  private short outgoingLength(APDU apdu) {
+    short le = apdu.setOutgoing();
+    //
+    // !! HACK !!
+    // Most applets completely ignore this value and so interface developers have gotten lazy about
+    // whether or not they include an LE byte when they expect response data.
+    // This treats the absence of an LE byte (case 3) as if it were a case 4 byte with LE == '00',
+    // which maps to 256 bytes.
+    //
+    return le == (short) 0 ? (short) 256 : le;
+  }
+
+  private void sendOutgoing(APDU apdu, byte[] buffer, short offset, short length) {
+    apdu.setOutgoingLength(length);
+    apdu.sendBytesLong(buffer, offset, length);
+  }
+
+  private void advanceOutgoing(short length) {
+    context[CONTEXT_REMAINING] -= length;
+    context[CONTEXT_OFFSET] += length;
+  }
+
+  private short outgoingStatusWord() {
+    if (context[CONTEXT_REMAINING] == (short) 0) {
+      reset();
+      return ISO7816.SW_NO_ERROR;
+    }
+    short sw2 =
+        (context[CONTEXT_REMAINING] > (short) 0x00FF)
+            ? (short) 0x00FF
+            : context[CONTEXT_REMAINING];
+    return (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
   }
 }
