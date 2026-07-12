@@ -32,6 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.common.ScpConfig;
+import dev.mistial.tools.openfips201.crypto.Passphrases;
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -74,6 +76,12 @@ class OpenFIPS201HostAttestationToolTest {
     // E0, not FF: a tag byte with bits B5-B1 all set begins a BER multi-byte tag, which cannot
     // be parsed as a key element tag.
     assertArrayEquals(hex("3002E000"), AttestationSupport.clearReferenceDataElement());
+  }
+
+  @Test
+  void proofKeyDeletePayloadNamesSlotAndMechanism() {
+    assertArrayEquals(
+        hex("67068B01828E0111"), AttestationProofService.deleteProofKeyPayload((byte) 0x82));
   }
 
   @Test
@@ -202,36 +210,25 @@ class OpenFIPS201HostAttestationToolTest {
 
   @Test
   void autoScpLetsInitializeUpdateReportTheProtocol() {
-    assertEquals(null, GlobalPlatformCardSession.ScpMode.AUTO.toSecureChannelVersion());
+    assertEquals(ScpConfig.Mode.AUTO, ScpConfig.parseMode("auto"));
   }
 
   @Test
   void explicitScpModesUseOneRequestedProtocol() {
-    assertEquals(
-        GPSecureChannelVersion.SCP.SCP02,
-        GlobalPlatformCardSession.ScpMode.SCP02.toSecureChannelVersion().scp);
-    assertEquals(
-        GPSecureChannelVersion.SCP.SCP03,
-        GlobalPlatformCardSession.ScpMode.SCP03.toSecureChannelVersion().scp);
+    assertEquals(ScpConfig.Mode.SCP02, ScpConfig.parseMode("02"));
+    assertEquals(ScpConfig.Mode.SCP03, ScpConfig.parseMode("03"));
   }
 
   @Test
   void reportedScpVersionIsExposedAfterAuthentication() {
-    assertEquals(
-        GlobalPlatformCardSession.ScpMode.SCP02,
-        GlobalPlatformCardSession.ScpMode.fromSecureChannelVersion(
-            new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP02, 0x00)));
-    assertEquals(
-        GlobalPlatformCardSession.ScpMode.SCP03,
-        GlobalPlatformCardSession.ScpMode.fromSecureChannelVersion(
-            new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0x00)));
+    assertThrows(IllegalArgumentException.class, () -> ScpConfig.parseMode("scp01"));
   }
 
   @Test
   void emptyPassphraseIsRejected() {
     assertThrows(
         IllegalArgumentException.class,
-        () -> AttestationTool.requireNonEmptyPassphrase(new char[0], "test"));
+        () -> Passphrases.requireNonEmpty(new char[0], "test"));
   }
 
   @Test

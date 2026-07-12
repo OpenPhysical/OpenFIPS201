@@ -8,7 +8,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import apdu4j.core.BIBO;
+import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
+import dev.mistial.tools.openfips201.applet.AppletInstallService;
+import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.ScpConfig;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 import java.util.EnumSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -72,6 +78,7 @@ class OpenFIPS201ZmqEmulatorServerTest {
     client = clientContext.createSocket(SocketType.REQ);
     client.setReceiveTimeOut(10_000);
     client.connect(endpoint);
+    installOpenFips201Applet();
   }
 
   @AfterEach
@@ -160,6 +167,23 @@ class OpenFIPS201ZmqEmulatorServerTest {
         null,
         EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
     return gp;
+  }
+
+  private void installOpenFips201Applet() throws Exception {
+    AppletInstallRequest request = new AppletInstallRequest();
+    request.capPath = Paths.get("build/bin/OpenFIPS201-OP-0.1.cap");
+    request.packageAid = "A00000030800001000";
+    request.appletAid = "A000000308000010000100";
+    request.instanceAid = "A000000308000010000100";
+    request.loadCap = false;
+    request.deleteExisting = false;
+    try (GlobalPlatformSession session =
+        GlobalPlatformSession.open(
+            CardTarget.parse("zmq:" + endpoint),
+            GlobalPlatformSession.ISD_AID,
+            ScpConfig.defaultTestScp03())) {
+      new AppletInstallService().install(session, request);
+    }
   }
 
   private byte[] request(String verb, byte[] payload) {

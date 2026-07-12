@@ -7,10 +7,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import apdu4j.core.BIBO;
+import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
+import dev.mistial.tools.openfips201.applet.AppletInstallService;
+import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.ScpConfig;
+import dev.mistial.tools.openfips201.common.ZmqBibo;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.SecureRandom;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -62,6 +69,7 @@ class OpenFIPS201VciEndToEndTest {
     if (failure.get() != null) {
       throw new IllegalStateException("Emulator failed to start", failure.get());
     }
+    installOpenFips201Applet();
   }
 
   @AfterEach
@@ -331,6 +339,23 @@ class OpenFIPS201VciEndToEndTest {
 
   private static boolean isCs7Build() {
     return "CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
+  }
+
+  private void installOpenFips201Applet() throws Exception {
+    AppletInstallRequest request = new AppletInstallRequest();
+    request.capPath = Paths.get("build/bin/OpenFIPS201-OP-0.1.cap");
+    request.packageAid = "A00000030800001000";
+    request.appletAid = "A000000308000010000100";
+    request.instanceAid = "A000000308000010000100";
+    request.loadCap = false;
+    request.deleteExisting = false;
+    try (GlobalPlatformSession session =
+        GlobalPlatformSession.open(
+            CardTarget.parse("zmq:" + endpoint),
+            GlobalPlatformSession.ISD_AID,
+            ScpConfig.defaultTestScp03())) {
+      new AppletInstallService().install(session, request);
+    }
   }
 
   private void assertOffCurveHostPublicKeyRejected(Path tempDir, byte suite) throws Exception {

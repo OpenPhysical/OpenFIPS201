@@ -1,0 +1,615 @@
+/******************************************************************************
+ * MIT License
+ *
+ * Project: OpenFIPS201
+ * Copyright: (c) 2026 OpenPhysical
+ ******************************************************************************/
+
+package dev.mistial.tools.openfips201;
+
+import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
+import dev.mistial.tools.openfips201.applet.AppletInstallService;
+import dev.mistial.tools.openfips201.cardstock.CardstockPreparationService;
+import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.common.ScpConfig;
+import dev.mistial.tools.openfips201.crypto.PemFiles;
+import dev.mistial.tools.openfips201.crypto.PemSigningKey;
+import dev.mistial.tools.openfips201.crypto.SigningKey;
+import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
+import dev.mistial.tools.openfips201.gp.CardKeyDerivationService;
+import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
+import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
+import dev.mistial.tools.openfips201.pkcs11.Pkcs11Config;
+import dev.mistial.tools.openfips201.pkcs11.Pkcs11SigningKey;
+import dev.mistial.tools.openfips201.profiles.IssuerProfile;
+import dev.mistial.tools.openfips201.profiles.ProfileLoader;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.PrintStream;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
+import java.util.concurrent.Callable;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Option;
+import pro.javacard.gp.keys.PlaintextKeys;
+
+@Command(
+    name = "openfips201",
+    mixinStandardHelpOptions = true,
+    description = "OpenFIPS201 issuer tooling.",
+    subcommands = {
+      OpenFips201Tool.Cards.class,
+      OpenFips201Tool.Emulator.class,
+      OpenFips201Tool.Applet.class,
+      OpenFips201Tool.Crypto.class,
+      OpenFips201Tool.Gp.class,
+      OpenFips201Tool.Cardstock.class,
+      OpenFips201Tool.Interactive.class
+    })
+public final class OpenFips201Tool implements Callable<Integer> {
+  public static void main(String[] args) {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    commandLine.setExecutionExceptionHandler(
+        (exception, parsedCommand, parseResult) -> {
+          parsedCommand.getErr().println("Error: " + errorMessage(exception));
+          return 1;
+        });
+    System.exit(commandLine.execute(args));
+  }
+
+  @Override
+  public Integer call() {
+    CommandLine.usage(this, System.err);
+    return 2;
+  }
+
+  @Command(name = "cards", mixinStandardHelpOptions = true, subcommands = Cards.ListReaders.class)
+  static final class Cards implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "list", mixinStandardHelpOptions = true, description = "List PC/SC reader names.")
+    static final class ListReaders implements Callable<Integer> {
+      @Override
+      public Integer call() throws Exception {
+        CardTarget.listPcscReaders();
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "emulator", mixinStandardHelpOptions = true, subcommands = Emulator.Serve.class)
+  static final class Emulator implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "serve", mixinStandardHelpOptions = true, description = "Serve an OpenFIPS201 emulator over ZeroMQ.")
+    static final class Serve implements Callable<Integer> {
+      @Option(names = "--endpoint", defaultValue = ZmqApduServer.DEFAULT_ENDPOINT)
+      String endpoint;
+
+      @Option(names = "--scp03-key", description = "SCP03 master key hex; defaults to GP test key.")
+      String scp03Key;
+
+      @Override
+      public Integer call() {
+        byte[] key = scp03Key == null ? PlaintextKeys.DEFAULT_KEY() : HexUtil.parse(scp03Key);
+        try (ZmqApduServer server = new ZmqApduServer(key)) {
+          String bound = server.bind(endpoint);
+          server.start();
+          System.out.println("OpenFIPS201 emulator serving on " + bound);
+          Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
+          server.serve();
+        }
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "applet", mixinStandardHelpOptions = true, subcommands = Applet.Install.class)
+  static final class Applet implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "install", mixinStandardHelpOptions = true, description = "Load and install the OpenFIPS201 CAP.")
+    static final class Install extends ScpOptions implements Callable<Integer> {
+      @Option(names = "--cap", required = true)
+      Path cap;
+
+      @Option(names = "--package-aid", defaultValue = "A00000030800001000")
+      String packageAid;
+
+      @Option(names = "--applet-aid", defaultValue = "A000000308000010000100")
+      String appletAid;
+
+      @Option(names = "--instance-aid", defaultValue = "A000000308000010000100")
+      String instanceAid;
+
+      @Option(names = "--delete-existing")
+      boolean deleteExisting;
+
+      @Option(
+          names = "--skip-load",
+          description = "Skip GP CAP LOAD and only install/select an already registered package.")
+      boolean skipLoad;
+
+      @Override
+      public Integer call() throws Exception {
+        AppletInstallRequest request = new AppletInstallRequest();
+        request.capPath = cap;
+        request.packageAid = packageAid;
+        request.appletAid = appletAid;
+        request.instanceAid = instanceAid;
+        request.loadCap = !skipLoad;
+        request.deleteExisting = deleteExisting;
+        try (GlobalPlatformSession session =
+            GlobalPlatformSession.open(CardTarget.parse(target), GlobalPlatformSession.ISD_AID, scp())) {
+          new AppletInstallService().install(session, request);
+        }
+        System.out.println("Applet installed.");
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "crypto", mixinStandardHelpOptions = true, subcommands = Crypto.Pkcs11.class)
+  static final class Crypto implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "pkcs11", mixinStandardHelpOptions = true, subcommands = Pkcs11.List.class)
+    static final class Pkcs11 implements Callable<Integer> {
+      @Override
+      public Integer call() {
+        CommandLine.usage(this, System.err);
+        return 2;
+      }
+
+      @Command(name = "list", mixinStandardHelpOptions = true, description = "Validate a PKCS#11 token/key selection.")
+      static final class List extends Pkcs11Options implements Callable<Integer> {
+        @Override
+        public Integer call() throws Exception {
+          SigningKey key = new Pkcs11SigningKey(pkcs11());
+          System.out.println("Selected " + key.description());
+          System.out.println(key.publicKey().getAlgorithm() + " public key available");
+          return 0;
+        }
+      }
+    }
+  }
+
+  @Command(name = "gp", mixinStandardHelpOptions = true, subcommands = Gp.Keys.class)
+  static final class Gp implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "keys", mixinStandardHelpOptions = true, subcommands = {Keys.Derive.class, Keys.Rotate.class})
+    static final class Keys implements Callable<Integer> {
+      @Override
+      public Integer call() {
+        CommandLine.usage(this, System.err);
+        return 2;
+      }
+
+      @Command(name = "derive", mixinStandardHelpOptions = true, description = "Derive per-card SCP03 keys and print KCVs.")
+      static final class Derive implements Callable<Integer> {
+        @Option(names = "--master-key-env", required = true)
+        String masterKeyEnv;
+
+        @Option(names = "--context", required = true)
+        String context;
+
+        @Option(names = "--key-version", defaultValue = "1")
+        int keyVersion;
+
+        @Override
+        public Integer call() throws Exception {
+          DerivedScpKeys keys =
+              new CardKeyDerivationService()
+                  .derive(secret(masterKeyEnv), context, keyVersion);
+          System.out.println("ENC KCV " + keys.encKcv);
+          System.out.println("MAC KCV " + keys.macKcv);
+          System.out.println("DEK KCV " + keys.dekKcv);
+          return 0;
+        }
+      }
+
+      @Command(name = "rotate", mixinStandardHelpOptions = true, description = "Rotate card SCP keys and verify the new keyset.")
+      static final class Rotate extends ScpOptions implements Callable<Integer> {
+        @Option(names = "--new-master-key-env", required = true)
+        String newMasterKeyEnv;
+
+        @Option(names = "--context", required = true)
+        String context;
+
+        @Option(names = "--new-key-version", defaultValue = "1")
+        int newKeyVersion;
+
+        @Override
+        public Integer call() throws Exception {
+          DerivedScpKeys keys =
+              new CardKeyDerivationService()
+                  .derive(secret(newMasterKeyEnv), context, newKeyVersion);
+          new CardKeyRotationService().rotate(CardTarget.parse(target), scp(), keys);
+          System.out.println("SCP keys rotated. ENC/MAC/DEK KCVs: "
+              + keys.encKcv + " " + keys.macKcv + " " + keys.dekKcv);
+          return 0;
+        }
+      }
+    }
+  }
+
+  @Command(name = "cardstock", mixinStandardHelpOptions = true, subcommands = Cardstock.Prepare.class)
+  static final class Cardstock implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "prepare", mixinStandardHelpOptions = true, description = "Load, attest, rotate keys, and receipt issuer cardstock.")
+    static final class Prepare implements Callable<Integer> {
+      @Option(names = "--profile", required = true)
+      String profile;
+
+      @Option(names = "--target", required = true)
+      String target;
+
+      @Option(names = "--yes", description = "Confirm physical-card mutations.")
+      boolean yes;
+
+      @Option(names = "--signer", defaultValue = "profile", description = "profile, pkcs11, softhsm, pem, or ephemeral.")
+      String signerType;
+
+      @Option(names = "--signer-key")
+      Path signerKey;
+
+      @Option(names = "--signer-cert")
+      Path signerCert;
+
+      @Option(names = "--signer-key-pass-env")
+      String signerKeyPassEnv;
+
+      @Mixin
+      Pkcs11Options pkcs11 = new Pkcs11Options();
+
+      @Override
+      public Integer call() throws Exception {
+        IssuerProfile loaded = ProfileLoader.load(profile);
+        SigningKey signingKey = signer(loaded, signerType, signerKey, signerCert, signerKeyPassEnv, pkcs11);
+        Path receipt =
+            new CardstockPreparationService()
+                .prepare(CardTarget.parse(target), loaded, signingKey, yes);
+        System.out.println("Cardstock prepared. Receipt: " + receipt);
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "interactive", mixinStandardHelpOptions = true, description = "Run a guided cardstock workflow.")
+  static final class Interactive implements Callable<Integer> {
+    @Option(names = "--dry-run", description = "Print the equivalent cardstock command without touching a card.")
+    boolean dryRun;
+
+    @Override
+    public Integer call() throws Exception {
+      return run(new BufferedReader(new InputStreamReader(System.in)), System.out, dryRun);
+    }
+
+    int run(BufferedReader in, PrintStream out, boolean dryRunMode) throws Exception {
+      out.println("OpenFIPS201 cardstock workflow");
+      out.println();
+
+      String profilePath = promptRequired(in, out, "Issuer profile path");
+      IssuerProfile profile = ProfileLoader.load(profilePath);
+      out.println("Profile: " + profile.name);
+
+      String target = promptTarget(in, out);
+      String signerType =
+          promptChoice(in, out, "Signer", new String[] {"profile", "pkcs11", "softhsm", "pem", "ephemeral"}, "profile");
+      Path signerKey = null;
+      Path signerCert = null;
+      String signerPassEnv = null;
+      Pkcs11Options pkcs11Options = new Pkcs11Options();
+      if ("pem".equals(signerType)) {
+        signerKey = Paths.get(promptRequired(in, out, "PEM private key path"));
+        signerCert = Paths.get(promptRequired(in, out, "PEM certificate path"));
+        signerPassEnv = promptOptional(in, out, "PEM passphrase env var", null);
+      } else if ("pkcs11".equals(signerType) || "softhsm".equals(signerType)) {
+        pkcs11Options.module = promptOptional(in, out, "PKCS#11 module path", profile.pkcs11.module);
+        pkcs11Options.tokenLabel = promptOptional(in, out, "PKCS#11 token label", profile.pkcs11.tokenLabel);
+        pkcs11Options.keyAlias = promptOptional(in, out, "PKCS#11 key alias", profile.pkcs11.keyAlias);
+        pkcs11Options.pinEnv = promptOptional(in, out, "PKCS#11 PIN env var", profile.pkcs11.pinEnv);
+      }
+
+      boolean physical = !target.startsWith("zmq:");
+      boolean yes = !physical || "emulator-dev".equals(profile.name);
+      if (physical && !yes) {
+        yes = confirm(in, out, "This will mutate a physical card. Continue");
+      }
+      if (!yes) {
+        out.println("Cancelled.");
+        return 1;
+      }
+
+      if (dryRunMode) {
+        out.println(renderCardstockCommand(
+            profilePath, target, signerType, signerKey, signerCert, signerPassEnv, pkcs11Options, physical));
+        return 0;
+      }
+
+      SigningKey signingKey = signer(profile, signerType, signerKey, signerCert, signerPassEnv, pkcs11Options);
+      Path receipt =
+          new CardstockPreparationService().prepare(CardTarget.parse(target), profile, signingKey, yes);
+      out.println("Cardstock prepared. Receipt: " + receipt);
+      return 0;
+    }
+  }
+
+  static class ScpOptions {
+    @Option(names = "--target", required = true)
+    String target;
+
+    @Option(names = "--scp", defaultValue = "auto")
+    String scp;
+
+    @Option(names = "--scp-key-version", defaultValue = "0")
+    int scpKeyVersion;
+
+    @Option(names = "--scp-key")
+    String scpKey;
+
+    @Option(names = "--scp-enc-key")
+    String scpEncKey;
+
+    @Option(names = "--scp-mac-key")
+    String scpMacKey;
+
+    @Option(names = "--scp-dek-key")
+    String scpDekKey;
+
+    ScpConfig scp() {
+      if (scpKey != null) {
+        return ScpConfig.fromMaster(ScpConfig.parseMode(scp), scpKeyVersion, HexUtil.parse(scpKey));
+      }
+      if (scpEncKey != null && scpMacKey != null && scpDekKey != null) {
+        return new ScpConfig(
+            ScpConfig.parseMode(scp),
+            scpKeyVersion,
+            HexUtil.parse(scpEncKey),
+            HexUtil.parse(scpMacKey),
+            HexUtil.parse(scpDekKey));
+      }
+      throw new IllegalArgumentException("Provide --scp-key or all split SCP keys");
+    }
+  }
+
+  static class Pkcs11Options {
+    @Option(names = "--pkcs11-module")
+    String module;
+
+    @Option(names = "--pkcs11-token-label")
+    String tokenLabel;
+
+    @Option(names = "--pkcs11-slot")
+    Integer slot;
+
+    @Option(names = "--pkcs11-key-alias")
+    String keyAlias;
+
+    @Option(names = "--pkcs11-pin-env")
+    String pinEnv;
+
+    Pkcs11Config pkcs11() {
+      Pkcs11Config config = new Pkcs11Config();
+      config.module = module;
+      config.tokenLabel = tokenLabel;
+      config.slot = slot;
+      config.keyAlias = keyAlias;
+      config.pinEnv = pinEnv;
+      if (config.module == null || config.module.isEmpty()) {
+        throw new IllegalArgumentException("--pkcs11-module is required");
+      }
+      return config;
+    }
+  }
+
+  private static SigningKey signer(
+      IssuerProfile profile,
+      String type,
+      Path signerKey,
+      Path signerCert,
+      String passEnv,
+      Pkcs11Options pkcs11)
+      throws Exception {
+    if ("profile".equals(type)) {
+      type = profile.pkcs11 != null && profile.pkcs11.module != null ? "pkcs11" : "ephemeral";
+    }
+    if ("pkcs11".equals(type) || "softhsm".equals(type)) {
+      Pkcs11Config config = pkcs11.module == null ? profile.pkcs11 : pkcs11.pkcs11();
+      return new Pkcs11SigningKey(config);
+    }
+    if ("pem".equals(type)) {
+      if (signerKey == null || signerCert == null) {
+        throw new IllegalArgumentException("--signer-key and --signer-cert are required for PEM signing");
+      }
+      return new PemSigningKey(signerKey, signerCert, optionalSecretChars(passEnv));
+    }
+    if ("ephemeral".equals(type)) {
+      KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+      generator.initialize(new ECGenParameterSpec("secp256r1"));
+      KeyPair keyPair = generator.generateKeyPair();
+      return new PemSigningKey(keyPair.getPrivate(), keyPair.getPublic(), "ephemeral");
+    }
+    throw new IllegalArgumentException("--signer must be profile, pkcs11, softhsm, pem, or ephemeral");
+  }
+
+  private static byte[] secret(String env) {
+    String value = System.getenv(env);
+    if (value == null) {
+      throw new IllegalArgumentException("Environment variable is not set: " + env);
+    }
+    return HexUtil.parse(value);
+  }
+
+  private static char[] optionalSecretChars(String env) {
+    if (env == null || env.isEmpty()) {
+      return null;
+    }
+    String value = System.getenv(env);
+    if (value == null) {
+      throw new IllegalArgumentException("Environment variable is not set: " + env);
+    }
+    return value.toCharArray();
+  }
+
+  private static String errorMessage(Throwable exception) {
+    StringBuilder message = new StringBuilder();
+    Throwable current = exception;
+    while (current != null) {
+      String part = current.getMessage();
+      if (part == null || part.isEmpty()) {
+        part = current.getClass().getSimpleName();
+      }
+      if (message.length() == 0) {
+        message.append(part);
+      } else {
+        message.append(": ").append(part);
+      }
+      current = current.getCause();
+    }
+    return message.toString();
+  }
+
+  private static String promptTarget(BufferedReader in, PrintStream out) throws Exception {
+    String mode = promptChoice(in, out, "Target type", new String[] {"pcsc", "zmq"}, "pcsc");
+    if ("zmq".equals(mode)) {
+      String endpoint = promptOptional(in, out, "ZeroMQ endpoint", ZmqApduServer.DEFAULT_ENDPOINT);
+      return "zmq:" + endpoint;
+    }
+    String reader = promptOptional(in, out, "PC/SC reader name filter", "");
+    return "pcsc:" + reader;
+  }
+
+  private static String promptChoice(
+      BufferedReader in, PrintStream out, String label, String[] choices, String defaultValue)
+      throws Exception {
+    while (true) {
+      out.print(label + " " + String.join("/", choices) + " [" + defaultValue + "]: ");
+      String value = in.readLine();
+      if (value == null) {
+        throw new IllegalArgumentException("No input available");
+      }
+      value = value.trim();
+      if (value.isEmpty()) {
+        return defaultValue;
+      }
+      for (String choice : choices) {
+        if (choice.equals(value)) {
+          return value;
+        }
+      }
+      out.println("Choose one of: " + String.join(", ", choices));
+    }
+  }
+
+  private static String promptRequired(BufferedReader in, PrintStream out, String label)
+      throws Exception {
+    while (true) {
+      out.print(label + ": ");
+      String value = in.readLine();
+      if (value == null) {
+        throw new IllegalArgumentException("No input available");
+      }
+      value = value.trim();
+      if (!value.isEmpty()) {
+        return value;
+      }
+      out.println(label + " is required.");
+    }
+  }
+
+  private static String promptOptional(
+      BufferedReader in, PrintStream out, String label, String defaultValue) throws Exception {
+    String suffix = defaultValue == null || defaultValue.isEmpty() ? "" : " [" + defaultValue + "]";
+    out.print(label + suffix + ": ");
+    String value = in.readLine();
+    if (value == null) {
+      throw new IllegalArgumentException("No input available");
+    }
+    value = value.trim();
+    return value.isEmpty() ? defaultValue : value;
+  }
+
+  private static boolean confirm(BufferedReader in, PrintStream out, String label) throws Exception {
+    out.print(label + " [yes/no]: ");
+    String value = in.readLine();
+    return value != null && "yes".equals(value.trim());
+  }
+
+  private static String renderCardstockCommand(
+      String profile,
+      String target,
+      String signerType,
+      Path signerKey,
+      Path signerCert,
+      String signerPassEnv,
+      Pkcs11Options pkcs11,
+      boolean physical) {
+    StringBuilder command = new StringBuilder("openfips201 cardstock prepare");
+    appendArg(command, "--profile", profile);
+    appendArg(command, "--target", target);
+    appendArg(command, "--signer", signerType);
+    if (physical) {
+      command.append(" --yes");
+    }
+    if ("pem".equals(signerType)) {
+      appendArg(command, "--signer-key", signerKey == null ? null : signerKey.toString());
+      appendArg(command, "--signer-cert", signerCert == null ? null : signerCert.toString());
+      appendArg(command, "--signer-key-pass-env", signerPassEnv);
+    }
+    if ("pkcs11".equals(signerType) || "softhsm".equals(signerType)) {
+      appendArg(command, "--pkcs11-module", pkcs11.module);
+      appendArg(command, "--pkcs11-token-label", pkcs11.tokenLabel);
+      appendArg(command, "--pkcs11-key-alias", pkcs11.keyAlias);
+      appendArg(command, "--pkcs11-pin-env", pkcs11.pinEnv);
+    }
+    return command.toString();
+  }
+
+  private static void appendArg(StringBuilder command, String name, String value) {
+    if (value == null || value.isEmpty()) {
+      return;
+    }
+    command.append(' ').append(name).append(' ').append(shellQuote(value));
+  }
+
+  private static String shellQuote(String value) {
+    if (value.matches("[A-Za-z0-9_./:=-]+")) {
+      return value;
+    }
+    return "'" + value.replace("'", "'\"'\"'") + "'";
+  }
+}

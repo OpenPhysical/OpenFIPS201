@@ -257,22 +257,8 @@
     </javac>
   </target>
 
-  <target name="attestation-tool" depends="tool-compile">
-    <java classname="dev.mistial.tools.openfips201.attestation.AttestationTool" fork="true">
-      <classpath refid="tool.runtime.classpath"/>
-      <arg line="${args}"/>
-    </java>
-  </target>
-
-  <target name="emulator-server" depends="tool-compile">
-    <java classname="dev.mistial.tools.openfips201.emulator.EmulatorServerTool" fork="true">
-      <classpath refid="tool.runtime.classpath"/>
-      <arg line="${args}"/>
-    </java>
-  </target>
-
-  <target name="vci-tool" depends="tool-compile">
-    <java classname="dev.mistial.tools.openfips201.vci.VciTool" fork="true">
+  <target name="openfips201-tool" depends="tool-compile">
+    <java classname="dev.mistial.tools.openfips201.OpenFips201Tool" fork="true" failonerror="true">
       <classpath refid="tool.runtime.classpath"/>
       <arg line="${args}"/>
     </java>

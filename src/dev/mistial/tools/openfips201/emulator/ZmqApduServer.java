@@ -28,15 +28,10 @@ package dev.mistial.tools.openfips201.emulator;
 import apdu4j.core.BIBO;
 import com.makina.security.openfips201.OpenFIPS201;
 import java.nio.charset.StandardCharsets;
-import java.util.EnumSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javacard.framework.AID;
 import pro.javacard.engine.JavaCardEngine;
 import pro.javacard.engine.globalplatform.SCPConfig;
-import pro.javacard.gp.GPRegistryEntry;
-import pro.javacard.gp.GPSecureChannelVersion;
-import pro.javacard.gp.GPSession;
-import pro.javacard.gp.keys.PlaintextKeys;
 import org.zeromq.SocketType;
 import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
@@ -44,9 +39,9 @@ import org.zeromq.ZMQ;
 /**
  * ZeroMQ REP server exposing an OpenFIPS201 jCardEngine emulator as a remote card.
  *
- * <p>On startup the applet is installed through the real GlobalPlatform card-content lifecycle
- * (load file registration, SCP03 to the ISD, INSTALL [for install and make selectable]) so the
- * emulated card is in the same state as a freshly provisioned physical card.
+ * <p>On startup the simulator registers the applet class with JCardEngine but leaves the card in
+ * stock state. Host tools must install the applet over GlobalPlatform, just as they do with a
+ * physical card.
  *
  * <p>Wire protocol (multipart frames; the first frame is an ASCII verb):
  *
@@ -116,15 +111,15 @@ public final class ZmqApduServer implements AutoCloseable {
   }
 
   /**
-   * Creates the emulator and provisions the applet through the GlobalPlatform lifecycle. Must be
-   * called on the thread that will run {@link #serve()}.
+   * Creates the stock emulator and registers installable applet classes. Must be called on the
+   * thread that will run {@link #serve()}.
    */
   public void start() {
     engine =
         new JavaCardEngine.Builder()
             .withSCP(new SCPConfig.SCP03(scp03MasterKey, false))
             .build();
-    installAppletViaGlobalPlatform();
+    registerAppletClass();
     card = connectCard();
     running.set(true);
   }
@@ -204,34 +199,12 @@ public final class ZmqApduServer implements AutoCloseable {
     return engine.connect("*", true);
   }
 
-  /** Mirrors how a physical card is provisioned; see OpenFIPS201RealScp03Test for the test twin. */
-  private void installAppletViaGlobalPlatform() {
+  /** Registers the applet implementation so a GP client can load/install it into the simulator. */
+  private void registerAppletClass() {
     engine.loadApplet(
         new AID(PACKAGE_AID_BYTES, (short) 0, (byte) PACKAGE_AID_BYTES.length),
         new AID(APPLET_AID_BYTES, (short) 0, (byte) APPLET_AID_BYTES.length),
         OpenFIPS201.class);
-
-    BIBO adminSession = engine.connect();
-    try {
-      GPSession gp = GPSession.connect(adminSession, new pro.javacard.capfile.AID(ISD_AID_BYTES));
-      PlaintextKeys keys = PlaintextKeys.fromMasterKey(scp03MasterKey);
-      keys.setVersion(0);
-      gp.openSecureChannel(
-          keys,
-          new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
-          null,
-          EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
-      gp.installAndMakeSelectable(
-          new pro.javacard.capfile.AID(PACKAGE_AID_BYTES),
-          new pro.javacard.capfile.AID(APPLET_AID_BYTES),
-          new pro.javacard.capfile.AID(APPLET_AID_BYTES),
-          EnumSet.noneOf(GPRegistryEntry.Privilege.class),
-          null);
-    } catch (Exception e) {
-      throw new IllegalStateException("GlobalPlatform install of OpenFIPS201 failed", e);
-    } finally {
-      adminSession.close();
-    }
   }
 
   private void reply(String status, byte[] payload) {

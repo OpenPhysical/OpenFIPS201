@@ -75,7 +75,7 @@ import pro.javacard.gp.GPSession;
 import pro.javacard.gp.keys.PlaintextKeys;
 
 /**
- * Implements the VCI provisioning and probe flows for {@link VciTool}.
+ * Implements the VCI provisioning and probe flows used by host tooling and tests.
  *
  * <p>Provisioning follows the same administrative model as a real card: every card-content change
  * travels over a GlobalPlatform SCP03 secure channel, the SM key pair is generated on-card (the
