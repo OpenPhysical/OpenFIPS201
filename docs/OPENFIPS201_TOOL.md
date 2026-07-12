@@ -113,9 +113,8 @@ ant -f build/build.xml openfips201-tool \
 
 The emulator starts as stock: JCardEngine has the OpenFIPS201 class registered,
 but no OpenFIPS201 instance is installed or selectable. The development profile
-therefore skips GP CAP LOAD and lets the GPPro client run INSTALL [for install
-and make selectable]. Physical-card profiles should leave `applet.loadCap` at
-the default `true`.
+therefore skips GP CAP LOAD and runs INSTALL [for install and make selectable].
+Physical-card profiles should leave `applet.loadCap` at the default `true`.
 
 The development profile uses the GlobalPlatform test SCP03 key and writes
 receipts under `build/cardstock-receipts`. Production profiles derive the new
@@ -157,7 +156,7 @@ private key material.
     "rootSubject": "O=BigCorp,CN=BigCorp OpenFIPS201 Root",
     "issuerSubject": "O=BigCorp,OU=Cardstock,CN=BigCorp OpenFIPS201 F9",
     "issuerValidityDays": 3650,
-    "proofSlot": "82",
+    "proofSlot": "9A",
     "deleteProofKey": true,
     "issuerObjectId": "5FFF01"
   },
@@ -208,13 +207,13 @@ certificate object on the token. The certificate provides the public key used in
 the generated F9 issuer certificate path; the private key never leaves the
 token.
 
-The proof step creates a temporary generated key in the configured retired slot
-(`82` by default), asks INS F9 to attest it, stores the certificate in the
+The proof step creates a temporary generated key in the configured slot (`9A`
+by default), asks INS F9 to attest it, stores the certificate in the
 receipt, and deletes the proof key unless the profile says otherwise.
 
 OpenFIPS201 slots hold one key definition. If the configured proof slot already
 contains a key, cardstock preparation fails before proof generation; choose a
-free retired slot in the issuer profile or clean the card before producing it.
+free slot in the issuer profile or clean the card before producing it.
 
 When `deleteProofKey` is enabled, failure to delete the temporary proof key is a
 command failure. The card may already have been installed and attested, so the
@@ -286,3 +285,34 @@ ant -f build/build.xml openfips201-tool \
 
 Receipts record the card KDD, KDF name, new key version, and KCVs. They do not
 record raw keys.
+
+`gp keys keyroll` is the profile-aware issuer command for moving a card between
+stock/batch SCP keys and the issuer-derived card keys from the profile:
+
+```sh
+ant -f build/build.xml openfips201-tool \
+  -Dargs='gp keys keyroll forward \
+    --profile ~/.openfips201/producers/bigcorp_01/producer.json \
+    --target pcsc:JCOP \
+    --stock-scp-key <printed-batch-key> \
+    --yes'
+```
+
+`forward` opens the card with the stock or batch key and replaces it with the
+profile-derived SCP03 KDF3 keyset. `backward` does the reverse, opening with the
+profile-derived keyset and replacing it with the stock or batch key:
+
+```sh
+ant -f build/build.xml openfips201-tool \
+  -Dargs='gp keys keyroll backward \
+    --profile ~/.openfips201/producers/bigcorp_01/producer.json \
+    --target pcsc:JCOP \
+    --stock-scp-key <printed-batch-key> \
+    --yes'
+```
+
+The command reads KDD from the card by default. Pass `--kdd` when you already
+have the 10 diversification bytes from a receipt or diagnostic run. Pass
+`--stock-scp-key-version` when the stock or batch key lives at a version other
+than 0. Physical PC/SC targets require `--yes`; ZeroMQ emulator targets do not.
+Output is limited to KDD, key versions, and target KCVs.

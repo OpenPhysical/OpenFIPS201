@@ -87,6 +87,50 @@ class OpenFIPS201UnifiedToolTest {
   }
 
   @Test
+  void gpKeysKeyrollHelpExposesForwardAndBackward() {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    commandLine.setOut(new PrintWriter(out, true));
+
+    assertEquals(0, commandLine.execute("gp", "keys", "keyroll", "--help"));
+    String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
+    assertTrue(help.contains("forward"));
+    assertTrue(help.contains("backward"));
+  }
+
+  @Test
+  void gpKeysKeyrollPhysicalTargetRequiresYesBeforeCardAccess() throws Exception {
+    Path profile = Files.createTempFile("openfips201-profile", ".json");
+    Files.write(
+        profile,
+        ("{"
+            + "\"name\":\"issuer\","
+            + "\"cardKeys\":{\"masterKeyAlias\":\"issuer-card-master\"},"
+            + "\"pkcs11\":{\"module\":\"/does/not/matter\"}"
+            + "}")
+            .getBytes(StandardCharsets.UTF_8));
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+    commandLine.setErr(new PrintWriter(err, true));
+
+    int exit =
+        commandLine.execute(
+            "gp",
+            "keys",
+            "keyroll",
+            "forward",
+            "--profile",
+            profile.toString(),
+            "--target",
+            "pcsc:No Reader",
+            "--kdd",
+            "00002345496554204839");
+
+    assertNotEquals(0, exit);
+    assertTrue(new String(err.toByteArray(), StandardCharsets.UTF_8).contains("--yes"));
+  }
+
+  @Test
   void interactiveDryRunBuildsCardstockCommand() throws Exception {
     Path profile = Files.createTempFile("openfips201-profile", ".json");
     Files.write(

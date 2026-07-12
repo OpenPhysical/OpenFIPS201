@@ -20,6 +20,7 @@ import dev.mistial.tools.openfips201.crypto.SigningKey;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
 import dev.mistial.tools.openfips201.gp.CardDiversificationDataService;
 import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
+import dev.mistial.tools.openfips201.gp.CardKeyRollService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
 import dev.mistial.tools.openfips201.gp.Scp03Kdf3DerivationService;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11Config;
@@ -36,6 +37,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.PublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
@@ -66,6 +68,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
     commandLine.setExecutionExceptionHandler(
         (exception, parsedCommand, parseResult) -> {
           parsedCommand.getErr().println("Error: " + errorMessage(exception));
+          if (Boolean.getBoolean("openfips201.debug")) {
+            exception.printStackTrace(parsedCommand.getErr());
+          }
           return 1;
         });
     System.exit(commandLine.execute(args));
@@ -254,7 +259,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
     @Command(
         name = "keys",
         mixinStandardHelpOptions = true,
-        subcommands = {Keys.Derive.class, Keys.DeriveCard.class, Keys.Rotate.class})
+        subcommands = {Keys.Derive.class, Keys.DeriveCard.class, Keys.Rotate.class, Keys.Keyroll.class})
     static final class Keys implements Callable<Integer> {
       @Override
       public Integer call() {
@@ -334,6 +339,85 @@ public final class OpenFips201Tool implements Callable<Integer> {
           return 0;
         }
       }
+
+      @Command(
+          name = "keyroll",
+          mixinStandardHelpOptions = true,
+          description = "Roll card SCP keys between stock/batch and profile-derived issuer keys.",
+          subcommands = {Keyroll.Forward.class, Keyroll.Backward.class})
+      static final class Keyroll implements Callable<Integer> {
+        @Override
+        public Integer call() {
+          CommandLine.usage(this, System.err);
+          return 2;
+        }
+
+        static class Options {
+          @Option(names = "--profile", required = true)
+          String profile;
+
+          @Option(names = "--target", required = true)
+          String target;
+
+          @Option(names = "--kdd", description = "10-byte card key diversification data hex; read from card by default.")
+          String kdd;
+
+          @Option(names = "--yes", description = "Confirm physical-card mutations.")
+          boolean yes;
+
+          @Option(names = "--stock-scp", defaultValue = "scp03")
+          String stockScp;
+
+          @Option(names = "--stock-scp-key-version", defaultValue = "0")
+          int stockScpKeyVersion;
+
+          @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
+          String stockScpKey;
+
+          CardKeyRollService.Request request(CardKeyRollService.Direction direction) throws Exception {
+            CardKeyRollService.Request request = new CardKeyRollService.Request();
+            request.target = CardTarget.parse(target);
+            request.profile = ProfileLoader.load(profile);
+            request.direction = direction;
+            request.kdd = kdd == null ? null : HexUtil.parse(kdd);
+            request.yes = yes;
+            request.stockScpOverride =
+                stockScpKey == null
+                    ? null
+                    : ScpConfig.fromMaster(
+                        ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
+            return request;
+          }
+
+          void print(CardKeyRollService.Result result) {
+            System.out.println("SCP keys rolled " + result.direction.name().toLowerCase() + ".");
+            System.out.println("KDD " + HexUtil.format(result.kdd));
+            System.out.println("Current key version " + result.currentKeyVersion);
+            System.out.println("Target key version " + result.targetKeyVersion);
+            System.out.println("ENC KCV " + result.targetKeys.encKcv);
+            System.out.println("MAC KCV " + result.targetKeys.macKcv);
+            System.out.println("DEK KCV " + result.targetKeys.dekKcv);
+          }
+        }
+
+        @Command(name = "forward", mixinStandardHelpOptions = true, description = "Roll stock/batch keys to profile-derived issuer keys.")
+        static final class Forward extends Options implements Callable<Integer> {
+          @Override
+          public Integer call() throws Exception {
+            print(new CardKeyRollService().roll(request(CardKeyRollService.Direction.FORWARD)));
+            return 0;
+          }
+        }
+
+        @Command(name = "backward", mixinStandardHelpOptions = true, description = "Roll profile-derived issuer keys back to stock/batch keys.")
+        static final class Backward extends Options implements Callable<Integer> {
+          @Override
+          public Integer call() throws Exception {
+            print(new CardKeyRollService().roll(request(CardKeyRollService.Direction.BACKWARD)));
+            return 0;
+          }
+        }
+      }
     }
   }
 
@@ -368,6 +452,15 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Option(names = "--signer-key-pass-env")
       String signerKeyPassEnv;
 
+      @Option(names = "--stock-scp", defaultValue = "scp03")
+      String stockScp;
+
+      @Option(names = "--stock-scp-key-version", defaultValue = "0")
+      int stockScpKeyVersion;
+
+      @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
+      String stockScpKey;
+
       @Mixin
       Pkcs11Options pkcs11 = new Pkcs11Options();
 
@@ -375,9 +468,14 @@ public final class OpenFips201Tool implements Callable<Integer> {
       public Integer call() throws Exception {
         IssuerProfile loaded = ProfileLoader.load(profile);
         SigningKey signingKey = signer(loaded, signerType, signerKey, signerCert, signerKeyPassEnv, pkcs11);
+        ScpConfig stockOverride =
+            stockScpKey == null
+                ? null
+                : ScpConfig.fromMaster(
+                    ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
         Path receipt =
             new CardstockPreparationService()
-                .prepare(CardTarget.parse(target), loaded, signingKey, yes);
+                .prepare(CardTarget.parse(target), loaded, signingKey, yes, null, null, stockOverride);
         System.out.println("Cardstock prepared. Receipt: " + receipt);
         return 0;
       }
@@ -667,7 +765,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
     if ("pkcs11".equals(type) || "softhsm".equals(type)) {
       Pkcs11Config config = pkcs11.module == null ? profile.pkcs11 : pkcs11.pkcs11();
-      return new Pkcs11SigningKey(config);
+      return new LazyPkcs11SigningKey(config);
     }
     if ("pem".equals(type)) {
       if (signerKey == null || signerCert == null) {
@@ -682,6 +780,50 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return new PemSigningKey(keyPair.getPrivate(), keyPair.getPublic(), "ephemeral");
     }
     throw new IllegalArgumentException("--signer must be profile, pkcs11, softhsm, pem, or ephemeral");
+  }
+
+  private static final class LazyPkcs11SigningKey implements SigningKey {
+    private final Pkcs11Config config;
+    private Pkcs11SigningKey delegate;
+
+    LazyPkcs11SigningKey(Pkcs11Config config) {
+      this.config = config.copy();
+    }
+
+    @Override
+    public PublicKey publicKey() {
+      try {
+        return delegate().publicKey();
+      } catch (Exception e) {
+        throw new IllegalStateException("PKCS#11 signing key is unavailable", e);
+      }
+    }
+
+    @Override
+    public byte[] sign(String jcaAlgorithm, byte[] message) throws Exception {
+      return delegate().sign(jcaAlgorithm, message);
+    }
+
+    @Override
+    public String description() {
+      if (delegate != null) {
+        return delegate.description();
+      }
+      if (config.keyAlias != null && !config.keyAlias.isEmpty()) {
+        return "pkcs11:" + config.keyAlias;
+      }
+      if (config.keyId != null && !config.keyId.isEmpty()) {
+        return "pkcs11:id:" + config.keyId;
+      }
+      return "pkcs11:selected-key";
+    }
+
+    private synchronized Pkcs11SigningKey delegate() throws Exception {
+      if (delegate == null) {
+        delegate = new Pkcs11SigningKey(config);
+      }
+      return delegate;
+    }
   }
 
   private static char[] optionalSecretChars(String env) {

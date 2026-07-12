@@ -137,8 +137,8 @@ ant -f build/build.xml openfips201-tool -Dargs="--help"
 
 The tool covers PC/SC cards and the ZeroMQ emulator, CAP load/install, F9
 attestation authority import, proof attestation, SCP03 key derivation/rotation,
-PKCS#11-backed signing and SCP03 KDF3 derivation, and cardstock batch
-preparation. The issuer-facing path is:
+profile-aware forward/backward keyroll, PKCS#11-backed signing and SCP03 KDF3
+derivation, and cardstock batch preparation. The issuer-facing path is:
 
 ```sh
 ant -f build/build.xml openfips201-tool -Dargs='producer setup --name bigcorp_01'
