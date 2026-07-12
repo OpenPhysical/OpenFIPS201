@@ -247,9 +247,6 @@ OptionsParameter ::= SEQUENCE {
 	-- If enabled, enumeration of data objects or keys will not be permitted.
 	restrictEnumeration			[2] BOOLEAN OPTIONAL,
 
-	-- If enabled, only one record for each key id may be generated
-	restrictSingleKey 			[3] BOOLEAN OPTIONAL,
-
 	ignoreContactlessAcl		[4] BOOLEAN OPTIONAL,
 
 	readEmptyDataObject 		[5] BOOLEAN OPTIONAL,

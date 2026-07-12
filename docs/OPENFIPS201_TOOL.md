@@ -212,6 +212,10 @@ The proof step creates a temporary generated key in the configured retired slot
 (`82` by default), asks INS F9 to attest it, stores the certificate in the
 receipt, and deletes the proof key unless the profile says otherwise.
 
+OpenFIPS201 slots hold one key definition. If the configured proof slot already
+contains a key, cardstock preparation fails before proof generation; choose a
+free retired slot in the issuer profile or clean the card before producing it.
+
 When `deleteProofKey` is enabled, failure to delete the temporary proof key is a
 command failure. The card may already have been installed and attested, so the
 operator should retry cleanup or quarantine the card rather than treating it as

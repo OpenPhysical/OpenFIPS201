@@ -42,6 +42,8 @@ baseline:
   create, and delete operations.
 - PIV-style attestation authority support with host provisioning tooling for
   SCP03/SCP02-protected F9 import and issuer certificate publication.
+- Single-key PIV slots: a key reference can hold one key definition. Changing a
+  slot's mechanism is a delete/recreate operation, not a second definition.
 - PIV Virtual Contact Interface (VCI) secure messaging (OPACITY key
   establishment, cipher suites CS2 and CS7 as build-time alternatives) with
   host provisioning and probe tooling and a ZeroMQ emulator bridge.

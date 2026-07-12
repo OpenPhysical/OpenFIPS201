@@ -3167,25 +3167,14 @@ final class PIV {
       if (keyMechanism != ID_ALG_ECC_SM) {
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
-      if (cspPIV.keyExists(ID_KEY_SECURE_MESSAGING)) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
-      }
     }
 
-    if (config.readFlag(Config.OPTION_RESTRICT_SINGLE_KEY)) {
-      // PRE-CONDITION 16A - If CONFIG.RESTRICT_SINGLE_KEY is set, the key referenced by the
-      // 'id' and 'mechanism' pair MUST NOT exist in the key store.
-      if (cspPIV.keyExists(id)) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
-        return;
-      }
-    } else {
-      // PRE-CONDITION 16B - If CONFIG.RESTRICT_SINGLE_KEY is NOT set, the key referenced by
-      // the 'id' and 'mechanism' pair MUST NOT exist in the key store.
-      if (cspPIV.selectKey(id, keyMechanism) != null) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
-        return;
-      }
+    // PRE-CONDITION 16 - The key reference MUST NOT already have a key definition. SP 800-73
+    // commands select a key by reference (P2) and validate the mechanism separately (P1), so
+    // OpenFIPS201 stores exactly one key object for each key reference.
+    if (cspPIV.keyExists(id)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      return;
     }
 
     //
@@ -3241,9 +3230,15 @@ final class PIV {
     byte keyMechanism = reader.toByte();
     reader.moveNext();
 
-    // PRE-CONDITION 5 - the key referenced by the 'id' and 'mechanism' pair MUST exist
+    // PRE-CONDITION 5 - The key reference MUST exist and the supplied mechanism must match the
+    // slot's single key definition.
+    PIVKeyObject key = cspPIV.selectKey(id);
+    if (key == null) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      return;
+    }
     if (cspPIV.selectKey(id, keyMechanism) == null) {
-      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return;
     }
 
@@ -3253,8 +3248,8 @@ final class PIV {
 
     // STEP 1 - Clear key material and unlink the key object from the key store. The security
     // provider also clears any key-authenticated administrative state.
-    if (!cspPIV.deleteKey(id, keyMechanism)) {
-      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+    if (!cspPIV.deleteKey(id)) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
   }
 
@@ -3700,18 +3695,8 @@ final class PIV {
   }
 
   private PIVKeyObjectPKI selectAttestableTarget(byte slot) {
-    for (byte i = (byte) 0x00; i < ATTESTABLE_KEY_MECHANISMS.length; i++) {
-      PIVKeyObject target = cspPIV.selectKey(slot, ATTESTABLE_KEY_MECHANISMS[i]);
-      if (target instanceof PIVKeyObjectPKI
-          && target.isGenerated()
-          && ((PIVKeyObjectPKI) target).isInitialised()) {
-        return (PIVKeyObjectPKI) target;
-      }
-    }
-    for (byte i = (byte) 0x00; i < ATTESTABLE_KEY_MECHANISMS.length; i++) {
-      PIVKeyObject target = cspPIV.selectKey(slot, ATTESTABLE_KEY_MECHANISMS[i]);
-      if (target instanceof PIVKeyObjectPKI) return (PIVKeyObjectPKI) target;
-    }
+    PIVKeyObject target = cspPIV.selectKey(slot);
+    if (target instanceof PIVKeyObjectPKI) return (PIVKeyObjectPKI) target;
     return null;
   }
 

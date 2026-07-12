@@ -198,11 +198,19 @@ final class PIVSecurityProvider {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
     }
 
+    PIVKeyObject key = selectKey(id);
+    if (key != null && key.match(id, mechanism)) return key;
+
+    return null;
+  }
+
+  PIVKeyObject selectKey(byte id) {
+
     PIVKeyObject key = firstKey;
 
     // Traverse the linked list
     while (key != null) {
-      if (key.match(id, mechanism)) return key;
+      if (key.match(id)) return key;
       key = (PIVKeyObject) key.nextObject;
     }
 
@@ -210,16 +218,7 @@ final class PIVSecurityProvider {
   }
 
   boolean keyExists(byte id) {
-
-    PIVObject key = firstKey;
-
-    // Traverse the linked list
-    while (key != null) {
-      if (key.match(id)) return true;
-      key = key.nextObject;
-    }
-
-    return false;
+    return selectKey(id) != null;
   }
 
   /**
@@ -247,6 +246,10 @@ final class PIVSecurityProvider {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
     }
 
+    if (keyExists(id)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+    }
+
     // Create our new key
     PIVKeyObject key =
         PIVKeyObject.create(
@@ -265,19 +268,14 @@ final class PIVSecurityProvider {
     }
   }
 
-  boolean deleteKey(byte id, byte mechanism) {
-
-    // First, map the default mechanism code to TDEA 3KEY
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+  boolean deleteKey(byte id) {
 
     PIVKeyObject previous = null;
     PIVKeyObject key = firstKey;
 
     while (key != null) {
       PIVKeyObject next = (PIVKeyObject) key.nextObject;
-      if (key.match(id, mechanism)) {
+      if (key.match(id)) {
         key.clear();
         key.nextObject = null;
         if (previous == null) {
