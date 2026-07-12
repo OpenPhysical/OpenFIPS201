@@ -255,7 +255,13 @@ class OpenFIPS201UnifiedToolTest {
       assertTrue(metadata.contains("\"stockScpKcv\""));
       assertTrue(metadata.contains("\"stockScpKeyVersion\": 1"));
       assertTrue(metadata.contains("\"receiptsCsv\""));
-      assertTrue(csv.startsWith("timestamp,producer,batch,target,status,cplc,kdd"));
+      String expectedHeader =
+          "timestamp,producer,batch,target,status,cplc,kdd,new_key_version,enc_kcv,mac_kcv,dek_kcv,"
+              + "root_subject,instance_id,f9_subject,f9_serial_hex,f9_spki_sha256,f9_cert_sha256,"
+              + "proof_slot,proof_key_deleted,proof_issuer_matched\n";
+      assertEquals(expectedHeader, csv);
+      assertTrue(csv.contains("instance_id"));
+      assertTrue(csv.contains("proof_issuer_matched"));
       assertTrue(result.stockScpKey.matches("[0-9A-F]{32}"));
       assertTrue(!metadata.contains(result.stockScpKey));
     } finally {

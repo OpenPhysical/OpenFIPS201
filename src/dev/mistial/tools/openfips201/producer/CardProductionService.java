@@ -85,13 +85,21 @@ public final class CardProductionService {
             + ","
             + csv(receipt.rootSubject)
             + ","
+            + csv(receipt.instanceId)
+            + ","
             + csv(receipt.f9Subject)
+            + ","
+            + csv(receipt.f9CertificateSerialHex)
+            + ","
+            + csv(receipt.f9SpkiSha256)
             + ","
             + csv(receipt.f9IssuerCertificateSha256)
             + ","
             + csv(receipt.f9ProofSlot)
             + ","
             + receipt.proofKeyDeleted
+            + ","
+            + receipt.f9ProofIssuerMatched
             + "\n";
     Files.write(csv, line.getBytes(StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.APPEND);
   }

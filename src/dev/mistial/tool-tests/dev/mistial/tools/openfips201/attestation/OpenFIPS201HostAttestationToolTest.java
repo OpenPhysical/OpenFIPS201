@@ -27,11 +27,13 @@ package dev.mistial.tools.openfips201.attestation;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.cardstock.CardstockPreparationService;
 import dev.mistial.tools.openfips201.common.CardSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.crypto.Passphrases;
@@ -145,10 +147,131 @@ class OpenFIPS201HostAttestationToolTest {
 
     assertArrayEquals(
         new X500Name("O=Example,CN=Example Root").getEncoded(),
-        X500Name.getInstance(result.issuerCertificate.getIssuerX500Principal().getEncoded()).getEncoded());
+        X500Name.getInstance(result.issuerCertificate.getIssuerX500Principal().getEncoded())
+            .getEncoded());
+    F9InstanceId instanceId = F9InstanceId.fromHex(result.instanceId);
+    assertEquals(32, result.instanceId.length());
+    assertEquals(instanceId.toSerialNumber(), result.issuerCertificate.getSerialNumber());
+    assertEquals(instanceId, F9InstanceId.extractFromCertificate(result.issuerCertificate));
+    X500Name expectedSubject = instanceId.composeSubject("OU=Factory,CN=Line 7 F9");
     assertArrayEquals(
-        new X500Name("OU=Factory,CN=Line 7 F9").getEncoded(),
-        X500Name.getInstance(result.issuerCertificate.getSubjectX500Principal().getEncoded()).getEncoded());
+        expectedSubject.getEncoded(),
+        X500Name.getInstance(result.issuerCertificate.getSubjectX500Principal().getEncoded())
+            .getEncoded());
+    assertNotNull(result.f9SpkiSha256);
+    assertEquals(64, result.f9SpkiSha256.length());
+  }
+
+  @Test
+  void f9InstanceIdComposeSubjectRejectsTemplateWithSerialNumber() {
+    F9InstanceId id = F9InstanceId.generate();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> id.composeSubject("CN=Example,SERIALNUMBER=00112233445566778899AABBCCDDEEFF"));
+  }
+
+  @Test
+  void f9InstanceIdRoundTripHexAndSerial() {
+    F9InstanceId original = F9InstanceId.generate();
+    assertEquals(original, F9InstanceId.fromHex(original.toHex()));
+    assertEquals(original, F9InstanceId.fromSerialNumber(original.toSerialNumber()));
+  }
+
+  @Test
+  void f9InstanceIdExtractFromLeafIssuer() throws Exception {
+    F9InstanceId id = F9InstanceId.generate();
+    KeyPair keyPair = AttestationSupport.generateF9KeyPair();
+    X509Certificate f9 =
+        AttestationSupport.createIssuerCertificate(
+            keyPair,
+            id.composeSubject("CN=Factory F9"),
+            id.toSerialNumber(),
+            utcDate("2026-01-01"),
+            utcDate("2030-01-01"));
+    // Build a leaf whose issuer is the F9 subject (same DN the applet would copy).
+    KeyPair target = AttestationSupport.generateF9KeyPair();
+    X509Certificate leaf =
+        AttestationSupport.createLeafCertificate(
+            keyPair,
+            X500Name.getInstance(f9.getSubjectX500Principal().getEncoded()),
+            new X500Name("CN=PIV Attestation 9A"),
+            target.getPublic(),
+            utcDate("2026-01-01"),
+            utcDate("2027-01-01"));
+
+    assertTrue(F9InstanceId.subjectsMatch(f9, leaf.getEncoded()));
+    assertEquals(id, F9InstanceId.extractFromLeafIssuer(leaf.getEncoded()).get());
+    CardstockPreparationService.verifyProofMatchesF9Instance(
+        f9, id.toHex(), leaf.getEncoded());
+  }
+
+  @Test
+  void proofIssuerCheckFailsClosedOnMismatch() throws Exception {
+    F9InstanceId id = F9InstanceId.generate();
+    F9InstanceId other = F9InstanceId.generate();
+    KeyPair keyPair = AttestationSupport.generateF9KeyPair();
+    X509Certificate f9 =
+        AttestationSupport.createIssuerCertificate(
+            keyPair,
+            id.composeSubject("CN=Factory F9"),
+            id.toSerialNumber(),
+            utcDate("2026-01-01"),
+            utcDate("2030-01-01"));
+    KeyPair target = AttestationSupport.generateF9KeyPair();
+    X509Certificate wrongIssuerLeaf =
+        AttestationSupport.createLeafCertificate(
+            keyPair,
+            other.composeSubject("CN=Factory F9"),
+            new X500Name("CN=PIV Attestation 9A"),
+            target.getPublic(),
+            utcDate("2026-01-01"),
+            utcDate("2027-01-01"));
+    X509Certificate templateOnlyLeaf =
+        AttestationSupport.createLeafCertificate(
+            keyPair,
+            new X500Name("CN=Factory F9"),
+            new X500Name("CN=PIV Attestation 9A"),
+            target.getPublic(),
+            utcDate("2026-01-01"),
+            utcDate("2027-01-01"));
+
+    IllegalStateException mismatch =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                CardstockPreparationService.verifyProofMatchesF9Instance(
+                    f9, id.toHex(), wrongIssuerLeaf.getEncoded()));
+    assertTrue(mismatch.getMessage().contains(id.toHex()));
+
+    IllegalStateException missing =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                CardstockPreparationService.verifyProofMatchesF9Instance(
+                    f9, id.toHex(), templateOnlyLeaf.getEncoded()));
+    assertTrue(missing.getMessage().contains(id.toHex()));
+
+    assertThrows(
+        IllegalStateException.class,
+        () -> CardstockPreparationService.verifyProofMatchesF9Instance(f9, id.toHex(), new byte[0]));
+  }
+
+  @Test
+  void f9InstanceIdRejectsInvalidHexAndEmptyTemplate() {
+    assertThrows(IllegalArgumentException.class, () -> F9InstanceId.fromHex("ABCD"));
+    assertThrows(IllegalArgumentException.class, () -> F9InstanceId.fromHex("not-hex"));
+    F9InstanceId id = F9InstanceId.generate();
+    assertThrows(IllegalArgumentException.class, () -> id.composeSubject(""));
+    assertThrows(IllegalArgumentException.class, () -> id.composeSubject("   "));
+  }
+
+  @Test
+  void composedF9SubjectFitsAppletSubjectBudget() throws Exception {
+    F9InstanceId id = F9InstanceId.generate();
+    X500Name subject = id.composeSubject("O=BigCorp,OU=Cardstock,CN=BigCorp OpenFIPS201 F9");
+    assertTrue(
+        subject.getEncoded().length <= AttestationSupport.LENGTH_SUBJECT_MAX,
+        "typical template + instance id must fit applet subject budget");
   }
 
   @Test

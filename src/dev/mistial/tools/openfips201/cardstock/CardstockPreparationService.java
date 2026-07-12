@@ -13,6 +13,7 @@ import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
 import dev.mistial.tools.openfips201.applet.AppletInstallService;
 import dev.mistial.tools.openfips201.attestation.AttestationAuthorityService;
 import dev.mistial.tools.openfips201.attestation.AttestationProofService;
+import dev.mistial.tools.openfips201.attestation.F9InstanceId;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
@@ -30,9 +31,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
 import java.time.Instant;
+import java.security.cert.X509Certificate;
 import java.util.Base64;
+import java.util.Optional;
 
 public final class CardstockPreparationService {
   private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -185,12 +187,23 @@ public final class CardstockPreparationService {
     new CardKeyRotationService().rotate(target, stockScp, derived, profile.cardKeys.replaceExisting);
     receipt.operationsPerformed.add("SCP keys rotated and verified");
 
-    receipt.f9IssuerCertificateSha256 =
-        HexUtil.format(MessageDigest.getInstance("SHA-256").digest(authority.issuerCertificate.getEncoded()));
+    verifyProofMatchesF9Instance(
+        authority.issuerCertificate, authority.instanceId, proof.certificate);
+    receipt.operationsPerformed.add("attestation proof issuer matches F9 instanceId");
+
+    receipt.instanceId = authority.instanceId;
     receipt.rootSubject = authority.issuerCertificate.getIssuerX500Principal().getName();
     receipt.f9Subject = authority.issuerCertificate.getSubjectX500Principal().getName();
+    receipt.f9CertificateSerialHex =
+        AttestationAuthorityService.serialHex(authority.issuerCertificate);
+    receipt.f9SpkiSha256 = authority.f9SpkiSha256;
+    receipt.f9IssuerCertificateSha256 =
+        AttestationAuthorityService.certificateSha256(authority.issuerCertificate);
+    receipt.f9CertificateBase64 =
+        Base64.getEncoder().encodeToString(authority.issuerCertificate.getEncoded());
     receipt.f9ProofSlot = profile.attestation.proofSlot;
     receipt.f9ProofCertificateBase64 = Base64.getEncoder().encodeToString(proof.certificate);
+    receipt.f9ProofIssuerMatched = true;
     receipt.proofKeyDeleted = proof.proofKeyDeleted;
 
     Path directory =
@@ -199,6 +212,36 @@ public final class CardstockPreparationService {
     Path output = directory.resolve(profile.name + "-" + System.currentTimeMillis() + ".json");
     Files.write(output, GSON.toJson(receipt).getBytes(StandardCharsets.UTF_8));
     return output;
+  }
+
+  /**
+   * Fail closed when the proof leaf was not signed under the F9 instance that was just imported
+   * (issuer DN mismatch or missing/incorrect serialNumber RDN).
+   */
+  public static void verifyProofMatchesF9Instance(
+      X509Certificate f9Certificate, String instanceId, byte[] proofLeafDer) {
+    if (f9Certificate == null) {
+      throw new IllegalStateException("F9 certificate is required");
+    }
+    if (instanceId == null || instanceId.isEmpty()) {
+      throw new IllegalStateException("F9 instance id is required");
+    }
+    if (proofLeafDer == null || proofLeafDer.length == 0) {
+      throw new IllegalStateException("Attestation proof leaf is required");
+    }
+    if (!F9InstanceId.subjectsMatch(f9Certificate, proofLeafDer)) {
+      throw new IllegalStateException(
+          "Attestation proof leaf issuer does not match F9 subject for instance id "
+              + instanceId
+              + " (subject embedding / applet profile mismatch)");
+    }
+    Optional<F9InstanceId> proofInstanceId = F9InstanceId.extractFromLeafIssuer(proofLeafDer);
+    if (!proofInstanceId.isPresent() || !proofInstanceId.get().toHex().equals(instanceId)) {
+      throw new IllegalStateException(
+          "Attestation proof leaf issuer does not carry F9 instance id "
+              + instanceId
+              + " (subject embedding / applet profile mismatch)");
+    }
   }
 
   private static Path preflightDirectory(IssuerProfile profile, Path receiptDirectory) {

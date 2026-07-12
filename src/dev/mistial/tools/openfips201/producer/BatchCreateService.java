@@ -53,7 +53,8 @@ public final class BatchCreateService {
     Files.write(
         csv,
         ("timestamp,producer,batch,target,status,cplc,kdd,new_key_version,enc_kcv,mac_kcv,dek_kcv,"
-                + "root_subject,f9_subject,f9_cert_sha256,proof_slot,proof_key_deleted\n")
+                + "root_subject,instance_id,f9_subject,f9_serial_hex,f9_spki_sha256,f9_cert_sha256,"
+                + "proof_slot,proof_key_deleted,proof_issuer_matched\n")
             .getBytes(StandardCharsets.UTF_8));
   }
 

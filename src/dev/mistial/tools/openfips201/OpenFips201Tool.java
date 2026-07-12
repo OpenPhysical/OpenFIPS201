@@ -9,7 +9,10 @@ package dev.mistial.tools.openfips201;
 
 import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
 import dev.mistial.tools.openfips201.applet.AppletInstallService;
+import com.google.gson.Gson;
 import dev.mistial.tools.openfips201.cardstock.CardstockPreparationService;
+import dev.mistial.tools.openfips201.cardstock.CardstockReceipt;
+import dev.mistial.tools.openfips201.cardstock.CardstockReceiptPrinter;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
@@ -35,6 +38,8 @@ import dev.mistial.tools.openfips201.profiles.ProfileLoader;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyPair;
@@ -550,7 +555,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
                 ? null
                 : ScpConfig.fromMaster(
                     ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
-        Path receipt =
+        Path receiptPath =
             new CardstockPreparationService()
                 .prepare(
                     CardTarget.parse(target),
@@ -562,7 +567,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
                     stockOverride,
                     profile,
                     stockScpKey);
-        System.out.println("Cardstock prepared. Receipt: " + receipt);
+        printCardstockReceipt(System.out, "Cardstock prepared.", receiptPath);
         return 0;
       }
     }
@@ -590,7 +595,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Option(names = "--root-subject")
       String rootSubject;
 
-      @Option(names = "--f9-subject")
+      @Option(
+          names = "--f9-subject",
+          description =
+              "F9 subject template without serialNumber; a per-card serialNumber RDN is appended at produce time.")
       String f9Subject;
 
       @Option(names = "--force")
@@ -605,7 +613,12 @@ public final class OpenFips201Tool implements Callable<Integer> {
           rootSubject = maybePrompt(in, System.out, "Root CA subject", rootDefault);
         }
         if (f9Subject == null) {
-          f9Subject = maybePrompt(in, System.out, "F9 attestation subject", f9Default);
+          f9Subject =
+              maybePrompt(
+                  in,
+                  System.out,
+                  "F9 subject template (serialNumber RDN appended per card)",
+                  f9Default);
         }
         ProducerSetupService.Result result =
             new ProducerSetupService()
@@ -689,10 +702,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
           System.out.println("Cancelled.");
           return 1;
         }
-        Path receipt =
+        Path receiptPath =
             new CardProductionService()
                 .produce(producer, batch, CardTarget.parse(target), stockScpKey, yes);
-        System.out.println("Card produced. Receipt: " + receipt);
+        printCardstockReceipt(System.out, "Card produced.", receiptPath);
         return 0;
       }
     }
@@ -751,9 +764,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
       }
 
       SigningKey signingKey = signer(profile, signerType, signerKey, signerCert, signerPassEnv, pkcs11Options);
-      Path receipt =
+      Path receiptPath =
           new CardstockPreparationService().prepare(CardTarget.parse(target), profile, signingKey, yes);
-      out.println("Cardstock prepared. Receipt: " + receipt);
+      printCardstockReceipt(out, "Cardstock prepared.", receiptPath);
       return 0;
     }
   }
@@ -1060,5 +1073,15 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return value;
     }
     return "'" + value.replace("'", "'\"'\"'") + "'";
+  }
+
+  private static void printCardstockReceipt(PrintStream out, String headline, Path receiptPath)
+      throws Exception {
+    CardstockReceipt receipt =
+        new Gson()
+            .fromJson(
+                new String(Files.readAllBytes(receiptPath), StandardCharsets.UTF_8),
+                CardstockReceipt.class);
+    CardstockReceiptPrinter.printSummary(out, headline, receipt, receiptPath);
   }
 }

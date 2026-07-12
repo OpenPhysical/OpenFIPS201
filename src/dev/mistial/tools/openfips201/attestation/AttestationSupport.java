@@ -245,8 +245,14 @@ final class AttestationSupport {
 
   static X509Certificate createIssuerCertificate(
       KeyPair f9KeyPair, X500Name subject, Date notBefore, Date notAfter) throws Exception {
+    return createIssuerCertificate(
+        f9KeyPair, subject, new BigInteger(160, new SecureRandom()).abs(), notBefore, notAfter);
+  }
+
+  static X509Certificate createIssuerCertificate(
+      KeyPair f9KeyPair, X500Name subject, BigInteger serial, Date notBefore, Date notAfter)
+      throws Exception {
     ensureProvider();
-    BigInteger serial = new BigInteger(160, new SecureRandom()).abs();
     JcaX509v3CertificateBuilder builder =
         new JcaX509v3CertificateBuilder(
             subject, serial, notBefore, notAfter, subject, f9KeyPair.getPublic());
@@ -259,6 +265,32 @@ final class AttestationSupport {
         new JcaContentSignerBuilder("SHA256withECDSA")
             .setProvider(BouncyCastleProvider.PROVIDER_NAME)
             .build(f9KeyPair.getPrivate());
+    X509CertificateHolder holder = builder.build(signer);
+    return new JcaX509CertificateConverter()
+        .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+        .getCertificate(holder);
+  }
+
+  /** Self-signed leaf under a distinct issuer DN (tests for instance-id leaf parsing). */
+  static X509Certificate createLeafCertificate(
+      KeyPair issuerKeyPair,
+      X500Name issuer,
+      X500Name subject,
+      java.security.PublicKey subjectPublicKey,
+      Date notBefore,
+      Date notAfter)
+      throws Exception {
+    ensureProvider();
+    BigInteger serial = new BigInteger(64, new SecureRandom()).abs();
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            issuer, serial, notBefore, notAfter, subject, subjectPublicKey);
+    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
+    builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.digitalSignature));
+    ContentSigner signer =
+        new JcaContentSignerBuilder("SHA256withECDSA")
+            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+            .build(issuerKeyPair.getPrivate());
     X509CertificateHolder holder = builder.build(signer);
     return new JcaX509CertificateConverter()
         .setProvider(BouncyCastleProvider.PROVIDER_NAME)

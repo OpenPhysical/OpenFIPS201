@@ -8,10 +8,12 @@
 package dev.mistial.tools.openfips201.attestation;
 
 import dev.mistial.tools.openfips201.common.CardSession;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.crypto.PemFiles;
 import dev.mistial.tools.openfips201.crypto.SigningKey;
 import java.math.BigInteger;
 import java.security.KeyPair;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.Date;
@@ -19,6 +21,7 @@ import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
@@ -39,53 +42,84 @@ public final class AttestationAuthorityService {
         session, issuerSigner, issuerSubject, issuerSubject, validityDays, issuerObjectId);
   }
 
+  /**
+   * Mints a per-card F9 authority with a durable {@link F9InstanceId}, imports it over SCP, and
+   * stores the F9 certificate in the issuer object.
+   *
+   * @param f9SubjectTemplate operator-configured subject template without serialNumber; the
+   *     instance id is appended as a serialNumber RDN
+   */
   public Result importGeneratedAuthority(
       CardSession session,
       SigningKey issuerSigner,
       String rootSubject,
-      String f9Subject,
+      String f9SubjectTemplate,
       int validityDays,
       byte[] issuerObjectId)
       throws Exception {
+    F9InstanceId instanceId = F9InstanceId.generate();
+    X500Name subject = instanceId.composeSubject(f9SubjectTemplate);
     KeyPair f9 = AttestationSupport.generateF9KeyPair();
     X509Certificate certificate =
-        createIssuerCertificate(issuerSigner, f9, rootSubject, f9Subject, validityDays);
+        createIssuerCertificate(
+            issuerSigner, f9, rootSubject, subject, instanceId.toSerialNumber(), validityDays);
     F9Profile profile = AttestationSupport.profileFromIssuer(f9.getPrivate(), certificate);
     provisionAuthority(session, profile, AttestationSupport.der(certificate), issuerObjectId);
-    return new Result(certificate, f9.getPrivate());
+    return new Result(
+        certificate, f9.getPrivate(), instanceId.toHex(), spkiSha256(certificate));
   }
 
   public static final class Result {
     public final X509Certificate issuerCertificate;
     public final PrivateKey f9PrivateKey;
+    /** 32-character uppercase hex durable instance id. */
+    public final String instanceId;
+    /** SHA-256 over the SubjectPublicKeyInfo DER of the F9 certificate. */
+    public final String f9SpkiSha256;
 
-    Result(X509Certificate issuerCertificate, PrivateKey f9PrivateKey) {
+    Result(
+        X509Certificate issuerCertificate,
+        PrivateKey f9PrivateKey,
+        String instanceId,
+        String f9SpkiSha256) {
       this.issuerCertificate = issuerCertificate;
       this.f9PrivateKey = f9PrivateKey;
+      this.instanceId = instanceId;
+      this.f9SpkiSha256 = f9SpkiSha256;
     }
   }
 
-  private static X509Certificate createIssuerCertificate(
-      final SigningKey signer, KeyPair f9, String subjectName, int validityDays) throws Exception {
-    return createIssuerCertificate(signer, f9, subjectName, subjectName, validityDays);
+  public static String spkiSha256(X509Certificate certificate) throws Exception {
+    SubjectPublicKeyInfo spki =
+        SubjectPublicKeyInfo.getInstance(certificate.getPublicKey().getEncoded());
+    return HexUtil.format(MessageDigest.getInstance("SHA-256").digest(spki.getEncoded()));
+  }
+
+  public static String certificateSha256(X509Certificate certificate) throws Exception {
+    return HexUtil.format(
+        MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded()));
+  }
+
+  /** Hex of the F9 cert serial, zero-padded to the 16-byte durable instance id form. */
+  public static String serialHex(X509Certificate certificate) {
+    return F9InstanceId.fromSerialNumber(certificate.getSerialNumber()).toHex();
   }
 
   private static X509Certificate createIssuerCertificate(
       final SigningKey signer,
       KeyPair f9,
       String issuerName,
-      String subjectName,
+      X500Name subject,
+      BigInteger serial,
       int validityDays)
       throws Exception {
     PemFiles.ensureProvider();
     X500Name issuer = new X500Name(issuerName);
-    X500Name subject = new X500Name(subjectName);
     Date notBefore = new Date();
     Date notAfter = new Date(notBefore.getTime() + validityDays * 24L * 60L * 60L * 1000L);
     JcaX509v3CertificateBuilder builder =
         new JcaX509v3CertificateBuilder(
-            issuer, new BigInteger(160, new java.security.SecureRandom()).abs(), notBefore,
-            notAfter, subject, f9.getPublic());
+            issuer, serial, notBefore, notAfter, subject, f9.getPublic());
     builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
     builder.addExtension(
         Extension.keyUsage,

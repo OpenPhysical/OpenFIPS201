@@ -94,13 +94,35 @@ verified PIN. A target slot whose contactless access mode requires the Virtual C
 A target slot blocked on the current contact/contactless interface is not attestable on that
 interface.
 
+## F9 Instance Identity
+
+Each cardstock mint allocates a durable **F9 instance id**: 16 random bytes encoded as 32
+uppercase hex digits. The host tooling uses that value as:
+
+- the F9 authority **certificate serial number**, and
+- a `serialNumber=<instanceId>` RDN appended to the operator-configured F9 subject template.
+
+The applet still stores only opaque subject/validity DER (element tags `0x92` / `0x93`). It does
+not parse the instance id. Because leaf certificates copy the stored subject into their issuer
+field, every `INS F9` response is self-labeling: the leaf issuer carries the same `serialNumber`
+RDN as the F9 certificate.
+
+Operators configure a **subject template** without `serialNumber` (for example
+`CN=OpenPhysical OpenFIPS201 F9`). The tool rejects templates that already include
+`serialNumber` and fails closed if the composed subject DER exceeds the applet's 128-byte limit.
+
+Cardstock receipts and CLI output record `instanceId`, F9 serial, SPKI hash, cert hash, and
+whether the proof leaf issuer matched the F9 instance id. That inventory side of the join is what
+later OPID binding and recert will use; the applet itself is unchanged.
+
 ## Certificate Profile
 
 Generated target certificates are X.509 v3 certificates with:
 
 - A positive random serial number.
 - `signatureAlgorithm` and TBSCertificate signature algorithm set to ECDSA-with-SHA256.
-- Issuer copied byte-for-byte from the configured issuer subject DER.
+- Issuer copied byte-for-byte from the configured issuer subject DER (includes the per-card
+  `serialNumber` RDN when provisioned by the OpenFIPS201 tool).
 - Validity copied byte-for-byte from the configured validity DER.
 - Subject `CN=PIV Attestation <slot>`.
 - SubjectPublicKeyInfo copied from the target key.

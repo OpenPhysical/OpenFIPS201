@@ -32,10 +32,12 @@ ant -f build/build.xml openfips201-tool \
     --f9-subject "O=BigCorp,OU=Cardstock,CN=BigCorp OpenFIPS201 F9"'
 ```
 
-If a subject option is omitted in an interactive terminal, the tool prompts with
-an editable default. The values are not special-cased by the applet: the F9
-subject is stored as DER X.509 `Name` data, and generated target attestation
-certificates copy that name as their issuer.
+`--f9-subject` is a **template** only: do not include `serialNumber`. At produce time
+the tool appends `serialNumber=<instanceId>` so each card has a unique F9 subject and
+certificate serial. If a subject option is omitted in an interactive terminal, the tool
+prompts with an editable default. The applet still stores the final subject as opaque
+DER X.509 `Name` data; generated target attestation certificates copy that exact DER
+into their issuer field.
 
 Create a batch:
 
@@ -76,8 +78,32 @@ Each batch has:
 ```
 
 The CSV row includes the producer, batch, target, CPLC, KDD, new SCP key version,
-ENC/MAC/DEK KCVs, root subject, F9 subject, F9 certificate hash, proof slot, and
-proof-key deletion result.
+ENC/MAC/DEK KCVs, root subject, **instance id**, F9 subject, F9 serial (hex), F9 SPKI
+SHA-256, F9 certificate hash, proof slot, proof-key deletion result, and whether the
+proof leaf issuer matched the F9 instance id.
+
+Each produce mints a unique F9 authority. The instance id is 32 uppercase hex digits
+(16 random bytes). It is both the F9 certificate serial and a `serialNumber` RDN on the
+F9 subject (appended to the producer subject template). Keep the template short enough
+that the composed subject DER stays within 128 bytes.
+
+Successful `card produce` / `cardstock prepare` print a lifecycle summary, for example:
+
+```text
+Card produced.
+  Instance ID:     A1B2C3D4E5F60718293A4B5C6D7E8F90
+  F9 subject:      SERIALNUMBER=A1B2...,CN=...
+  F9 serial:       0xA1B2...
+  F9 SPKI SHA-256: ...
+  F9 cert SHA-256: ...
+  Proof slot:      9A
+  Proof issuer OK: true
+  Proof key gone:  true
+  Receipt:         ~/.openfips201/producers/.../receipts/....json
+```
+
+Receipt JSON also includes `instanceId`, `f9CertificateSerialHex`, `f9SpkiSha256`,
+`f9CertificateBase64`, and `f9ProofIssuerMatched`.
 
 ## Cardstock
 
