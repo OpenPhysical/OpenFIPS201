@@ -116,50 +116,16 @@ profile. The JCRE zeroes the response buffer on deselection.
 
 ## Host Tooling
 
-The repository includes a host provisioning tool:
+The repository includes unified host tooling:
 
 ```sh
-ant -f build/build.xml attestation-tool -Dargs="--help"
+ant -f build/build.xml openfips201-tool -Dargs="--help"
 ```
 
-The tool supports these workflows:
-
-- `list-readers`: list available PC/SC readers.
-- `prepare-csr`: generate an ECC P-256 F9 key pair and PKCS#10 CSR on the host.
-- `provision`: provision an existing F9 private key and issuer certificate onto the card.
-- `direct-provision`: generate a local F9 issuer certificate and provision it in one operation.
-
-External-CA workflow:
-
-```sh
-ant -f build/build.xml attestation-tool -Dargs='prepare-csr \
-  --subject "CN=Device F9,O=Example" \
-  --key-out f9.key.pem \
-  --csr-out f9.csr.pem'
-
-# Have the CA sign f9.csr.pem, producing f9.issuer.pem.
-
-ant -f build/build.xml attestation-tool -Dargs='provision \
-  --reader "reader name" \
-  --scp 03 \
-  --scp-key 404142434445464748494A4B4C4D4E4F \
-  --issuer-key f9.key.pem \
-  --issuer-cert f9.issuer.pem'
-```
-
-Local test workflow:
-
-```sh
-ant -f build/build.xml attestation-tool -Dargs='direct-provision \
-  --reader "reader name" \
-  --scp 03 \
-  --scp-key 404142434445464748494A4B4C4D4E4F \
-  --subject "CN=Device F9,O=Example" \
-  --not-before 2026-01-01 \
-  --not-after 2030-01-01 \
-  --issuer-key-out f9.key.pem \
-  --issuer-cert-out f9.issuer.pem'
-```
+The issuer/cardstock flow imports F9 into the applet, asks an issuer/HSM key to certify the F9
+public key, generates a temporary proof key, attests that proof key, and records the proof
+certificate in the cardstock receipt. See [OPENFIPS201_TOOL.md](OPENFIPS201_TOOL.md) for profile
+format and command examples.
 
 Provisioning selects the PIV applet first and opens the GlobalPlatform secure channel against the
 selected applet. `--scp auto` is the default; it sends one `INITIALIZE UPDATE` and uses the SCP

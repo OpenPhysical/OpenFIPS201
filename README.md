@@ -125,6 +125,19 @@ The combined matrix targets run CS2 and CS7, with and without attestation:
 ant -f build/build.xml test-all
 ```
 
+## Issuer Tooling
+
+Host-side tooling is exposed through one entrypoint:
+
+```sh
+ant -f build/build.xml openfips201-tool -Dargs="--help"
+```
+
+The tool covers PC/SC cards and the ZeroMQ emulator, CAP load/install, F9
+attestation authority import, proof attestation, SCP03 key derivation/rotation,
+PKCS#11-backed signing, and cardstock batch preparation. See
+[docs/OPENFIPS201_TOOL.md](docs/OPENFIPS201_TOOL.md).
+
 ## License
 
 OpenFIPS201 is distributed under the MIT License. See [LICENSE.md](LICENSE.md)
