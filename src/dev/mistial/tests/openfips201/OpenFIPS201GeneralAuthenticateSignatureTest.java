@@ -35,6 +35,8 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
 
   private static final byte ALG_ECC_P256 = (byte) 0x11;
   private static final byte SLOT_SIGNATURE = (byte) 0x9C;
+  private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
+  private static final byte ROLE_SIGN = (byte) 0x04;
   private static final int P256_FIELD_BYTES = 32;
 
   @BeforeAll
@@ -83,7 +85,28 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
         "ECC must not sign a 64-byte (SHA-512) digest");
   }
 
+  @Test
+  void dualRoleEccKeyStillSignsSignatureTemplate() throws Exception {
+    byte[] publicPoint = provisionEccKey(SLOT_SIGNATURE, (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH));
+
+    byte[] digest = filled(P256_FIELD_BYTES, (byte) 0x3C);
+    ResponseAPDU signed =
+        transmit(
+            new CommandAPDU(
+                0x00, 0x87, ALG_ECC_P256 & 0xFF, SLOT_SIGNATURE & 0xFF, signTemplate(digest), 256));
+    byte[] inner =
+        tlvValue(collect(signed, "Dual-role ECC key must sign a signature template"), (byte) 0x7C);
+    byte[] signature = tlvValue(inner, (byte) 0x82);
+    assertTrue(
+        verifiesEcdsa(publicPoint, digest, signature),
+        "SIGN + KEY_ESTABLISH ECC key must not be routed to OPACITY");
+  }
+
   private byte[] provisionEccSignKey(final byte slot) {
+    return provisionEccKey(slot, ROLE_SIGN);
+  }
+
+  private byte[] provisionEccKey(final byte slot, final byte roles) {
     final byte[][] publicPoint = new byte[1][];
     withMockedScp(
         () -> {
@@ -106,7 +129,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                 ALG_ECC_P256,
                 (byte) 0x8F,
                 (byte) 0x01,
-                (byte) 0x04,
+                roles,
                 (byte) 0x90,
                 (byte) 0x01,
                 (byte) 0x10

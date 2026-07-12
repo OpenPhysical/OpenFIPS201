@@ -1014,7 +1014,7 @@ final class PIV {
       ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
     // SP 800-73-5 Part 2 Section 4.2: Pairing code verification must be submitted over secure messaging.
-    if (!secureMessaging.isEstablished()) {
+    if (!isSecureMessagingCommand()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
     if (length != (short) 8) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -1507,6 +1507,16 @@ final class PIV {
     //
 
     // PRE-CONDITION 1 - The key reference and mechanism must point to an existing key.
+    if ((buffer[ISO7816.OFFSET_P2] == ID_KEY_SECURE_MESSAGING
+            || buffer[ISO7816.OFFSET_P1] == ID_ALG_ECC_SM)
+        && (buffer[ISO7816.OFFSET_P2] != ID_KEY_SECURE_MESSAGING
+            || buffer[ISO7816.OFFSET_P1] != ID_ALG_ECC_SM)) {
+      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+      return ZERO; // Keep compiler happy
+    }
+
+    // PRE-CONDITION 2 - The key reference and mechanism must point to an existing key.
     // F9 is the attestation authority and is not valid for GENERAL AUTHENTICATE operations; it is
     // deliberately handled as 'not found' so its presence is not observable through this command.
     PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[ISO7816.OFFSET_P1]);
@@ -1519,7 +1529,7 @@ final class PIV {
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 2 - The access rules must be satisfied for the requested key
+    // PRE-CONDITION 3 - The access rules must be satisfied for the requested key
     // NOTE: A call to this method automatically clears the PIN ALWAYS status.
     if (!cspPIV.checkAccessModeObject(key, isVciSatisfied())) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
@@ -1527,14 +1537,14 @@ final class PIV {
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 3 - The key's private or secret values must have been set
+    // PRE-CONDITION 4 - The key's private or secret values must have been set
     if (!key.isInitialised()) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 4 - The Dynamic Authentication Template tag must be present in the data
+    // PRE-CONDITION 5 - The Dynamic Authentication Template tag must be present in the data
     if (!reader.find(CONST_TAG_AUTH_TEMPLATE)) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
@@ -1622,7 +1632,7 @@ final class PIV {
         && responseOffset != 0
         && responseLength == 0) {
       // Variant A - Secure Messaging
-      if (key instanceof PIVKeyObjectECC && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+      if (isSecureMessagingAuthenticateKey(key)) {
         return generalAuthenticateCase1A((PIVKeyObjectECC) key, challengeOffset, challengeLength);
       }
       // Variant B - Digital Signatures
@@ -1788,6 +1798,13 @@ final class PIV {
     return ZERO; // Keep compiler happy
   }
 
+  private boolean isSecureMessagingAuthenticateKey(PIVKeyObject key) {
+    return key instanceof PIVKeyObjectECC
+        && key.getId() == ID_KEY_SECURE_MESSAGING
+        && key.getMechanism() == ID_ALG_ECC_SM
+        && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH);
+  }
+
   // Variant A - Secure Messaging
   /**
    * OPACITY ZKM key establishment (Part 2 Section 4.1, steps C1–C11).
@@ -1836,8 +1853,16 @@ final class PIV {
 
     // C1: ID_sICC = T_8(SHA-256(C_ICC)) — always SHA-256, both suites
     short cvcLen = key.getSmCvcLength();
+    //#if VCI_CS2
     key.getSmCvc(scratch, ZERO);
     PIVCrypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
+    //#else
+    // CS7 permits SM CVCs larger than the 284-byte scratch buffer. Use the APDU work buffer for
+    // this transient copy and clear it immediately after hashing.
+    key.getSmCvc(smCommand, ZERO);
+    PIVCrypto.doSha256(smCommand, ZERO, cvcLen, smResponse, offIdSicc);
+    PIVSecurityProvider.zeroise(smCommand, ZERO, cvcLen);
+    //#endif
 
     // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
     deriveOpacitySessionKeys(field, sessionKeyLen, offZ, offN, nLen, offIdH, offQeh, offIdSicc);
@@ -3253,25 +3278,6 @@ final class PIV {
     }
   }
 
-  private boolean isSecureMessagingCvcUpdate(
-      PIVKeyObject key, byte[] buffer, short offset, short length) {
-    if (!(key instanceof PIVKeyObjectECC)) return false;
-    if (key.getId() != ID_KEY_SECURE_MESSAGING) return false;
-    if (key.getMechanism() != ID_ALG_ECC_SM) return false;
-    if (length < (short) 4 || buffer[offset] != (byte) 0x30) return false;
-
-    short sequenceLength = TLVReader.getLength(buffer, offset);
-    short sequenceOffset = TLVReader.getDataOffset(buffer, offset);
-    if ((short) (sequenceOffset + sequenceLength) != (short) (offset + length)) return false;
-    if (sequenceLength < (short) 3) return false;
-    if (buffer[sequenceOffset] != PIVKeyObjectECC.ELEMENT_SM_CVC) return false;
-
-    short cvcLength = TLVReader.getLength(buffer, sequenceOffset);
-    short cvcOffset = TLVReader.getDataOffset(buffer, sequenceOffset);
-    return cvcLength > (short) 0
-        && (short) (cvcOffset + cvcLength) == (short) (sequenceOffset + sequenceLength);
-  }
-
   /**
    * Clears the value of every defined data object without deleting the object definitions.
    *
@@ -3550,26 +3556,17 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    // PRE-CONDITION 3 - The key object MUST have the ATTR_IMPORTABLE attribute, except that the
-    // post-generation PIV secure messaging CVC can be loaded onto the generated non-exportable VCI
-    // key without enabling private-key import.
-    if (!key.hasAttribute(PIVKeyObject.ATTR_IMPORTABLE)
-        && !isSecureMessagingCvcUpdate(key, commandBuffer, ZERO, length)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-      return; // Keep static analyser happy
-    }
-
     // Set up our TLV reader
     TLVReader reader = TLVReader.getInstance();
     reader.init(commandBuffer, ZERO, length);
 
-    // PRE-CONDITION 4 - The parent tag MUST be of type SEQUENCE
+    // PRE-CONDITION 3 - The parent tag MUST be of type SEQUENCE
     if (!reader.match(CONST_TAG_SEQUENCE)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
     }
 
-    // PRE-CONDITION 5 - The SEQUENCE length MUST be smaller than the APDU data length
+    // PRE-CONDITION 4 - The SEQUENCE length MUST be smaller than the APDU data length
     if (reader.getLength() > length) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
@@ -3581,23 +3578,36 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    //
-    // EXECUTION STEPS
-    //
-
-    // STEP 1 - Capture the key element to update.
-    // We defer mutation until cardinality validation so malformed payloads fail atomically.
+    // PRE-CONDITION 5 - Capture the key element to update from the same parse that will drive the
+    // mutation. This avoids separate CVC-specific parsing of the same command bytes.
     byte elementTag = reader.getTag();
     short elementOffset = reader.getDataOffset();
     short elementLength = reader.getLength();
 
-    // STEP 2 - Reject malformed payloads containing multiple key update elements.
+    // PRE-CONDITION 6 - Reject malformed payloads containing multiple key update elements.
     if (reader.moveNext()) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
     }
 
-    // STEP 3 - Update the relevant key element.
+    // PRE-CONDITION 7 - The key object MUST have the ATTR_IMPORTABLE attribute, except that the
+    // post-generation PIV secure messaging CVC can be loaded onto the generated non-exportable VCI
+    // key without enabling private-key import.
+    if (!key.hasAttribute(PIVKeyObject.ATTR_IMPORTABLE)
+        && !(key instanceof PIVKeyObjectECC
+            && key.getId() == ID_KEY_SECURE_MESSAGING
+            && key.getMechanism() == ID_ALG_ECC_SM
+            && elementTag == PIVKeyObjectECC.ELEMENT_SM_CVC
+            && elementLength > ZERO)) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      return; // Keep static analyser happy
+    }
+
+    //
+    // EXECUTION STEPS
+    //
+
+    // STEP 1 - Update the relevant key element.
     //#if ATTESTATION_ENABLED
     if (key.getId() == ID_KEY_ATTESTATION
         && (elementTag == PIVAttestation.ELEMENT_SUBJECT

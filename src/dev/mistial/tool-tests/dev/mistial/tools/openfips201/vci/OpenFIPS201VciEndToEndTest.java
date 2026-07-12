@@ -26,6 +26,7 @@ import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.math.ec.ECPoint;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -38,6 +39,7 @@ import pro.javacard.gp.keys.PlaintextKeys;
  * <p>Aligned with NIST SP 800-73-5 Part 1 Section 5.5 (VCI), Part 2 Section 4.1 (OPACITY) and
  * Section 3.2.1 (VERIFY / pairing code).
  */
+@Tag("slow")
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201VciEndToEndTest {
   private ZmqApduServer server;
@@ -287,6 +289,31 @@ class OpenFIPS201VciEndToEndTest {
               (byte) 0x98,
               "12345678".getBytes(StandardCharsets.US_ASCII));
       assertEquals(0x9000, paired.statusWord, "pairing after max-CVC OPACITY establishment");
+    }
+  }
+
+  @Test
+  void cs7EstablishesOpacityWithMaxAcceptedCvc(@TempDir Path tempDir) throws Exception {
+    assumeTrue(isCs7Build(), "CS7 max-CVC test requires -Dvci.suite=CS7");
+    String caPrefix = tempDir.resolve("vci-ca-cs7-max-cvc").toString();
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.provisionWithMinimumCvcLength(
+          bibo, null, null, caPrefix, "12345678", null, VciSupport.ALG_CS7, 384);
+    }
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.EstablishedSession established =
+          VciProvisioning.establishSecureMessaging(bibo, caPrefix + ".crt");
+      assertNotNull(established, "OPACITY establishment with 384-byte CS7 CVC");
+      assertEquals(384, established.cvcRaw.length, "card should return the max accepted CS7 CVC");
+
+      VciSupport.SmResponse paired =
+          VciProvisioning.verifyReferenceDataOverSm(
+              bibo,
+              established.session,
+              (byte) 0x98,
+              "12345678".getBytes(StandardCharsets.US_ASCII));
+      assertEquals(0x9000, paired.statusWord, "pairing after max-CVC CS7 OPACITY establishment");
     }
   }
 

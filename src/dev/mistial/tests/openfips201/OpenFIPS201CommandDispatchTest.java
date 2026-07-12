@@ -149,6 +149,14 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void generalAuthenticateRejectsBadOpacityP1AsIncorrectP1P2() {
+    assertSw(0x9000, selectApplet(), "SELECT before OPACITY P1/P2 check");
+
+    ResponseAPDU response = transmit(0x00, 0x87, 0x11, 0x04, hex("7C00"));
+    assertSw(0x6A86, response, "OPACITY key reference with non-OPACITY P1 must return 6A86");
+  }
+
+  @Test
   void generalAuthenticateTreatsAttestationAuthorityAsNotFound() {
     assertSw(0x9000, selectApplet(), "SELECT before GENERAL AUTHENTICATE checks");
 

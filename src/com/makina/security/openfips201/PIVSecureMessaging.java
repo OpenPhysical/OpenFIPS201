@@ -319,69 +319,6 @@ final class PIVSecureMessaging {
     return stripPadding(apdu, offset, plainLength);
   }
 
-  /**
-   * Wraps a response payload under secure messaging.
-   *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.6 (Response with PIV Secure Messaging).
-   * Data confidentiality and response integrity are achieved as per Section 4.2.2 and Section
-   * 4.2.5.
-   */
-  short wrapResponse(
-      byte[] plaintext,
-      short plaintextOffset,
-      short plaintextLength,
-      short sw,
-      byte[] out,
-      short outOffset) {
-    short cursor = outOffset;
-
-    if (plaintextLength > (short) 0) {
-      out[cursor++] = TAG_ENCRYPTED_DATA;
-      short paddedLength = paddedLength(plaintextLength);
-      cursor += writeLength(out, cursor, (short) (paddedLength + 1));
-      short valueOffset = cursor;
-      out[cursor++] = PADDING_INDICATOR;
-      Util.arrayCopyNonAtomic(plaintext, plaintextOffset, out, cursor, plaintextLength);
-      short padOffset = (short) (cursor + plaintextLength);
-      out[padOffset] = (byte) 0x80;
-      Util.arrayFillNonAtomic(
-          out, (short) (padOffset + 1), (short) (paddedLength - plaintextLength - 1), (byte) 0);
-      buildIv(true, out, (short) (valueOffset + 1));
-      PIVCrypto.doAesCbcEncrypt(
-          skEnc,
-          out,
-          (short) (valueOffset + 1),
-          LENGTH_BLOCK,
-          out,
-          cursor,
-          paddedLength,
-          out,
-          cursor);
-      cursor += paddedLength;
-    }
-
-    // Encapsulate status word (NIST SP 800-73-5 Part 2 Section 4.2.5 item 3)
-    out[cursor++] = TAG_STATUS;
-    out[cursor++] = (byte) 2;
-    Util.setShort(out, cursor, sw);
-    cursor += (short) 2;
-
-    // Compute R-MAC over response data and status template (NIST SP 800-73-5 Part 2 Section 4.2.5)
-    short macInputLength = buildResponseMacInput(out, outOffset, cursor, out, cursor);
-    PIVCrypto.doAesCmac(
-        skRmac, out, cursor, macInputLength, out, (short) (cursor + macInputLength));
-    Util.arrayCopyNonAtomic(
-        out, (short) (cursor + macInputLength), responseMcv, (short) 0, LENGTH_BLOCK);
-
-    out[cursor++] = TAG_MAC;
-    out[cursor++] = (byte) LENGTH_SHORT_MAC;
-    Util.arrayCopyNonAtomic(responseMcv, (short) 0, out, cursor, LENGTH_SHORT_MAC);
-    cursor += LENGTH_SHORT_MAC;
-
-    if (shouldIncrementCounter()) incrementCounter();
-    return (short) (cursor - outOffset);
-  }
-
   void beginResponseStream(short plaintextLength, short sw) {
     clearResponseState();
     responseState[OFFSET_RESPONSE_SW] = sw;

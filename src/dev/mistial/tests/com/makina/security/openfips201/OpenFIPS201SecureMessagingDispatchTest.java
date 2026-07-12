@@ -22,6 +22,7 @@ import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import pro.javacard.engine.JavaCardEngine;
@@ -32,6 +33,7 @@ import pro.javacard.engine.JavaCardEngine;
  * <p>NIST SP 800-73-5 Part 2 Sections 4.2.4-4.2.7 define protected command and
  * response APDUs; Section 4.3 defines session key destruction.
  */
+@Tag("slow")
 class OpenFIPS201SecureMessagingDispatchTest {
   private static final short MAX_SAFE_SECURE_RESPONSE_PLAINTEXT = (short) 191;
   private static final byte[] OPENFIPS201_AID_BYTES = hex("A000000308000010000100");
@@ -312,9 +314,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
    */
   @Test
   void plaintextApduDuringActiveVciSecureMessagingIsRejectedAndClearsSession() throws Exception {
-    // SP 800-73-5 Part 1 Section 5.5 defines VCI as secure messaging plus policy bits.
-    // Plain APDUs after VCI establishment are rejected except for the GET RESPONSE
-    // continuation allowed by Part 2 Section 4.2.6 response chaining.
+    // OpenFIPS201 rejects plaintext PIV commands after VCI establishment except for the plaintext
+    // OPACITY re-establishment command allowed by SP 800-73-5 Part 2 Section 4.1.8.
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
@@ -342,6 +343,39 @@ class OpenFIPS201SecureMessagingDispatchTest {
         false,
         method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
         "Plain APDU while VCI is active must destroy the secure messaging session");
+  }
+
+  @Test
+  void plaintextOpacityReestablishmentDuringActiveSecureMessagingDoesNotClearSession()
+      throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before plaintext OPACITY re-establishment");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+    }
+
+    ResponseAPDU response =
+        transmit(new CommandAPDU(0x00, 0x87, PIV.ID_ALG_ECC_SM & 0xFF, 0x04, hex("7C00"), 0));
+
+    assertSw(
+        0x6A88,
+        response,
+        "Plaintext OPACITY re-establishment reaches GENERAL AUTHENTICATE instead of SM teardown");
+    assertEquals(
+        true,
+        method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+        "Failed plaintext OPACITY re-establishment must not clear the existing SM session");
   }
 
   /**

@@ -245,10 +245,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     if (pivSecureMessagingCla) {
       length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
-    } else if (piv.isSecureMessagingEstablished() && !gpSecureMessagingCla) {
-      // SP 800-73-5 Part 1 Section 5.5 defines VCI as communication over secure
-      // messaging. After a VCI session is established, plaintext PIV commands are a
-      // secure messaging error, so Part 2 Section 4.3 zeroization applies.
+    } else if (piv.isSecureMessagingEstablished()
+        && !gpSecureMessagingCla
+        && !isPlaintextOpacityEstablishment(buffer)) {
+      // OpenFIPS201 keeps a fail-closed policy for plaintext PIV APDUs while PIV secure
+      // messaging is live. The exception is the SP 800-73-5 Part 2 Section 4.1.8 OPACITY
+      // re-establishment command, which is sent as plaintext GENERAL AUTHENTICATE.
       piv.clearSecureMessaging();
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     } else if (gpSecureMessagingCla) {
@@ -366,6 +368,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // are detected, in PIVSecureMessaging.unwrapCommand().
       piv.processOutgoing(apdu, ex.getReason());
     }
+  }
+
+  private boolean isPlaintextOpacityEstablishment(byte[] buffer) {
+    return buffer[ISO7816.OFFSET_INS] == INS_PIV_GENERAL_AUTHENTICATE
+        && buffer[ISO7816.OFFSET_P1] == PIV.ID_ALG_ECC_SM
+        && buffer[ISO7816.OFFSET_P2] == PIV.ID_KEY_SECURE_MESSAGING;
   }
 
   /**
