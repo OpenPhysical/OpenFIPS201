@@ -603,22 +603,18 @@ final class VciSupport {
     rmacInput.write(session.responseMcv, 0, 16);
 
     while (cursor < end) {
-      int tag = body[cursor] & 0xFF;
-      int[] tlv = readTlvHeader(body, cursor);
-      int valueOffset = tlv[0];
-      int length = tlv[1];
-      int next = valueOffset + length;
-      if (tag == 0x87) {
-        encOffset = valueOffset;
-        encLength = length;
-        rmacInput.write(body, cursor, next - cursor);
-      } else if (tag == 0x99) {
-        statusOffset = valueOffset;
-        rmacInput.write(body, cursor, next - cursor);
-      } else if (tag == 0x8E) {
-        macValueOffset = valueOffset;
+      BerTlvReader.Tlv tlv = BerTlvReader.read(body, cursor, end);
+      if (tlv.tag == 0x87) {
+        encOffset = tlv.valueOffset;
+        encLength = tlv.length;
+        rmacInput.write(body, cursor, tlv.nextOffset - cursor);
+      } else if (tlv.tag == 0x99) {
+        statusOffset = tlv.valueOffset;
+        rmacInput.write(body, cursor, tlv.nextOffset - cursor);
+      } else if (tlv.tag == 0x8E) {
+        macValueOffset = tlv.valueOffset;
       }
-      cursor = next;
+      cursor = tlv.nextOffset;
     }
 
     if (macValueOffset < 0 || statusOffset < 0) {
@@ -777,57 +773,13 @@ final class VciSupport {
     out.write(value, 0, value.length);
   }
 
-  /** Reads a TLV header at {@code offset}; returns {@code {valueOffset, length}}. */
-  private static int[] readTlvHeader(byte[] data, int offset) {
-    int cursor = offset;
-    int first = data[cursor++] & 0xFF;
-    if ((first & 0x1F) == 0x1F) {
-      cursor++; // two-byte tag
-    }
-    int lengthByte = data[cursor++] & 0xFF;
-    int length;
-    if (lengthByte < 0x80) {
-      length = lengthByte;
-    } else if (lengthByte == 0x81) {
-      length = data[cursor++] & 0xFF;
-    } else if (lengthByte == 0x82) {
-      length = ((data[cursor++] & 0xFF) << 8) | (data[cursor++] & 0xFF);
-    } else {
-      throw new IllegalArgumentException("Unsupported TLV length form");
-    }
-    return new int[] {cursor, length};
-  }
-
   /**
    * Locates the first TLV with the given tag scanning forward from {@code offset}; returns {@code
    * {tagOffset, valueOffset, length}} or null.
    */
   static int[] locateTlv(byte[] data, int offset, int tag) {
-    int cursor = offset;
-    while (cursor < data.length) {
-      int tagOffset = cursor;
-      int first = data[cursor++] & 0xFF;
-      int currentTag = first;
-      if ((first & 0x1F) == 0x1F) {
-        currentTag = (first << 8) | (data[cursor++] & 0xFF);
-      }
-      int lengthByte = data[cursor++] & 0xFF;
-      int length;
-      if (lengthByte < 0x80) {
-        length = lengthByte;
-      } else if (lengthByte == 0x81) {
-        length = data[cursor++] & 0xFF;
-      } else if (lengthByte == 0x82) {
-        length = ((data[cursor++] & 0xFF) << 8) | (data[cursor++] & 0xFF);
-      } else {
-        throw new IllegalArgumentException("Unsupported TLV length form");
-      }
-      if (currentTag == tag) {
-        return new int[] {tagOffset, cursor, length};
-      }
-      cursor += length;
-    }
-    return null;
+    BerTlvReader.Tlv tlv = BerTlvReader.locate(data, offset, tag);
+    return tlv == null ? null : new int[] {tlv.tagOffset, tlv.valueOffset, tlv.length};
   }
 
   static byte[] issuerIdFromPublicKey(PublicKey signerPublicKey) {

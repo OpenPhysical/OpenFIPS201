@@ -202,37 +202,25 @@ final class VciCvcSupport {
 
     int cursor = valueOffset;
     while (cursor < valueEnd) {
-      int tagOffset = cursor;
-      int first = data[cursor++] & 0xFF;
-      int tag = first;
-      if ((first & 0x1F) == 0x1F) {
-        tag = (first << 8) | (data[cursor++] & 0xFF);
+      BerTlvReader.Tlv tlv = BerTlvReader.read(data, cursor, valueEnd);
+      byte[] value = Arrays.copyOfRange(data, tlv.valueOffset, tlv.nextOffset);
+      if (tlv.tag != VciSupport.TAG_CVC_SIGNATURE) {
+        tbs.write(data, tlv.tagOffset, tlv.nextOffset - tlv.tagOffset);
       }
-      int[] hdr = readLength(data, cursor);
-      int length = hdr[0];
-      int valOff = hdr[1];
-      int next = valOff + length;
-      if (next > valueEnd) {
-        throw new IllegalArgumentException("CVC TLV length exceeds enclosing object");
-      }
-      byte[] value = Arrays.copyOfRange(data, valOff, next);
-      if (tag != VciSupport.TAG_CVC_SIGNATURE) {
-        tbs.write(data, tagOffset, next - tagOffset);
-      }
-      if (tag == VciSupport.TAG_CVC_PROFILE) {
+      if (tlv.tag == VciSupport.TAG_CVC_PROFILE) {
         profile = value;
-      } else if (tag == VciSupport.TAG_CVC_ISSUER_ID) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_ISSUER_ID) {
         iin = value;
-      } else if (tag == VciSupport.TAG_CVC_SUBJECT_ID) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_SUBJECT_ID) {
         subject = value;
-      } else if (tag == VciSupport.TAG_CVC_ROLE) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_ROLE) {
         role = value;
-      } else if (tag == VciSupport.TAG_CVC_PUBLIC_KEY) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_PUBLIC_KEY) {
         keyTemplate = value;
-      } else if (tag == VciSupport.TAG_CVC_SIGNATURE) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_SIGNATURE) {
         signatureField = value;
       }
-      cursor = next;
+      cursor = tlv.nextOffset;
     }
     if (keyTemplate == null || signatureField == null) {
       throw new IllegalArgumentException("CVC missing public key or signature");
@@ -241,20 +229,14 @@ final class VciCvcSupport {
     byte[] point = null;
     int k = 0;
     while (k < keyTemplate.length) {
-      int t = keyTemplate[k++] & 0xFF;
-      int[] hdr = readLength(keyTemplate, k);
-      int length = hdr[0];
-      int valOff = hdr[1];
-      if (valOff + length > keyTemplate.length) {
-        throw new IllegalArgumentException("CVC public key TLV length exceeds template");
-      }
-      byte[] value = Arrays.copyOfRange(keyTemplate, valOff, valOff + length);
-      if (t == VciSupport.TAG_CVC_PUBLIC_KEY_OID) {
+      BerTlvReader.Tlv tlv = BerTlvReader.read(keyTemplate, k);
+      byte[] value = Arrays.copyOfRange(keyTemplate, tlv.valueOffset, tlv.nextOffset);
+      if (tlv.tag == VciSupport.TAG_CVC_PUBLIC_KEY_OID) {
         curveOid = decodeOid(value);
-      } else if (t == VciSupport.TAG_CVC_PUBLIC_POINT) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_PUBLIC_POINT) {
         point = value;
       }
-      k = valOff + length;
+      k = tlv.nextOffset;
     }
     if (curveOid == null || point == null) {
       throw new IllegalArgumentException("CVC public key missing OID or point");
@@ -284,28 +266,18 @@ final class VciCvcSupport {
     int cursor = outer[1];
     int end = outer[1] + outer[2];
     while (cursor < end) {
-      int first = data[cursor++] & 0xFF;
-      int tag = first;
-      if ((first & 0x1F) == 0x1F) {
-        tag = (first << 8) | (data[cursor++] & 0xFF);
-      }
-      int[] hdr = readLength(data, cursor);
-      int length = hdr[0];
-      int valOff = hdr[1];
-      if (valOff + length > end) {
-        throw new IllegalArgumentException("anchor TLV length exceeds enclosing object");
-      }
-      byte[] value = Arrays.copyOfRange(data, valOff, valOff + length);
-      if (tag == TAG_PROFILE) {
+      BerTlvReader.Tlv tlv = BerTlvReader.read(data, cursor, end);
+      byte[] value = Arrays.copyOfRange(data, tlv.valueOffset, tlv.nextOffset);
+      if (tlv.tag == TAG_PROFILE) {
         if (value.length != 1 || value[0] != 0x01) {
           throw new IllegalArgumentException("unsupported trust anchor profile");
         }
-      } else if (tag == VciSupport.TAG_CVC_ISSUER_ID) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_ISSUER_ID) {
         iin = value;
-      } else if (tag == VciSupport.TAG_CVC_PUBLIC_KEY) {
+      } else if (tlv.tag == VciSupport.TAG_CVC_PUBLIC_KEY) {
         spki = value;
       }
-      cursor = valOff + length;
+      cursor = tlv.nextOffset;
     }
     if (iin == null || iin.length != 8 || spki == null) {
       throw new IllegalArgumentException("trust anchor missing IIN or SPKI");
@@ -331,25 +303,13 @@ final class VciCvcSupport {
     byte[] intermediateRaw = null;
     int cursor = 0;
     while (cursor < body.length) {
-      int tagOffset = cursor;
-      int first = body[cursor++] & 0xFF;
-      int tag = first;
-      if ((first & 0x1F) == 0x1F) {
-        tag = (first << 8) | (body[cursor++] & 0xFF);
+      BerTlvReader.Tlv tlv = BerTlvReader.read(body, cursor);
+      if (tlv.tag == TAG_CERT) {
+        certDer = Arrays.copyOfRange(body, tlv.valueOffset, tlv.nextOffset);
+      } else if (tlv.tag == VciSupport.TAG_CVC) {
+        intermediateRaw = Arrays.copyOfRange(body, tlv.tagOffset, tlv.nextOffset);
       }
-      int[] hdr = readLength(body, cursor);
-      int length = hdr[0];
-      int valOff = hdr[1];
-      int next = valOff + length;
-      if (next > body.length) {
-        throw new IllegalArgumentException("5FC122 TLV length exceeds enclosing object");
-      }
-      if (tag == TAG_CERT) {
-        certDer = Arrays.copyOfRange(body, valOff, next);
-      } else if (tag == VciSupport.TAG_CVC) {
-        intermediateRaw = Arrays.copyOfRange(body, tagOffset, next);
-      }
-      cursor = next;
+      cursor = tlv.nextOffset;
     }
     X509Certificate certificate = null;
     byte[] resolvedCert = null;
@@ -572,30 +532,6 @@ final class VciCvcSupport {
     } catch (Exception e) {
       return null;
     }
-  }
-
-  private static int[] readLength(byte[] data, int offset) {
-    if (offset >= data.length) {
-      throw new IllegalArgumentException("missing TLV length");
-    }
-    int lengthByte = data[offset++] & 0xFF;
-    int length;
-    if (lengthByte < 0x80) {
-      length = lengthByte;
-    } else if (lengthByte == 0x81) {
-      if (offset >= data.length) {
-        throw new IllegalArgumentException("truncated 0x81 TLV length");
-      }
-      length = data[offset++] & 0xFF;
-    } else if (lengthByte == 0x82) {
-      if (offset + 1 >= data.length) {
-        throw new IllegalArgumentException("truncated 0x82 TLV length");
-      }
-      length = ((data[offset++] & 0xFF) << 8) | (data[offset++] & 0xFF);
-    } else {
-      throw new IllegalArgumentException("unsupported TLV length form");
-    }
-    return new int[] {length, offset};
   }
 
   static String decodeOid(byte[] value) {

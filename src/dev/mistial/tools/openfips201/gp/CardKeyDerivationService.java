@@ -7,11 +7,9 @@
 
 package dev.mistial.tools.openfips201.gp;
 
-import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import pro.javacard.gp.GPCardKeys;
 
 public final class CardKeyDerivationService {
   public DerivedScpKeys derive(byte[] master, String context, int keyVersion) throws Exception {
@@ -19,11 +17,7 @@ public final class CardKeyDerivationService {
     byte[] mac = deriveOne(master, context, "MAC");
     byte[] dek = deriveOne(master, context, "DEK");
     ScpConfig config = new ScpConfig(ScpConfig.Mode.SCP03, keyVersion, enc, mac, dek);
-    return new DerivedScpKeys(
-        config,
-        HexUtil.format(slice(config.toPlaintextKeys().kcv(GPCardKeys.KeyPurpose.ENC), 0, 3)),
-        HexUtil.format(slice(config.toPlaintextKeys().kcv(GPCardKeys.KeyPurpose.MAC), 0, 3)),
-        HexUtil.format(slice(config.toPlaintextKeys().kcv(GPCardKeys.KeyPurpose.DEK), 0, 3)));
+    return DerivedScpKeys.fromConfig(config);
   }
 
   private static byte[] deriveOne(byte[] master, String context, String label) throws Exception {

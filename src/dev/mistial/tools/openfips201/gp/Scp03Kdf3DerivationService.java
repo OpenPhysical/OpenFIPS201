@@ -7,13 +7,11 @@
 
 package dev.mistial.tools.openfips201.gp;
 
-import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11AesCmacService;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11Config;
 import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
-import pro.javacard.gp.GPCardKeys;
 
 public final class Scp03Kdf3DerivationService {
   private static final int KDD_LENGTH = 10;
@@ -50,11 +48,7 @@ public final class Scp03Kdf3DerivationService {
     mac = slice(mac, 0, keyLength);
     dek = slice(dek, 0, keyLength);
     ScpConfig config = new ScpConfig(ScpConfig.Mode.SCP03, keyVersion, enc, mac, dek);
-    return new DerivedScpKeys(
-        config,
-        HexUtil.format(slice(config.toPlaintextKeys().kcv(GPCardKeys.KeyPurpose.ENC), 0, 3)),
-        HexUtil.format(slice(config.toPlaintextKeys().kcv(GPCardKeys.KeyPurpose.MAC), 0, 3)),
-        HexUtil.format(slice(config.toPlaintextKeys().kcv(GPCardKeys.KeyPurpose.DEK), 0, 3)));
+    return DerivedScpKeys.fromConfig(config);
   }
 
   private byte[] deriveOne(Pkcs11Config masterKey, byte purpose, byte[] kdd) {
