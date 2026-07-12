@@ -584,8 +584,10 @@ final class PIV {
       //
       // TODO: Review what the NIST test cards do in this instance! That should be the default
       if (config.readFlag(Config.OPTION_READ_EMPTY_DATA_OBJECT)) {
-        // We just return an OK response with no data
-        ISOException.throwIt(ISO7816.SW_NO_ERROR);
+        // Return an OK response with no data. This must be a normal return so the outer
+        // secure-messaging dispatch can still wrap the response status when GET DATA was
+        // received inside an established SM session.
+        return ZERO;
       } else {
         ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       }

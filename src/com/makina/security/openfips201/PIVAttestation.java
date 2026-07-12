@@ -52,7 +52,6 @@ import javacard.framework.Util;
  */
 final class PIVAttestation {
 
-  static final byte ID_KEY_ATTESTATION = (byte) 0xF9;
   // Response buffer budget for the worst supported certificate: maximum issuer subject (0x80) +
   // validity (0x40) + RSA-2048 SubjectPublicKeyInfo (about 0x126) + signature (about 0x50) +
   // version, serial, algorithm identifiers, subject CN, extensions, and DER staging overhead.

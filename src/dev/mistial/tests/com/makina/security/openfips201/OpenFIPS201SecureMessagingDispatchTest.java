@@ -196,6 +196,98 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
+   * Verifies that command C-MAC verification does not stage the whole MAC input in the small
+   * response buffer.
+   *
+   * <p>The encrypted data object is authenticated but intentionally not valid ciphertext for the
+   * all-zero session key. A correct implementation reaches padding validation and returns the
+   * secure-messaging object error instead of overflowing while preparing the C-MAC input.
+   */
+  @Test
+  void unwrapLargeAuthenticatedCommandBodyDoesNotOverflowMacWorkspace() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] command = largeAuthenticatedEncryptedDataCommand();
+      byte[] work = new byte[320];
+      InvocationTargetException thrown =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  method(
+                          secureMessagingClass,
+                          "unwrapCommand",
+                          byte[].class,
+                          short.class,
+                          short.class,
+                          byte[].class,
+                          short.class)
+                      .invoke(
+                          secureMessaging,
+                          command,
+                          (short) 5,
+                          (short) (command.length - 5),
+                          work,
+                          (short) 0));
+
+      assertTrue(thrown.getCause() instanceof ISOException);
+      assertEquals(
+          (short) 0x6988,
+          ((ISOException) thrown.getCause()).getReason());
+    }
+  }
+
+  @Test
+  void incomingChainDuringOutgoingStateFailsClosed() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, new byte[32], (short) 0, (short) 32, false);
+
+      byte[] commandData = new byte[] {0x01, 0x02};
+      byte[] destination = new byte[16];
+      InvocationTargetException thrown =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  method(
+                          chainBuffer.getClass(),
+                          "processIncomingAPDU",
+                          byte[].class,
+                          short.class,
+                          short.class,
+                          byte[].class,
+                          short.class)
+                      .invoke(
+                          chainBuffer,
+                          commandData,
+                          (short) 0,
+                          (short) commandData.length,
+                          destination,
+                          (short) 0));
+
+      assertTrue(thrown.getCause() instanceof ISOException);
+      assertEquals(
+          ISO7816.SW_CONDITIONS_NOT_SATISFIED, ((ISOException) thrown.getCause()).getReason());
+    }
+  }
+
+  /**
    * Verifies that command chaining fragments are reassembled before performing C-MAC verification.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.4. Only the final command APDU in the
@@ -714,6 +806,48 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   private static byte[] macOnlySecureCommand(byte cla, byte ins, byte p1, byte p2) {
     return chainedMacOnlySecureCommand(new byte[16], cla, ins, p1, p2, new byte[16]);
+  }
+
+  private static byte[] largeAuthenticatedEncryptedDataCommand() {
+    short encryptedValueLength = (short) 289; // 0x01 padding indicator + 288 ciphertext bytes.
+    short encryptedTlvLength = (short) (4 + encryptedValueLength);
+    byte[] command = new byte[5 + encryptedTlvLength + 10];
+    command[ISO7816.OFFSET_CLA] = (byte) 0x0C;
+    command[ISO7816.OFFSET_INS] = (byte) 0xCB;
+    command[ISO7816.OFFSET_P1] = (byte) 0x3F;
+    command[ISO7816.OFFSET_P2] = (byte) 0xFF;
+    command[ISO7816.OFFSET_LC] = (byte) (command.length - 5);
+
+    short cursor = 5;
+    command[cursor++] = (byte) 0x87;
+    command[cursor++] = (byte) 0x82;
+    command[cursor++] = (byte) (encryptedValueLength >> 8);
+    command[cursor++] = (byte) encryptedValueLength;
+    command[cursor++] = (byte) 0x01;
+    cursor = (short) (cursor + 288);
+    command[cursor++] = (byte) 0x8E;
+    command[cursor++] = (byte) 0x08;
+
+    byte[] macInput = new byte[16 + 16 + encryptedTlvLength];
+    short macCursor = 16;
+    macInput[macCursor++] = (byte) 0x0C;
+    macInput[macCursor++] = command[ISO7816.OFFSET_INS];
+    macInput[macCursor++] = command[ISO7816.OFFSET_P1];
+    macInput[macCursor++] = command[ISO7816.OFFSET_P2];
+    macInput[macCursor++] = (byte) 0x80;
+    macCursor = (short) (macCursor + 11);
+    System.arraycopy(command, 5, macInput, macCursor, encryptedTlvLength);
+    macCursor = (short) (macCursor + encryptedTlvLength);
+
+    byte[] mac = new byte[16];
+    org.bouncycastle.crypto.macs.CMac cmac =
+        new org.bouncycastle.crypto.macs.CMac(
+            org.bouncycastle.crypto.engines.AESEngine.newInstance());
+    cmac.init(new org.bouncycastle.crypto.params.KeyParameter(new byte[16]));
+    cmac.update(macInput, 0, macCursor);
+    cmac.doFinal(mac, 0);
+    System.arraycopy(mac, 0, command, cursor, 8);
+    return command;
   }
 
   /**

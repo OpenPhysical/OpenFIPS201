@@ -279,20 +279,23 @@ final class PIVSecureMessaging {
     // messaging data objects (like tag '8E' for C-MAC) are missing.
     if (macTlvOffset == (short) -1) ISOException.throwIt(SW_SM_EXPECTED_OBJECTS_MISSING);
 
-    // Verify C-MAC (NIST SP 800-73-5 Part 2 Section 4.2.3)
-    short macInputLength = buildCommandMacInput(apdu, offset, macTlvOffset, work, workOffset);
-    PIVCrypto.doAesCmac(
-        skMac, work, workOffset, macInputLength, work, (short) (workOffset + macInputLength));
+    // Verify C-MAC (NIST SP 800-73-5 Part 2 Section 4.2.3). The command body can be
+    // almost as large as the shared APDU work buffer, so feed CMAC incrementally instead of
+    // staging MCV || padded-header || body in smResponse.
+    buildPaddedCommandHeader(apdu, work, workOffset);
+    PIVCrypto.doAesCmacInit(skMac);
+    PIVCrypto.doAesCmacUpdate(commandMcv, (short) 0, LENGTH_BLOCK);
+    PIVCrypto.doAesCmacUpdate(work, workOffset, LENGTH_BLOCK);
+    PIVCrypto.doAesCmacFinal(apdu, offset, (short) (macTlvOffset - offset), work, workOffset);
     if (!PIVSecurityProvider.arrayEqualsConstantTime(
-        work, (short) (workOffset + macInputLength), apdu, macValueOffset, LENGTH_SHORT_MAC)) {
+        work, workOffset, apdu, macValueOffset, LENGTH_SHORT_MAC)) {
       // A C-MAC ('8E') that fails verification is an incorrect secure messaging data object:
       // '69 88' per NIST SP 800-73-5 Part 2 Section 4.2.7. ('69 82' is reserved for secure
       // messaging requested before session keys are established - Section 4.2.7 footnote.)
       ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
     }
     // Update MAC chaining value (MCV) per Section 4.2
-    Util.arrayCopyNonAtomic(
-        work, (short) (workOffset + macInputLength), commandMcv, (short) 0, LENGTH_BLOCK);
+    Util.arrayCopyNonAtomic(work, workOffset, commandMcv, (short) 0, LENGTH_BLOCK);
 
     boolean protectedGetResponse = apdu[ISO7816.OFFSET_INS] == INS_GET_RESPONSE;
     if (!protectedGetResponse) {
@@ -374,34 +377,14 @@ final class PIVSecureMessaging {
     return (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
   }
 
-  private short buildCommandMacInput(
-      byte[] apdu, short bodyOffset, short bodyEnd, byte[] out, short outOffset) {
+  private void buildPaddedCommandHeader(byte[] apdu, byte[] out, short outOffset) {
     short cursor = outOffset;
-    Util.arrayCopyNonAtomic(commandMcv, (short) 0, out, cursor, LENGTH_BLOCK);
-    cursor += LENGTH_BLOCK;
     out[cursor++] = CLA_SECURE_MESSAGING;
     out[cursor++] = apdu[ISO7816.OFFSET_INS];
     out[cursor++] = apdu[ISO7816.OFFSET_P1];
     out[cursor++] = apdu[ISO7816.OFFSET_P2];
     out[cursor++] = (byte) 0x80;
     Util.arrayFillNonAtomic(out, cursor, (short) 11, (byte) 0);
-    cursor += (short) 11;
-    if (bodyEnd > bodyOffset) {
-      short bodyLength = (short) (bodyEnd - bodyOffset);
-      Util.arrayCopyNonAtomic(apdu, bodyOffset, out, cursor, bodyLength);
-      cursor += bodyLength;
-    }
-    return (short) (cursor - outOffset);
-  }
-
-  private short buildResponseMacInput(
-      byte[] response, short offset, short end, byte[] out, short outOffset) {
-    short cursor = outOffset;
-    Util.arrayCopyNonAtomic(responseMcv, (short) 0, out, cursor, LENGTH_BLOCK);
-    cursor += LENGTH_BLOCK;
-    Util.arrayCopyNonAtomic(response, offset, out, cursor, (short) (end - offset));
-    cursor += (short) (end - offset);
-    return (short) (cursor - outOffset);
   }
 
   private short writeResponseHeader(byte[] out, short cursor, short end) {
@@ -606,23 +589,6 @@ final class PIVSecureMessaging {
       encCounter[i]++;
       if (encCounter[i] != (byte) 0) return;
     }
-  }
-
-  private short writeLength(byte[] buffer, short offset, short length) {
-    if (length <= (short) 0x7F) {
-      buffer[offset] = (byte) length;
-      return (short) 1;
-    }
-
-    if (length <= (short) 0x00FF) {
-      buffer[offset++] = (byte) 0x81;
-      buffer[offset] = (byte) length;
-      return (short) 2;
-    }
-
-    buffer[offset++] = (byte) 0x82;
-    Util.setShort(buffer, offset, length);
-    return (short) 3;
   }
 
   private void clearResponseState() {
