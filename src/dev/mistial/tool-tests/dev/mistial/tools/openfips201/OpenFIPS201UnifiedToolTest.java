@@ -16,6 +16,8 @@ import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.gp.CardKeyDerivationService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
+import dev.mistial.tools.openfips201.producer.BatchCreateService;
+import dev.mistial.tools.openfips201.producer.ProducerPaths;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
@@ -26,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 
 class OpenFIPS201UnifiedToolTest {
@@ -40,6 +43,9 @@ class OpenFIPS201UnifiedToolTest {
     assertTrue(help.contains("cardstock"));
     assertTrue(help.contains("emulator"));
     assertTrue(help.contains("applet"));
+    assertTrue(help.contains("producer"));
+    assertTrue(help.contains("batch"));
+    assertTrue(help.contains("card"));
   }
 
   @Test
@@ -53,6 +59,31 @@ class OpenFIPS201UnifiedToolTest {
     assertTrue(help.contains("--pkcs11-module"));
     assertTrue(help.contains("--pkcs11-key-alias"));
     assertTrue(help.contains("--signer"));
+  }
+
+  @Test
+  void gpCardKddHelpExposesTargetOption() {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    commandLine.setOut(new PrintWriter(out, true));
+
+    assertEquals(0, commandLine.execute("gp", "card", "kdd", "--help"));
+    String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
+    assertTrue(help.contains("--target"));
+    assertTrue(help.contains("INITIALIZE UPDATE"));
+  }
+
+  @Test
+  void gpKeysDeriveCardHelpExposesTargetAndPkcs11Options() {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    commandLine.setOut(new PrintWriter(out, true));
+
+    assertEquals(0, commandLine.execute("gp", "keys", "derive-card", "--help"));
+    String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
+    assertTrue(help.contains("--target"));
+    assertTrue(help.contains("--pkcs11-module"));
+    assertTrue(help.contains("--pkcs11-key-alias"));
   }
 
   @Test
@@ -121,5 +152,34 @@ class OpenFIPS201UnifiedToolTest {
     assertEquals(first.macKcv, second.macKcv);
     assertEquals(first.dekKcv, second.dekKcv);
     assertNotEquals(first.encKcv, different.encKcv);
+  }
+
+  @Test
+  void batchCreateWritesMetadataAndCsvWithoutRawStockKey(@TempDir Path tempDir) throws Exception {
+    String previous = System.getProperty("openfips201.home");
+    System.setProperty("openfips201.home", tempDir.toString());
+    try {
+      Path producer = ProducerPaths.producer("bigcorp_01");
+      Files.createDirectories(producer);
+      Files.write(producer.resolve("producer.json"), "{\"name\":\"bigcorp_01\"}".getBytes(StandardCharsets.UTF_8));
+
+      BatchCreateService.Result result = new BatchCreateService().create("bigcorp_01", "batch_001");
+
+      String metadata =
+          new String(Files.readAllBytes(result.directory.resolve("batch.json")), StandardCharsets.UTF_8);
+      String csv =
+          new String(Files.readAllBytes(result.directory.resolve("receipts.csv")), StandardCharsets.UTF_8);
+      assertTrue(metadata.contains("\"stockScpKcv\""));
+      assertTrue(metadata.contains("\"receiptsCsv\""));
+      assertTrue(csv.startsWith("timestamp,producer,batch,target,status,cplc,kdd"));
+      assertTrue(result.stockScpKey.matches("[0-9A-F]{32}"));
+      assertTrue(!metadata.contains(result.stockScpKey));
+    } finally {
+      if (previous == null) {
+        System.clearProperty("openfips201.home");
+      } else {
+        System.setProperty("openfips201.home", previous);
+      }
+    }
   }
 }

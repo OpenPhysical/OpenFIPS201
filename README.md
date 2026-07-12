@@ -135,7 +135,20 @@ ant -f build/build.xml openfips201-tool -Dargs="--help"
 
 The tool covers PC/SC cards and the ZeroMQ emulator, CAP load/install, F9
 attestation authority import, proof attestation, SCP03 key derivation/rotation,
-PKCS#11-backed signing, and cardstock batch preparation. See
+PKCS#11-backed signing and SCP03 KDF3 derivation, and cardstock batch
+preparation. The issuer-facing path is:
+
+```sh
+ant -f build/build.xml openfips201-tool -Dargs='producer setup --name bigcorp_01'
+ant -f build/build.xml openfips201-tool -Dargs='batch create --producer bigcorp_01 --name 2026-07'
+ant -f build/build.xml openfips201-tool -Dargs='card produce --producer bigcorp_01 --batch 2026-07 --target pcsc:JCOP --stock-scp-key <printed-batch-key> --yes'
+```
+
+Producer state and batch receipts live under `~/.openfips201`. Subject names
+for the root CA and F9 attestation authority are configurable; the tool does
+not force a particular common name. The PKCS#11 path uses the tool's own
+Cryptoki binding rather than SunPKCS11. A finished cardstock receipt records
+CPLC, KDD, proof-key deletion, and post-rotation SCP verification. See
 [docs/OPENFIPS201_TOOL.md](docs/OPENFIPS201_TOOL.md).
 
 ## License

@@ -8,42 +8,34 @@
 package dev.mistial.tools.openfips201.pkcs11;
 
 import dev.mistial.tools.openfips201.crypto.SigningKey;
-import java.security.Key;
-import java.security.KeyStore;
+import java.io.ByteArrayInputStream;
+import java.math.BigInteger;
 import java.security.MessageDigest;
-import java.security.PrivateKey;
-import java.security.Provider;
 import java.security.PublicKey;
-import java.security.Signature;
-import java.security.cert.Certificate;
-import java.util.Enumeration;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.DERSequence;
 
 public final class Pkcs11SigningKey implements SigningKey {
-  private final Provider provider;
-  private final String alias;
-  private final PrivateKey privateKey;
+  private final Pkcs11Config config;
   private final PublicKey publicKey;
+  private final String description;
 
   public Pkcs11SigningKey(Pkcs11Config config) throws Exception {
-    this.provider = Pkcs11ProviderFactory.create("OpenFIPS201", config);
-    KeyStore keyStore = KeyStore.getInstance("PKCS11", provider);
-    char[] pin = config.readPin();
-    try {
-      keyStore.load(null, pin);
-    } finally {
-      java.util.Arrays.fill(pin, '\0');
+    this.config = config.copy();
+    try (Pkcs11Token token = Pkcs11Token.open(this.config)) {
+      Pkcs11Token.KeyHandle key = token.findPrivateKey(this.config);
+      byte[] certificateDer = token.findCertificateValue(key, this.config.keyAlias);
+      X509Certificate certificate =
+          (X509Certificate)
+              CertificateFactory.getInstance("X.509")
+                  .generateCertificate(new ByteArrayInputStream(certificateDer));
+      this.publicKey = certificate.getPublicKey();
+      this.description = "pkcs11:" + keyDescription(this.config);
     }
-    this.alias = selectAlias(keyStore, config.keyAlias);
-    Key key = keyStore.getKey(alias, null);
-    if (!(key instanceof PrivateKey)) {
-      throw new IllegalArgumentException("PKCS#11 alias is not a private key: " + alias);
-    }
-    Certificate certificate = keyStore.getCertificate(alias);
-    if (certificate == null) {
-      throw new IllegalArgumentException("PKCS#11 alias has no certificate: " + alias);
-    }
-    this.privateKey = (PrivateKey) key;
-    this.publicKey = certificate.getPublicKey();
   }
 
   @Override
@@ -53,37 +45,56 @@ public final class Pkcs11SigningKey implements SigningKey {
 
   @Override
   public byte[] sign(String jcaAlgorithm, byte[] message) throws Exception {
-    byte[] toSign = message;
-    String algorithm = jcaAlgorithm;
+    String digestName;
+    int coordinateLength;
     if ("SHA256withECDSA".equals(jcaAlgorithm)) {
-      toSign = MessageDigest.getInstance("SHA-256").digest(message);
-      algorithm = "NONEwithECDSA";
+      digestName = "SHA-256";
+      coordinateLength = 32;
+    } else if ("SHA384withECDSA".equals(jcaAlgorithm)) {
+      digestName = "SHA-384";
+      coordinateLength = 48;
+    } else {
+      throw new IllegalArgumentException("Unsupported PKCS#11 signing algorithm: " + jcaAlgorithm);
     }
-    Signature signer = Signature.getInstance(algorithm, provider);
-    signer.initSign(privateKey);
-    signer.update(toSign);
-    return signer.sign();
+
+    byte[] digest = MessageDigest.getInstance(digestName).digest(message);
+    byte[] raw;
+    try (Pkcs11Token token = Pkcs11Token.open(config)) {
+      raw =
+          token.sign(
+              Pkcs11Constants.CKM_ECDSA,
+              token.findPrivateKey(config),
+              digest);
+    }
+    return derEncodeEcdsa(raw, coordinateLength);
   }
 
   @Override
   public String description() {
-    return "pkcs11:" + alias;
+    return description;
   }
 
-  private static String selectAlias(KeyStore keyStore, String requested) throws Exception {
-    if (requested != null && !requested.isEmpty()) {
-      if (!keyStore.containsAlias(requested)) {
-        throw new IllegalArgumentException("PKCS#11 alias was not found: " + requested);
-      }
-      return requested;
+  static byte[] derEncodeEcdsa(byte[] raw, int coordinateLength) throws Exception {
+    if (raw.length != coordinateLength * 2) {
+      throw new IllegalArgumentException(
+          "ECDSA signature length " + raw.length + " does not match expected raw length "
+              + (coordinateLength * 2));
     }
-    Enumeration<String> aliases = keyStore.aliases();
-    while (aliases.hasMoreElements()) {
-      String alias = aliases.nextElement();
-      if (keyStore.isKeyEntry(alias)) {
-        return alias;
-      }
+    byte[] r = Arrays.copyOfRange(raw, 0, coordinateLength);
+    byte[] s = Arrays.copyOfRange(raw, coordinateLength, coordinateLength * 2);
+    ASN1EncodableVector sequence = new ASN1EncodableVector();
+    sequence.add(new ASN1Integer(new BigInteger(1, r)));
+    sequence.add(new ASN1Integer(new BigInteger(1, s)));
+    return new DERSequence(sequence).getEncoded();
+  }
+
+  private static String keyDescription(Pkcs11Config config) {
+    if (config.keyAlias != null && !config.keyAlias.isEmpty()) {
+      return config.keyAlias;
     }
-    throw new IllegalArgumentException("PKCS#11 token contains no private-key entries");
+    if (config.keyId != null && !config.keyId.isEmpty()) {
+      return "id:" + config.keyId;
+    }
+    return "selected-key";
   }
 }

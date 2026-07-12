@@ -32,9 +32,21 @@ public final class AttestationAuthorityService {
       int validityDays,
       byte[] issuerObjectId)
       throws Exception {
+    return importGeneratedAuthority(
+        session, issuerSigner, issuerSubject, issuerSubject, validityDays, issuerObjectId);
+  }
+
+  public Result importGeneratedAuthority(
+      CardSession session,
+      SigningKey issuerSigner,
+      String rootSubject,
+      String f9Subject,
+      int validityDays,
+      byte[] issuerObjectId)
+      throws Exception {
     KeyPair f9 = AttestationSupport.generateF9KeyPair();
     X509Certificate certificate =
-        createIssuerCertificate(issuerSigner, f9, issuerSubject, validityDays);
+        createIssuerCertificate(issuerSigner, f9, rootSubject, f9Subject, validityDays);
     F9Profile profile = AttestationSupport.profileFromIssuer(f9.getPrivate(), certificate);
     provisionAuthority(session, profile, AttestationSupport.der(certificate), issuerObjectId);
     return new Result(certificate, f9.getPrivate());
@@ -52,13 +64,24 @@ public final class AttestationAuthorityService {
 
   private static X509Certificate createIssuerCertificate(
       final SigningKey signer, KeyPair f9, String subjectName, int validityDays) throws Exception {
+    return createIssuerCertificate(signer, f9, subjectName, subjectName, validityDays);
+  }
+
+  private static X509Certificate createIssuerCertificate(
+      final SigningKey signer,
+      KeyPair f9,
+      String issuerName,
+      String subjectName,
+      int validityDays)
+      throws Exception {
     PemFiles.ensureProvider();
+    X500Name issuer = new X500Name(issuerName);
     X500Name subject = new X500Name(subjectName);
     Date notBefore = new Date();
     Date notAfter = new Date(notBefore.getTime() + validityDays * 24L * 60L * 60L * 1000L);
     JcaX509v3CertificateBuilder builder =
         new JcaX509v3CertificateBuilder(
-            subject, new BigInteger(160, new java.security.SecureRandom()).abs(), notBefore,
+            issuer, new BigInteger(160, new java.security.SecureRandom()).abs(), notBefore,
             notAfter, subject, f9.getPublic());
     builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
     builder.addExtension(

@@ -118,3 +118,6 @@ bin/*
 vendor_libs/*
 /.apt_generated/
 tools/format.bat
+
+# Local issuer/emulator run output
+build/cardstock-receipts/

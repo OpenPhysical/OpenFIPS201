@@ -35,6 +35,7 @@ public final class IssuerProfile {
 
   public static final class Attestation {
     public String issuerSigner = "pkcs11";
+    public String rootSubject;
     public String issuerSubject = "CN=OpenFIPS201 Cardstock";
     public int issuerValidityDays = 3650;
     public String proofSlot = "82";
@@ -43,10 +44,13 @@ public final class IssuerProfile {
   }
 
   public static final class CardKeys {
-    public String deriver = "profile-hmac";
-    public String kdf = "hmac-sha256-counter-v1";
+    public String deriver = "pkcs11";
+    public String kdf = "scp03-kdf3";
     public int newKeyVersion = 1;
     public String masterKeyEnv;
+    public String masterKeyAlias;
+    public String masterKeyId;
+    public Pkcs11Config pkcs11;
     public String export = "none";
     public String wrappingCertificate;
   }

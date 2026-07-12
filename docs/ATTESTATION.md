@@ -6,8 +6,10 @@ Instead, provisioning commits an attestation authority profile directly: the F9 
 issuer subject `Name` DER, and the issuer certificate `Validity` DER.
 
 This avoids issuer-certificate desynchronization inside the card. The provisioning system remains
-responsible for creating, storing, and publishing the external issuer certificate that corresponds
-to the committed F9 public key and subject name.
+responsible for creating, storing, and publishing the external F9 authority certificate that
+corresponds to the committed F9 public key and subject name. In the producer workflow, that F9
+certificate is signed by the configured root/issuer CA key in PKCS#11; both the root subject and
+the F9 subject are operator-configurable X.509 names.
 
 ## Provisioning Order
 
@@ -105,7 +107,7 @@ Generated target certificates are X.509 v3 certificates with:
 - `BasicConstraints CA=false`.
 - `KeyUsage digitalSignature`.
 
-The resulting certificate validates against an external issuer certificate when that issuer
+The resulting certificate validates against an external F9 authority certificate when that
 certificate has the same subject and public key as the committed F9 authority profile.
 
 The applet builds each certificate directly into a CLEAR_ON_DESELECT response buffer supplied by
@@ -122,10 +124,19 @@ The repository includes unified host tooling:
 ant -f build/build.xml openfips201-tool -Dargs="--help"
 ```
 
-The issuer/cardstock flow imports F9 into the applet, asks an issuer/HSM key to certify the F9
-public key, generates a temporary proof key, attests that proof key, and records the proof
-certificate in the cardstock receipt. See [OPENFIPS201_TOOL.md](OPENFIPS201_TOOL.md) for profile
-format and command examples.
+The producer flow imports F9 into the applet, asks the configured PKCS#11 root key to certify the
+F9 public key, generates a temporary proof key, attests that proof key, and records the proof
+certificate in the cardstock receipt. See [OPENFIPS201_TOOL.md](OPENFIPS201_TOOL.md) for command
+examples.
+
+For PKCS#11-backed issuers, the host tool calls Cryptoki directly. The ECDSA issuer key remains
+non-extractable, and the token must also contain the matching X.509 certificate object so the tool
+can read the public key.
+
+Attestation certificates can require `GET RESPONSE` continuation. Plain PIV continuation remains
+handled by the applet's PIV response path, but GP SCP-protected continuation must pass through the
+platform secure-channel unwrap first. This keeps GPPro and the card synchronized for the protected
+administrative commands that follow, including proof-key deletion.
 
 Provisioning selects the PIV applet first and opens the GlobalPlatform secure channel against the
 selected applet. `--scp auto` is the default; it sends one `INITIALIZE UPDATE` and uses the SCP

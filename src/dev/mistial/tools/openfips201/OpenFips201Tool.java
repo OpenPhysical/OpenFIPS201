@@ -18,11 +18,15 @@ import dev.mistial.tools.openfips201.crypto.PemFiles;
 import dev.mistial.tools.openfips201.crypto.PemSigningKey;
 import dev.mistial.tools.openfips201.crypto.SigningKey;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
-import dev.mistial.tools.openfips201.gp.CardKeyDerivationService;
+import dev.mistial.tools.openfips201.gp.CardDiversificationDataService;
 import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
+import dev.mistial.tools.openfips201.gp.Scp03Kdf3DerivationService;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11Config;
 import dev.mistial.tools.openfips201.pkcs11.Pkcs11SigningKey;
+import dev.mistial.tools.openfips201.producer.BatchCreateService;
+import dev.mistial.tools.openfips201.producer.CardProductionService;
+import dev.mistial.tools.openfips201.producer.ProducerSetupService;
 import dev.mistial.tools.openfips201.profiles.IssuerProfile;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
 import java.io.BufferedReader;
@@ -51,6 +55,9 @@ import pro.javacard.gp.keys.PlaintextKeys;
       OpenFips201Tool.Crypto.class,
       OpenFips201Tool.Gp.class,
       OpenFips201Tool.Cardstock.class,
+      OpenFips201Tool.Producer.class,
+      OpenFips201Tool.Batch.class,
+      OpenFips201Tool.Card.class,
       OpenFips201Tool.Interactive.class
     })
 public final class OpenFips201Tool implements Callable<Integer> {
@@ -197,7 +204,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "gp", mixinStandardHelpOptions = true, subcommands = Gp.Keys.class)
+  @Command(name = "gp", mixinStandardHelpOptions = true, subcommands = {Gp.Card.class, Gp.Keys.class})
   static final class Gp implements Callable<Integer> {
     @Override
     public Integer call() {
@@ -205,7 +212,49 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "keys", mixinStandardHelpOptions = true, subcommands = {Keys.Derive.class, Keys.Rotate.class})
+    @Command(name = "card", mixinStandardHelpOptions = true, subcommands = Card.Kdd.class)
+    static final class Card implements Callable<Integer> {
+      @Override
+      public Integer call() {
+        CommandLine.usage(this, System.err);
+        return 2;
+      }
+
+      @Command(
+          name = "kdd",
+          mixinStandardHelpOptions = true,
+          description = "Read the 10-byte SCP key diversification data from INITIALIZE UPDATE.")
+      static final class Kdd implements Callable<Integer> {
+        @Option(names = "--target", required = true)
+        String target;
+
+        @Option(names = "--host-challenge", description = "8-byte host challenge hex; random by default.")
+        String hostChallenge;
+
+        @Option(names = "--raw", description = "Also print the raw INITIALIZE UPDATE response data.")
+        boolean raw;
+
+        @Override
+        public Integer call() throws Exception {
+          CardDiversificationDataService service = new CardDiversificationDataService();
+          CardDiversificationDataService.Result result =
+              hostChallenge == null
+                  ? service.readKdd(CardTarget.parse(target))
+                  : service.readKdd(CardTarget.parse(target), HexUtil.parse(hostChallenge));
+          System.out.println("KDD " + HexUtil.format(result.kdd));
+          if (raw) {
+            System.out.println(
+                "INITIALIZE UPDATE " + HexUtil.format(result.initializeUpdateResponse));
+          }
+          return 0;
+        }
+      }
+    }
+
+    @Command(
+        name = "keys",
+        mixinStandardHelpOptions = true,
+        subcommands = {Keys.Derive.class, Keys.DeriveCard.class, Keys.Rotate.class})
     static final class Keys implements Callable<Integer> {
       @Override
       public Integer call() {
@@ -213,13 +262,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
         return 2;
       }
 
-      @Command(name = "derive", mixinStandardHelpOptions = true, description = "Derive per-card SCP03 keys and print KCVs.")
-      static final class Derive implements Callable<Integer> {
-        @Option(names = "--master-key-env", required = true)
-        String masterKeyEnv;
-
-        @Option(names = "--context", required = true)
-        String context;
+      @Command(name = "derive", mixinStandardHelpOptions = true, description = "Derive SCP03 KDF3 keys through PKCS#11 and print KCVs.")
+      static final class Derive extends Pkcs11Options implements Callable<Integer> {
+        @Option(names = "--kdd", required = true, description = "10-byte card key diversification data hex.")
+        String kdd;
 
         @Option(names = "--key-version", defaultValue = "1")
         int keyVersion;
@@ -227,8 +273,38 @@ public final class OpenFips201Tool implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
           DerivedScpKeys keys =
-              new CardKeyDerivationService()
-                  .derive(secret(masterKeyEnv), context, keyVersion);
+              new Scp03Kdf3DerivationService().derive(pkcs11(), HexUtil.parse(kdd), keyVersion);
+          System.out.println("ENC KCV " + keys.encKcv);
+          System.out.println("MAC KCV " + keys.macKcv);
+          System.out.println("DEK KCV " + keys.dekKcv);
+          return 0;
+        }
+      }
+
+      @Command(
+          name = "derive-card",
+          mixinStandardHelpOptions = true,
+          description = "Read KDD from a card, derive SCP03 KDF3 keys through PKCS#11, and print KCVs.")
+      static final class DeriveCard extends Pkcs11Options implements Callable<Integer> {
+        @Option(names = "--target", required = true)
+        String target;
+
+        @Option(names = "--host-challenge", description = "8-byte host challenge hex; random by default.")
+        String hostChallenge;
+
+        @Option(names = "--key-version", defaultValue = "1")
+        int keyVersion;
+
+        @Override
+        public Integer call() throws Exception {
+          CardDiversificationDataService service = new CardDiversificationDataService();
+          CardDiversificationDataService.Result kdd =
+              hostChallenge == null
+                  ? service.readKdd(CardTarget.parse(target))
+                  : service.readKdd(CardTarget.parse(target), HexUtil.parse(hostChallenge));
+          DerivedScpKeys keys =
+              new Scp03Kdf3DerivationService().derive(pkcs11(), kdd.kdd, keyVersion);
+          System.out.println("KDD " + HexUtil.format(kdd.kdd));
           System.out.println("ENC KCV " + keys.encKcv);
           System.out.println("MAC KCV " + keys.macKcv);
           System.out.println("DEK KCV " + keys.dekKcv);
@@ -238,11 +314,11 @@ public final class OpenFips201Tool implements Callable<Integer> {
 
       @Command(name = "rotate", mixinStandardHelpOptions = true, description = "Rotate card SCP keys and verify the new keyset.")
       static final class Rotate extends ScpOptions implements Callable<Integer> {
-        @Option(names = "--new-master-key-env", required = true)
-        String newMasterKeyEnv;
+        @Mixin
+        Pkcs11Options pkcs11 = new Pkcs11Options();
 
-        @Option(names = "--context", required = true)
-        String context;
+        @Option(names = "--kdd", required = true, description = "10-byte card key diversification data hex.")
+        String kdd;
 
         @Option(names = "--new-key-version", defaultValue = "1")
         int newKeyVersion;
@@ -250,8 +326,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
           DerivedScpKeys keys =
-              new CardKeyDerivationService()
-                  .derive(secret(newMasterKeyEnv), context, newKeyVersion);
+              new Scp03Kdf3DerivationService()
+                  .derive(pkcs11.pkcs11(), HexUtil.parse(kdd), newKeyVersion);
           new CardKeyRotationService().rotate(CardTarget.parse(target), scp(), keys);
           System.out.println("SCP keys rotated. ENC/MAC/DEK KCVs: "
               + keys.encKcv + " " + keys.macKcv + " " + keys.dekKcv);
@@ -303,6 +379,136 @@ public final class OpenFips201Tool implements Callable<Integer> {
             new CardstockPreparationService()
                 .prepare(CardTarget.parse(target), loaded, signingKey, yes);
         System.out.println("Cardstock prepared. Receipt: " + receipt);
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "producer", mixinStandardHelpOptions = true, subcommands = Producer.Setup.class)
+  static final class Producer implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "setup", mixinStandardHelpOptions = true, description = "Create an issuer producer profile and default SoftHSM keys.")
+    static final class Setup implements Callable<Integer> {
+      @Option(names = "--name", required = true)
+      String name;
+
+      @Option(names = "--pkcs11-module")
+      String module;
+
+      @Option(names = "--pkcs11-token-label")
+      String tokenLabel;
+
+      @Option(names = "--root-subject")
+      String rootSubject;
+
+      @Option(names = "--f9-subject")
+      String f9Subject;
+
+      @Option(names = "--force")
+      boolean force;
+
+      @Override
+      public Integer call() throws Exception {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
+        String rootDefault = "CN=" + name + " OpenFIPS201 Root";
+        String f9Default = "CN=" + name + " OpenFIPS201 F9";
+        if (rootSubject == null) {
+          rootSubject = maybePrompt(in, System.out, "Root CA subject", rootDefault);
+        }
+        if (f9Subject == null) {
+          f9Subject = maybePrompt(in, System.out, "F9 attestation subject", f9Default);
+        }
+        ProducerSetupService.Result result =
+            new ProducerSetupService()
+                .setup(name, module, tokenLabel, rootSubject, f9Subject, force);
+        System.out.println("Producer profile: " + result.profilePath);
+        System.out.println("PKCS#11 module: " + result.module);
+        System.out.println("PKCS#11 token: " + result.tokenLabel);
+        System.out.println("SoftHSM config: " + result.softhsmConfig);
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "batch", mixinStandardHelpOptions = true, subcommands = Batch.Create.class)
+  static final class Batch implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "create", mixinStandardHelpOptions = true, description = "Create an issuer batch and print its stock GP key.")
+    static final class Create implements Callable<Integer> {
+      @Option(names = "--producer", required = true)
+      String producer;
+
+      @Option(names = "--name", required = true)
+      String name;
+
+      @Override
+      public Integer call() throws Exception {
+        BatchCreateService.Result result = new BatchCreateService().create(producer, name);
+        System.out.println("Batch directory: " + result.directory);
+        System.out.println("Stock SCP03 master key: " + result.stockScpKey);
+        System.out.println("Stock SCP03 KCV: " + result.stockScpKcv);
+        return 0;
+      }
+    }
+  }
+
+  @Command(name = "card", mixinStandardHelpOptions = true, subcommands = Card.Produce.class)
+  static final class Card implements Callable<Integer> {
+    @Override
+    public Integer call() {
+      CommandLine.usage(this, System.err);
+      return 2;
+    }
+
+    @Command(name = "produce", mixinStandardHelpOptions = true, description = "Produce one card into issuer cardstock.")
+    static final class Produce implements Callable<Integer> {
+      @Option(names = "--producer", required = true)
+      String producer;
+
+      @Option(names = "--batch", required = true)
+      String batch;
+
+      @Option(names = "--target")
+      String target;
+
+      @Option(names = "--stock-scp-key")
+      String stockScpKey;
+
+      @Option(names = "--yes", description = "Confirm physical-card mutations.")
+      boolean yes;
+
+      @Override
+      public Integer call() throws Exception {
+        BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
+        if (target == null) {
+          target = promptTarget(in, System.out);
+        }
+        if (stockScpKey == null) {
+          stockScpKey = maybePrompt(in, System.out, "Stock SCP03 master key", null);
+        }
+        if (target.startsWith("zmq:")) {
+          yes = true;
+        } else if (!yes) {
+          yes = confirm(in, System.out, "This will mutate a physical card. Continue");
+        }
+        if (!yes) {
+          System.out.println("Cancelled.");
+          return 1;
+        }
+        Path receipt =
+            new CardProductionService()
+                .produce(producer, batch, CardTarget.parse(target), stockScpKey, yes);
+        System.out.println("Card produced. Receipt: " + receipt);
         return 0;
       }
     }
@@ -419,8 +625,17 @@ public final class OpenFips201Tool implements Callable<Integer> {
     @Option(names = "--pkcs11-key-alias")
     String keyAlias;
 
+    @Option(names = "--pkcs11-key-id")
+    String keyId;
+
     @Option(names = "--pkcs11-pin-env")
     String pinEnv;
+
+    @Option(names = "--pkcs11-pin-file")
+    String pinFile;
+
+    @Option(names = "--softhsm-config")
+    String softhsmConfig;
 
     Pkcs11Config pkcs11() {
       Pkcs11Config config = new Pkcs11Config();
@@ -428,7 +643,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       config.tokenLabel = tokenLabel;
       config.slot = slot;
       config.keyAlias = keyAlias;
+      config.keyId = keyId;
       config.pinEnv = pinEnv;
+      config.pinFile = pinFile;
+      config.softhsmConfig = softhsmConfig;
       if (config.module == null || config.module.isEmpty()) {
         throw new IllegalArgumentException("--pkcs11-module is required");
       }
@@ -464,14 +682,6 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return new PemSigningKey(keyPair.getPrivate(), keyPair.getPublic(), "ephemeral");
     }
     throw new IllegalArgumentException("--signer must be profile, pkcs11, softhsm, pem, or ephemeral");
-  }
-
-  private static byte[] secret(String env) {
-    String value = System.getenv(env);
-    if (value == null) {
-      throw new IllegalArgumentException("Environment variable is not set: " + env);
-    }
-    return HexUtil.parse(value);
   }
 
   private static char[] optionalSecretChars(String env) {
@@ -561,6 +771,17 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
     value = value.trim();
     return value.isEmpty() ? defaultValue : value;
+  }
+
+  private static String maybePrompt(
+      BufferedReader in, PrintStream out, String label, String defaultValue) throws Exception {
+    if (System.console() == null) {
+      if (defaultValue != null) {
+        return defaultValue;
+      }
+      throw new IllegalArgumentException(label + " is required");
+    }
+    return promptOptional(in, out, label, defaultValue);
   }
 
   private static boolean confirm(BufferedReader in, PrintStream out, String label) throws Exception {
