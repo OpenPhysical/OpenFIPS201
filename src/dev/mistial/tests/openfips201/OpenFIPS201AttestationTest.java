@@ -313,6 +313,31 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void administrativeDeleteRemovesGeneratedAttestationTarget() throws Exception {
+    Authority authority = Authority.create(new X500Name("CN=Delete Target,O=Example"));
+    setAuthorityOverScp(authority);
+    createAsymmetricKeyOverScp(SLOT_RETIRED, ALG_ECC_P256);
+    generateKeyOverScp(SLOT_RETIRED, "AC03800111");
+
+    assertValidAttestation(attest(SLOT_RETIRED), authority);
+
+    withMockedScp(
+        new Runnable() {
+          @Override
+          public void run() {
+            assertSw(0x9000, selectApplet(), "SELECT before delete-key");
+            assertSw(
+                0x9000,
+                transmit(0x84, 0xDB, 0x3F, 0x00, hex("67068B01828E0111")),
+                "Administrative delete-key should remove retired slot 82");
+          }
+        });
+
+    ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xF9, SLOT_RETIRED & 0xFF, 0x00, 0));
+    assertSw(0x6A88, response, "Deleted key must no longer be attestable");
+  }
+
+  @Test
   void attestationRequiresTargetSlotPinWhenTargetAclRequiresPin() throws Exception {
     Authority authority = Authority.create(new X500Name("CN=ACL Required,O=Example"));
     setAuthorityOverScp(authority);

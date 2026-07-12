@@ -3251,12 +3251,11 @@ final class PIV {
     // EXECUTION STEPS
     //
 
-    // STEP 1 - If the key is related to any SM session or authenticated session, clear it
-
-    // STEP 2 - Delete the key from the key store
-
-    // TODO - Implement key deletion
-    ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    // STEP 1 - Clear key material and unlink the key object from the key store. The security
+    // provider also clears any key-authenticated administrative state.
+    if (!cspPIV.deleteKey(id, keyMechanism)) {
+      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+    }
   }
 
   private boolean isSecureMessagingCvcUpdate(

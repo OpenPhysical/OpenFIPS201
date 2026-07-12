@@ -265,6 +265,37 @@ final class PIVSecurityProvider {
     }
   }
 
+  boolean deleteKey(byte id, byte mechanism) {
+
+    // First, map the default mechanism code to TDEA 3KEY
+    if (mechanism == PIV.ID_ALG_DEFAULT) {
+      mechanism = PIV.ID_ALG_TDEA_3KEY;
+    }
+
+    PIVKeyObject previous = null;
+    PIVKeyObject key = firstKey;
+
+    while (key != null) {
+      PIVKeyObject next = (PIVKeyObject) key.nextObject;
+      if (key.match(id, mechanism)) {
+        key.clear();
+        key.nextObject = null;
+        if (previous == null) {
+          firstKey = next;
+        } else {
+          previous.nextObject = next;
+        }
+        clearAuthenticatedKey();
+        JCSystem.requestObjectDeletion();
+        return true;
+      }
+      previous = key;
+      key = next;
+    }
+
+    return false;
+  }
+
   void clearKeyMaterialExcept(byte retainedId) {
     PIVKeyObject key = firstKey;
     while (key != null) {
