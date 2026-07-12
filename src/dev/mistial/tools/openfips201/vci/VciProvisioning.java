@@ -225,9 +225,26 @@ final class VciProvisioning {
       String scp03KeyHex,
       byte suite)
       throws Exception {
+    provisionWithMinimumCvcLength(
+        bibo, caCertPath, caKeyPath, caOutPrefix, pairingCode, scp03KeyHex, suite, 0);
+  }
+
+  static void provisionWithMinimumCvcLength(
+      BIBO bibo,
+      String caCertPath,
+      String caKeyPath,
+      String caOutPrefix,
+      String pairingCode,
+      String scp03KeyHex,
+      byte suite,
+      int minimumCvcLength)
+      throws Exception {
     requirePairingCode(pairingCode);
     if (!VciSupport.isCs2(suite) && !VciSupport.isCs7(suite)) {
       throw new IllegalArgumentException("suite must be CS2 (0x27) or CS7 (0x2E)");
+    }
+    if (minimumCvcLength < 0 || minimumCvcLength > 384) {
+      throw new IllegalArgumentException("minimum CVC length must be 0..384");
     }
 
     CaMaterial ca;
@@ -308,13 +325,15 @@ final class VciProvisioning {
     // CVC (rather than an ASCII label). A fixed value from the shared profile keeps the emulator's
     // card identity deterministic across provisioning runs.
     byte[] subjectId = StandardCardProfile.CVC_SUBJECT;
-    byte[] cvcBody = VciSupport.buildCvcBody(cardPublicPoint, issuerId, subjectId);
-    Signature signer = Signature.getInstance(VciSupport.cvcSignatureAlgorithm(suite));
-    signer.initSign(ca.privateKey);
-    signer.update(cvcBody);
-    byte[] cvc = VciSupport.assembleCvc(cvcBody, signer.sign(), suite);
-    if (cvc.length > 384) {
-      throw new IllegalStateException("CVC exceeds the applet's 384-byte SM CVC limit: " + cvc.length);
+    byte[] cvc =
+        signCvcAtLeast(cardPublicPoint, issuerId, subjectId, ca.privateKey, suite, minimumCvcLength);
+    int maxCvcLength = maxAppletCvcLength(suite);
+    if (cvc.length > maxCvcLength) {
+      throw new IllegalStateException(
+          "CVC exceeds the applet's "
+              + maxCvcLength
+              + "-byte SM CVC limit: "
+              + cvc.length);
     }
     if (!VciSupport.verifyCvc(cvc, ca.certificate.getPublicKey())) {
       throw new IllegalStateException("Freshly signed CVC failed self-verification");
@@ -409,6 +428,60 @@ final class VciProvisioning {
         "VCI provisioning complete (pairing-code mode, suite 0x"
             + Integer.toHexString(suite & 0xFF)
             + ").");
+  }
+
+  private static byte[] signCvcAtLeast(
+      byte[] cardPublicPoint,
+      byte[] issuerId,
+      byte[] subjectId,
+      PrivateKey signerKey,
+      byte suite,
+      int minimumLength)
+      throws Exception {
+    int maxLength = maxAppletCvcLength(suite);
+    byte[] baseBody = VciSupport.buildCvcBody(cardPublicPoint, issuerId, subjectId);
+    byte[] cvc = signCvc(baseBody, signerKey, suite);
+    if (cvc.length >= minimumLength && cvc.length <= maxLength) {
+      return cvc;
+    }
+
+    for (int fillerLength = Math.max(0, minimumLength - cvc.length - 4);
+        fillerLength <= 128;
+        fillerLength++) {
+      ByteArrayOutputStream body = new ByteArrayOutputStream();
+      body.write(baseBody, 0, baseBody.length);
+      byte[] fillerTlv = VciSupport.tlv(0x5F7F, deterministicFiller(fillerLength));
+      body.write(fillerTlv, 0, fillerTlv.length);
+      byte[] paddedBody = body.toByteArray();
+      for (int attempt = 0; attempt < 32; attempt++) {
+        cvc = signCvc(paddedBody, signerKey, suite);
+        if (cvc.length >= minimumLength && cvc.length <= maxLength) {
+          return cvc;
+        }
+      }
+    }
+
+    throw new IllegalStateException(
+        "Unable to build CVC between " + minimumLength + " and " + maxLength + " bytes");
+  }
+
+  private static byte[] signCvc(byte[] cvcBody, PrivateKey signerKey, byte suite) throws Exception {
+    Signature signer = Signature.getInstance(VciSupport.cvcSignatureAlgorithm(suite));
+    signer.initSign(signerKey);
+    signer.update(cvcBody);
+    return VciSupport.assembleCvc(cvcBody, signer.sign(), suite);
+  }
+
+  private static byte[] deterministicFiller(int length) {
+    byte[] filler = new byte[length];
+    for (int i = 0; i < filler.length; i++) {
+      filler[i] = (byte) i;
+    }
+    return filler;
+  }
+
+  private static int maxAppletCvcLength(byte suite) {
+    return VciSupport.isCs2(suite) ? 256 : 384;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -651,6 +724,30 @@ final class VciProvisioning {
       BIBO bibo, VciSupport.SmSession session, byte keyRef, byte[] referenceData) throws Exception {
     byte[] wrapped =
         VciSupport.wrapCommand(session, (byte) 0x20, (byte) 0x00, keyRef, referenceData, false);
+    return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrapped));
+  }
+
+  /** Resets the verification status for the given key reference over the SM session. */
+  static VciSupport.SmResponse resetReferenceStatusOverSm(
+      BIBO bibo, VciSupport.SmSession session, byte keyRef) throws Exception {
+    byte[] wrapped =
+        VciSupport.wrapCommand(session, (byte) 0x20, (byte) 0xFF, keyRef, new byte[0], false);
+    return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrapped));
+  }
+
+  /** Queries verification status for the given key reference over the SM session. */
+  static VciSupport.SmResponse getReferenceStatusOverSm(
+      BIBO bibo, VciSupport.SmSession session, byte keyRef) throws Exception {
+    byte[] wrapped =
+        VciSupport.wrapCommand(session, (byte) 0x20, (byte) 0x00, keyRef, new byte[0], false);
+    return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrapped));
+  }
+
+  /** Submits CHANGE REFERENCE DATA over the SM session. */
+  static VciSupport.SmResponse changeReferenceDataOverSm(
+      BIBO bibo, VciSupport.SmSession session, byte keyRef, byte[] referenceData) throws Exception {
+    byte[] wrapped =
+        VciSupport.wrapCommand(session, (byte) 0x24, (byte) 0x00, keyRef, referenceData, false);
     return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrapped));
   }
 

@@ -159,6 +159,10 @@ final class PIVSecureMessaging {
     state[OFFSET_VCI_ESTABLISHED] = (byte) 1;
   }
 
+  void resetPairingVerified() {
+    state[OFFSET_VCI_ESTABLISHED] = (byte) 0;
+  }
+
   /**
    * Loads SK_CFRM || SK_MAC || SK_ENC || SK_RMAC (each {@code keyLength} bytes).
    *
@@ -290,8 +294,11 @@ final class PIVSecureMessaging {
     Util.arrayCopyNonAtomic(
         work, (short) (workOffset + macInputLength), commandMcv, (short) 0, LENGTH_BLOCK);
 
-    state[OFFSET_LAST_CLA] = apdu[ISO7816.OFFSET_CLA];
-    state[OFFSET_LAST_INS] = apdu[ISO7816.OFFSET_INS];
+    boolean protectedGetResponse = apdu[ISO7816.OFFSET_INS] == INS_GET_RESPONSE;
+    if (!protectedGetResponse) {
+      state[OFFSET_LAST_CLA] = apdu[ISO7816.OFFSET_CLA];
+      state[OFFSET_LAST_INS] = apdu[ISO7816.OFFSET_INS];
+    }
     apdu[ISO7816.OFFSET_CLA] = (byte) (apdu[ISO7816.OFFSET_CLA] & (byte) 0xF3);
 
     if (encryptedTlvOffset == (short) -1) return (short) 0;

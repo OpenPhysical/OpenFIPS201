@@ -468,6 +468,98 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  @Test
+  void protectedGetResponseDoesNotSuppressLogicalCommandCounterIncrement() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] firstMcv = new byte[16];
+      byte[] command = chainedMacOnlySecureCommand(
+          new byte[16], (byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, firstMcv);
+      byte[] work = new byte[512];
+      method(
+              secureMessagingClass,
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(secureMessaging, command, (short) 5, (short) 10, work, (short) 0);
+
+      byte[] outgoing = new byte[256];
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+
+      APDU apdu = streamingApdu((byte) 0xCB);
+      Method processOutgoingSecure =
+          method(
+              chainBuffer.getClass(),
+              "processOutgoingSecure",
+              APDU.class,
+              secureMessagingClass,
+              byte[].class,
+              short.class);
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  processOutgoingSecure.invoke(
+                      chainBuffer, apdu, secureMessaging, new byte[448], ISO7816.SW_NO_ERROR));
+      assertTrue(first.getCause() instanceof ISOException);
+      assertEquals((short) 0x6123, ((ISOException) first.getCause()).getReason());
+
+      byte[] protectedGetResponse =
+          chainedMacOnlySecureCommand(
+              firstMcv, (byte) 0x0C, (byte) 0xC0, (byte) 0x00, (byte) 0x00, new byte[16]);
+      method(
+              secureMessagingClass,
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(secureMessaging, protectedGetResponse, (short) 5, (short) 10, work, (short) 0);
+
+      byte[] beforeCompletion = counter(secureMessaging);
+      APDU getResponseApdu = streamingApdu((byte) 0xC0);
+      InvocationTargetException second =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  processOutgoingSecure.invoke(
+                      chainBuffer,
+                      getResponseApdu,
+                      secureMessaging,
+                      new byte[448],
+                      ISO7816.SW_NO_ERROR));
+      assertTrue(second.getCause() instanceof ISOException);
+      assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
+
+      byte[] expectedCounter = beforeCompletion.clone();
+      expectedCounter[15]++;
+      assertArrayEquals(
+          expectedCounter,
+          counter(secureMessaging),
+          "Protected GET RESPONSE must not replace the original logical command for counter rules");
+    }
+  }
+
   /**
    * Verifies that a protected GET RESPONSE command drains the secure outgoing response chain.
    *
@@ -559,6 +651,15 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   private ResponseAPDU transmit(CommandAPDU command) {
     return new ResponseAPDU(session.transceive(command.getBytes()));
+  }
+
+  private static APDU streamingApdu(byte ins) {
+    byte[] apduBuffer = new byte[5];
+    apduBuffer[ISO7816.OFFSET_INS] = ins;
+    APDU apdu = Mockito.mock(APDU.class);
+    when(apdu.getBuffer()).thenReturn(apduBuffer);
+    when(apdu.setOutgoing()).thenReturn((short) 256);
+    return apdu;
   }
 
   private static short buildMacOnlyCommandInput(byte[] command, byte[] out) {

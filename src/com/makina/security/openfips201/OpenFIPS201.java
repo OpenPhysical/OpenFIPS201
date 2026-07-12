@@ -281,6 +281,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // have altered the length.
       piv.processIncomingObject(buffer, apdu.getOffsetCdata(), length);
 
+      // PIV secure messaging is handled as a transport wrapper here. Command-specific access
+      // checks below still decide whether the unwrapped command is allowed in the current profile
+      // and interface state.
       switch (buffer[ISO7816.OFFSET_INS]) {
         case INS_GP_INITIALIZE_UPDATE: // Case 4
           processGP_SECURECHANNEL(apdu);

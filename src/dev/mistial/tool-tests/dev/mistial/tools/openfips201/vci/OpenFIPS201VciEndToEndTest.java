@@ -186,6 +186,45 @@ class OpenFIPS201VciEndToEndTest {
     }
   }
 
+  @Test
+  void pairingResetKeepsSecureMessagingSessionUsable(@TempDir Path tempDir) throws Exception {
+    assumeTrue(isCs2Build(), "CS2 E2E test requires -Dvci.suite=CS2");
+    String caPrefix = tempDir.resolve("vci-ca").toString();
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.provision(bibo, null, null, caPrefix, "12345678", null);
+    }
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.EstablishedSession established =
+          VciProvisioning.establishSecureMessaging(bibo, caPrefix + ".crt");
+      assertNotNull(established);
+
+      VciSupport.SmResponse paired =
+          VciProvisioning.verifyReferenceDataOverSm(
+              bibo,
+              established.session,
+              (byte) 0x98,
+              "12345678".getBytes(StandardCharsets.US_ASCII));
+      assertEquals(0x9000, paired.statusWord, "pairing VERIFY success");
+
+      VciSupport.SmResponse reset =
+          VciProvisioning.resetReferenceStatusOverSm(bibo, established.session, (byte) 0x98);
+      assertEquals(0x9000, reset.statusWord, "pairing reset is an application success under SM");
+
+      VciSupport.SmResponse status =
+          VciProvisioning.getReferenceStatusOverSm(bibo, established.session, (byte) 0x98);
+      assertEquals(0x6982, status.statusWord, "pairing status should be false after reset");
+
+      VciSupport.SmResponse pairedAgain =
+          VciProvisioning.verifyReferenceDataOverSm(
+              bibo,
+              established.session,
+              (byte) 0x98,
+              "12345678".getBytes(StandardCharsets.US_ASCII));
+      assertEquals(0x9000, pairedAgain.statusWord, "same SM session remains usable after reset");
+    }
+  }
+
   /**
    * Live CS7 (P-384 / AES-256) OPACITY + pairing + wrapped GET DATA on the emulator.
    *
@@ -216,6 +255,31 @@ class OpenFIPS201VciEndToEndTest {
   void cs2OpacityRejectsOffCurveHostPublicKey(@TempDir Path tempDir) throws Exception {
     assumeTrue(isCs2Build(), "CS2 C4 validation test requires -Dvci.suite=CS2");
     assertOffCurveHostPublicKeyRejected(tempDir, VciSupport.ALG_CS2);
+  }
+
+  @Test
+  void cs2EstablishesOpacityWithMaxAcceptedCvc(@TempDir Path tempDir) throws Exception {
+    assumeTrue(isCs2Build(), "CS2 max-CVC test requires -Dvci.suite=CS2");
+    String caPrefix = tempDir.resolve("vci-ca-max-cvc").toString();
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.provisionWithMinimumCvcLength(
+          bibo, null, null, caPrefix, "12345678", null, VciSupport.ALG_CS2, 256);
+    }
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.EstablishedSession established =
+          VciProvisioning.establishSecureMessaging(bibo, caPrefix + ".crt");
+      assertNotNull(established, "OPACITY establishment with 256-byte CS2 CVC");
+      assertEquals(256, established.cvcRaw.length, "card should return the max accepted CS2 CVC");
+
+      VciSupport.SmResponse paired =
+          VciProvisioning.verifyReferenceDataOverSm(
+              bibo,
+              established.session,
+              (byte) 0x98,
+              "12345678".getBytes(StandardCharsets.US_ASCII));
+      assertEquals(0x9000, paired.statusWord, "pairing after max-CVC OPACITY establishment");
+    }
   }
 
   @Test

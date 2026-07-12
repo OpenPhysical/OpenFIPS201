@@ -43,8 +43,8 @@ baseline:
 - PIV-style attestation authority support with host provisioning tooling for
   SCP03/SCP02-protected F9 import and issuer certificate publication.
 - PIV Virtual Contact Interface (VCI) secure messaging (OPACITY key
-  establishment, cipher suite CS2) with host provisioning and probe tooling and
-  a ZeroMQ emulator bridge.
+  establishment, cipher suites CS2 and CS7 as build-time alternatives) with
+  host provisioning and probe tooling and a ZeroMQ emulator bridge.
 - Vector-based VCI conformance tests that replay real-card OPACITY key
   establishment and secure-messaging captures as known-answer checks.
 - Java Card 3.0.5 build targeting with a JDK 11-compatible Ant toolchain.
@@ -55,57 +55,37 @@ baseline:
 
 ## VCI / Secure Messaging Conformance
 
-This fork implements PIV secure messaging and the Virtual Contact Interface
-(VCI) per NIST SP 800-73-5 Part 2.
+This fork implements the SP 800-73-5 Part 2 secure-messaging path used by VCI:
+OPACITY key establishment, SM APDU unwrap/wrap, MAC chaining, RMAC, pairing
+code verification, and APT advertisement.
 
-- **Cipher suite:** CS2 only — ECC Curve P-256, AES-128, SHA-256 (algorithm
-  identifier `0x27`). CS7 (`0x2E`) is not implemented. SP 800-73-5 Part 2
-  §4.1.4 permits a card to support a single suite; CS7 is required only when a
-  digital-signature (`9C`), key-management (`9D`), or retired key-management
-  (`82`–`95`) key is an ECC Curve P-384 key, which this configuration does not
-  use. The Application Property Template advertises `0x27` only after the
-  secure-messaging key (`0x04`) and its card-verifiable certificate are present.
-- **Key establishment:** OPACITY Zero Key Management via `GENERAL AUTHENTICATE`
-  (`P1=0x27`, `P2=0x04`), deriving the `SK_CFRM`/`SK_MAC`/`SK_ENC`/`SK_RMAC`
-  session keys and a key-confirmation cryptogram.
-- **Message protection:** secure messaging on class byte `0x0C`, with the
-  `0x87` (encrypted data), `0x97` (Le), `0x8E` (MAC), and `0x99` (status) data
-  objects, AES-CBC encryption and AES-CMAC authentication, MAC chaining, and the
-  encryption counter.
-- **VCI policy:** pairing-code or no-pairing operation selected by the Discovery
-  Object PIN usage policy, with pairing-code verification on key reference
-  `0x98`.
+The applet is built for one OPACITY suite at a time:
 
-The CS2 establishment, session-key derivation, secure-messaging wrap/unwrap, and
-MAC/counter chaining are verified byte-for-byte against known-answer test
-vectors captured from real PIV cards, in addition to a live end-to-end
-establishment against the in-process emulator.
+| Suite | Build property | Curve | Keys / hash | Algorithm ID |
+| ----- | -------------- | ----- | ----------- | ------------ |
+| CS2 | `-Dvci.suite=CS2` | P-256 | AES-128 / SHA-256 | `0x27` |
+| CS7 | `-Dvci.suite=CS7` | P-384 | AES-256 / SHA-384 | `0x2E` |
 
-### Contactless access to PIN-protected objects
+CS2 is the default. The selected suite is advertised in the Application
+Property Template only after the SM key (`0x04`) and its CVC are loaded. The
+admin provisioning path supports the larger CS7 CVCs when the CS7 build is
+enabled.
 
-VCI does not bypass the PIN. Per SP 800-73-5 Part 2 Table 2, the biometric
-containers — Cardholder Fingerprints (`0x6010`) and Cardholder Facial Image
-(`0x6030`) — have a contactless read rule of "VCI and PIN", and Printed
-Information (`0x3001`) is "VCI and (PIN or OCC)". These objects *can* be
-retrieved over VCI, but only after the PIN is verified in addition to
-establishing VCI. (This concerns the readable biometric *containers*; the
-on-card reference templates used for on-card comparison are never released by
-either interface.)
+OPACITY runs through `GENERAL AUTHENTICATE` with `P1` set to the selected suite
+and `P2=0x04`. Before ECDH, the applet validates the host ephemeral public key
+as required by SP 800-73-5 Part 2 C4; invalid points fail with `6A80`.
 
-In the reference contactless vectors these objects return status word `0x6982`
-(security status not satisfied) when read before the PIN has been verified over
-the secure channel, and the corresponding contact vectors — which verify the
-PIN early — read the same objects successfully. The status reflects the access
-rule, not a VCI restriction: once the PIN is verified over VCI, the read is
-permitted.
+Secure messaging uses class byte `0x0C` and the standard `87`, `97`, `8E`, and
+`99` data objects. Bad SM object structure, ordering, duplication, unknown
+objects, and MAC failures return `6988`. Pairing-code mismatch returns `6300`;
+commands that require a satisfied protected VCI session return `6982` when that
+condition is not met.
 
-In OpenFIPS201 these access rules are not special-cased in the secure-messaging
-code; they are the per-object contact and contactless access modes (`0x8C` /
-`0x8D`) assigned when each data object is defined at pre-personalization. A
-PIV-conformant configuration sets the biometric containers to require PIN (and
-VCI on the contactless interface). Secure messaging itself still succeeds for a
-denied read — the transport status word remains `0x9000` and the access-control
-status word is carried inside the secure-messaging–protected response.
+The VCI tests cover both host-side vectors and live emulator flows. The vector
+tests replay CS2 and CS7 captures from real cards for OPACITY, KDF, SM
+wrap/unwrap, MAC/RMAC, and counter chaining. The end-to-end tests provision the
+emulator, establish OPACITY, verify pairing, run wrapped commands, and reject
+off-curve host public keys for both suites.
 
 ## Repository Layout
 
@@ -131,6 +111,19 @@ ant -f build/build.xml test
 
 The test target resolves Maven dependencies through Ivy into `build/lib` and
 runs the JCardEngine-backed JUnit suite.
+
+VCI suite selection is controlled by `vci.suite`; CS2 is the default:
+
+```sh
+ant -f build/build.xml -Dvci.suite=CS2 test-suite
+ant -f build/build.xml -Dvci.suite=CS7 test-suite
+```
+
+The combined matrix targets run CS2 and CS7, with and without attestation:
+
+```sh
+ant -f build/build.xml test-all
+```
 
 ## License
 

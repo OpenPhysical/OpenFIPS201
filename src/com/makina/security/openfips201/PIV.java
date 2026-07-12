@@ -86,7 +86,7 @@ final class PIV {
   //#if VCI_CS2
   static final byte ID_ALG_ECC_SM = ID_ALG_ECC_CS2;
   private static final byte OPACITY_KDF_ALG_ID = (byte) 0x09;
-  private static final short LENGTH_SM_RESPONSE = (short) 296;
+  private static final short LENGTH_SM_RESPONSE = (short) 320;
   private static final short OPACITY_HASH_TMP = (short) 160;
   //#else
   static final byte ID_ALG_ECC_SM = ID_ALG_ECC_CS7;
@@ -384,14 +384,11 @@ final class PIV {
       return length;
     }
 
-    short acOffset = offset;
-    short end = (short) (offset + length);
-    while (acOffset < end && buffer[acOffset] != (byte) 0xAC) {
-      acOffset++;
-    }
-    if (acOffset >= end) {
+    short acOffset = findChildTlv(buffer, offset, (byte) 0xAC);
+    if (acOffset < (short) 0) {
       return length;
     }
+    short end = (short) (offset + length);
 
     PIVKeyObject smKey = getSecureMessagingKey();
     if (smKey == null) {
@@ -412,6 +409,19 @@ final class PIV {
     buffer[(short) (offset + 2)] += (byte) 3;
     buffer[(short) (acOffset + 1)] += (byte) 3;
     return (short) (length + 3);
+  }
+
+  private short findChildTlv(byte[] buffer, short parentOffset, byte tag) {
+    short cursor = TLVReader.getDataOffset(buffer, parentOffset);
+    short end = (short) (cursor + TLVReader.getLength(buffer, parentOffset));
+    while (cursor < end) {
+      if (buffer[cursor] == tag) {
+        return cursor;
+      }
+      short valueOffset = TLVReader.getDataOffset(buffer, cursor);
+      cursor = (short) (valueOffset + TLVReader.getLength(buffer, cursor));
+    }
+    return (short) -1;
   }
 
   private boolean isSecureMessagingAdvertised() {
@@ -942,7 +952,9 @@ final class PIV {
     // the retry counter associated with the key reference shall remain unchanged.
 
     if (id == ID_CVM_PAIRING_CODE) {
-      secureMessaging.clear();
+      // VERIFY reset for key reference 0x98 resets pairing security status only. Keep the
+      // established SM session so the application status can still be returned under SM.
+      secureMessaging.resetPairingVerified();
       return;
     }
 
@@ -1096,7 +1108,9 @@ final class PIV {
         // Check whether we are allowed to operate over contactless if applicable
         if (cspPIV.getIsContactless()
             && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
+            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !isVciSatisfied())) {
+          // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
+          // key references 00/80 only over VCI.
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         }
 
@@ -1113,7 +1127,9 @@ final class PIV {
         // Check whether we are allowed to operate over contactless if applicable
         if (cspPIV.getIsContactless()
             && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
+            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !isVciSatisfied())) {
+          // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
+          // key references 00/80 only over VCI.
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         }
 
@@ -1826,9 +1842,12 @@ final class PIV {
     // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
     deriveOpacitySessionKeys(field, sessionKeyLen, offZ, offN, nLen, offIdH, offQeh, offIdSicc);
     secureMessaging.setSessionKeys(scratch, ZERO, sessionKeyLen);
+    PIVSecurityProvider.zeroise(scratch, ZERO, (short) (sessionKeyLen * 4));
+    PIVSecurityProvider.zeroise(smResponse, offZ, field);
 
     short authLen = buildOpacityAuthCryptogramInput(offIdH, offQeh, offIdSicc, xyLen);
     secureMessaging.computeConfirmationMac(scratch, ZERO, authLen, scratch, ZERO);
+    secureMessaging.clearConfirmationKey();
 
     // C11: CB_ICC || N_ICC || AuthCryptogram_ICC(16) || C_ICC
     TLVWriter writer = TLVWriter.getInstance();
@@ -3605,7 +3624,9 @@ final class PIV {
     //#if ATTESTATION_ENABLED
     }
     //#endif
-    key.markImported();
+    if (elementTag != PIVKeyObjectECC.ELEMENT_SM_CVC) {
+      key.markImported();
+    }
 
     //#if ATTESTATION_ENABLED
     if (key.getId() == ID_KEY_ATTESTATION) {
