@@ -51,11 +51,7 @@
   <path id="test.compile.classpath">
     <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
     <pathelement location="${gp.exportjar}"/>
-    <pathelement location="tools/jcardengine-26.06.04.jar"/>
-    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
-    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
-    <pathelement location="tools/capfile-26.05.15.jar"/>
-    <pathelement location="tools/tlv-26.06.04.jar"/>
+    <pathelement location="tools/jcard-v26.07.13.jar"/>
     <fileset dir="${deps.outputpath}">
       <include name="*.jar"/>
     </fileset>
@@ -65,11 +61,7 @@
        must never appear here (see the test.runtime.classpath note above); the applet
        sources are compiled against the stubs in a dedicated step inside tool-compile. -->
   <path id="tool.compile.classpath">
-    <pathelement location="tools/jcardengine-26.06.04.jar"/>
-    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
-    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
-    <pathelement location="tools/capfile-26.05.15.jar"/>
-    <pathelement location="tools/tlv-26.06.04.jar"/>
+    <pathelement location="tools/jcard-v26.07.13.jar"/>
     <fileset dir="${deps.outputpath}">
       <include name="*.jar"/>
     </fileset>
@@ -87,11 +79,7 @@
   <path id="test.runtime.classpath">
     <pathelement location="${test.outputpath}"/>
     <pathelement location="${tool.outputpath}"/>
-    <pathelement location="tools/jcardengine-26.06.04.jar"/>
-    <pathelement location="tools/globalplatformpro-26.06.04.jar"/>
-    <pathelement location="tools/apdu4j-core-26.06.04.jar"/>
-    <pathelement location="tools/capfile-26.05.15.jar"/>
-    <pathelement location="tools/tlv-26.06.04.jar"/>
+    <pathelement location="tools/jcard-v26.07.13.jar"/>
     <fileset dir="${deps.outputpath}">
       <include name="*.jar"/>
     </fileset>
