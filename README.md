@@ -102,6 +102,29 @@ off-curve host public keys for both suites.
   are not resolved through Ivy.
 - `docs/` contains project documentation, ASN.1 fixtures, and the preserved
   upstream README.
+- `tools/piv_test_runner/` contains NIST PIV Test Runner configuration for
+  external SP 800-85A-style interface runs (not part of `ant test`).
+
+## Conformance and NPIVP
+
+Formal listing and data-model expectations are documented separately from the
+JUnit suite. Unless a document explicitly says otherwise, these claims apply to
+the OpenFIPS201 OpenPhysical fork in this repository, not to the upstream
+`makinako/OpenFIPS201` project.
+
+- [docs/CONFORMANCE_AND_NPIVP.md](docs/CONFORMANCE_AND_NPIVP.md) — specification
+  map, product posture (including OCC out of scope, SM suite builds, algorithm
+  listing caveats), repository test coverage, remaining SP 800-85A/85B coverage,
+  and NPIVP evidence priorities.
+- [docs/NPIVP_VENDOR_EVIDENCE.md](docs/NPIVP_VENDOR_EVIDENCE.md) — vendor
+  evidence (VE) checklist aligned with the NPIVP Test Summary form.
+- [tools/piv_test_runner/README.md](tools/piv_test_runner/README.md) — how to
+  obtain and run the NIST PIV Test Runner with the configs in this repository.
+
+In-repo tests exercise command behaviour, VCI/secure messaging, and selected
+crypto paths. They are **not** a substitute for a full NPIVP interface run or
+for SP 800-85B validation of personalised CHUID, biometrics, certificates, and
+Security Object content.
 
 ## Building and Testing
 
@@ -155,5 +178,5 @@ CPLC, KDD, proof-key deletion, and post-rotation SCP verification. See
 
 ## License
 
-OpenFIPS201 is distributed under the MIT License. See [LICENSE.md](LICENSE.md)
-for the license text.
+This OpenFIPS201 OpenPhysical fork is distributed under the MIT License. See
+[LICENSE.md](LICENSE.md) for the license text.
