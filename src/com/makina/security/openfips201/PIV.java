@@ -337,7 +337,21 @@ final class PIV {
   }
 
   void processOutgoingSecure(APDU apdu, short sw) {
-    chainBuffer.processOutgoingSecure(apdu, secureMessaging, smResponse, sw);
+    try {
+      chainBuffer.processOutgoingSecure(apdu, secureMessaging, smResponse, sw);
+    } catch (ISOException ex) {
+      if (secureMessaging.isResponseStreamComplete() && !chainBuffer.isSecureOutgoingActive()) {
+        clearSecureMessagingCommand();
+      }
+      throw ex;
+    }
+  }
+
+  void processOutgoingSecureContinuation(APDU apdu) {
+    if (!chainBuffer.isSecureOutgoingActive()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
   }
 
   /**
@@ -2077,7 +2091,7 @@ final class PIV {
     short length;
     try {
       length = key.sign(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       authenticateReset();
       // Presume that we have a problem with the input data, instead of throwing 6F00.
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -2180,9 +2194,15 @@ final class PIV {
     short length;
     try {
       length = key.keyAgreement(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       authenticateReset();
       // Presume that we have a problem with the input data, instead of throwing 6F00.
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return ZERO; // Keep static analyser happy
+    }
+
+    if (length <= ZERO || isAllZero(scratch, offset, length)) {
+      authenticateReset();
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return ZERO; // Keep static analyser happy
     }
@@ -2212,6 +2232,13 @@ final class PIV {
 
     // Done, return the length of data we are sending
     return length;
+  }
+
+  private boolean isAllZero(byte[] buffer, short offset, short length) {
+    for (short cursor = offset; cursor < (short) (offset + length); cursor++) {
+      if (buffer[cursor] != (byte) 0) return false;
+    }
+    return true;
   }
 
   // Variant E - Symmetric Internal Authentication
@@ -2257,7 +2284,7 @@ final class PIV {
     short offset = writer.getOffset();
     try {
       offset += key.encrypt(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       authenticateReset();
 
       // Presume that we have a problem with the input data, instead of throwing 6F00.
@@ -2325,7 +2352,7 @@ final class PIV {
       // Generate and store the encrypted CHALLENGE in our context, so we can compare it without
       // the key reference later.
       offset += key.encrypt(scratch, offset, length, authenticationContext, OFFSET_AUTH_CHALLENGE);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       authenticateReset();
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
 

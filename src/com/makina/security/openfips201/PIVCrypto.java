@@ -419,11 +419,13 @@ final class PIVCrypto {
 
   static short doAesCmac(
       SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     cspAESCMAC.init(key, Signature.MODE_SIGN);
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   static void doAesCmacInit(SecretKey key) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     cspAESCMAC.init(key, Signature.MODE_SIGN);
   }
 
@@ -435,7 +437,12 @@ final class PIVCrypto {
 
   static short doAesCmacFinal(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static void requireAesCmac(short sw) {
+    if (cspAESCMAC == null) ISOException.throwIt(sw);
   }
 
   static short doAesEcbEncrypt(

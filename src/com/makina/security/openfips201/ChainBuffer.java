@@ -172,6 +172,14 @@ final class ChainBuffer {
     context[CONTEXT_CLEAR_ON_COMPLETE] = clearOnCompletion ? (short) 1 : (short) 0;
   }
 
+  boolean isOutgoingActive() {
+    return context[CONTEXT_STATE] == STATE_OUTGOING;
+  }
+
+  boolean isSecureOutgoingActive() {
+    return isOutgoingActive() && context[CONTEXT_SECURE_OUTGOING] != (short) 0;
+  }
+
   /**
    * Configures the ChainBuffer class to process a stream of incoming data directly to an object
    *
@@ -531,6 +539,9 @@ final class ChainBuffer {
       resetAbort();
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     } else {
+      if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) {
+        ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      }
       secureMessaging.beginResponseStream((short) 0, sw);
       context[CONTEXT_SECURE_OUTGOING] = (short) 1;
     }

@@ -213,6 +213,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // command data. A GP SCP-protected GET RESPONSE must not take this shortcut: the platform
     // secure-channel layer has to unwrap it so the host and card SCP state stay synchronized.
     if (plaintextGetResponse) {
+      piv.clearSecureMessagingCommand();
+      if (piv.isSecureMessagingEstablished()) {
+        piv.processOutgoingSecureContinuation(apdu);
+        return;
+      }
       piv.processOutgoing(apdu);
       return;
     }

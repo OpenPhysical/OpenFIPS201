@@ -93,6 +93,9 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     // where the length of the X and Y coordinates is the byte length of the key.
     // TODO: We can use 2 consts and decide which to compare against based on the mechanism!
     marshaledPubKeyLen = (short) (getKeyLengthBytes() * 2 + 1);
+    if (isSecureMessagingMechanism()) {
+      smCvc = new byte[LENGTH_SM_CVC_MAX];
+    }
   }
 
   /**
@@ -153,9 +156,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         if (length <= (short) 0 || length > LENGTH_SM_CVC_MAX) {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
           return;
-        }
-        if (smCvc == null) {
-          smCvc = new byte[LENGTH_SM_CVC_MAX];
         }
         javacard.framework.Util.arrayCopyNonAtomic(buffer, offset, smCvc, (short) 0, length);
         smCvcLength = length;

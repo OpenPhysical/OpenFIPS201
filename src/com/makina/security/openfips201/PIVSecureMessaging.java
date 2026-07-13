@@ -82,6 +82,7 @@ final class PIVSecureMessaging {
   //             have been established - Section 4.2.7 footnote)
   //   '69 87' - expected secure messaging data objects are missing
   //   '69 88' - secure messaging data objects are incorrect
+  private static final short SW_SM_NOT_SUPPORTED = (short) 0x6882;
   private static final short SW_SM_EXPECTED_OBJECTS_MISSING = (short) 0x6987;
   private static final short SW_SM_OBJECTS_INCORRECT = (short) 0x6988;
 
@@ -208,6 +209,7 @@ final class PIVSecureMessaging {
    * keys are zeroized per Section 4.3 (Session Key Destruction).
    */
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
+    PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
     try {
       return unwrapCommandChecked(apdu, offset, length, work, workOffset);
     } catch (ISOException ex) {
@@ -327,6 +329,7 @@ final class PIVSecureMessaging {
   }
 
   void beginResponseStream(short plaintextLength, short sw) {
+    PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
     clearResponseState();
     responseState[OFFSET_RESPONSE_SW] = sw;
     responseState[OFFSET_RESPONSE_PLAIN_REMAINING] = plaintextLength;
@@ -394,9 +397,12 @@ final class PIVSecureMessaging {
   private short writeResponseHeader(byte[] out, short cursor, short end) {
     short encryptedValueLength = (short) (responseState[OFFSET_RESPONSE_PADDED_LENGTH] + (short) 1);
     short headerLength = responseHeaderLength(encryptedValueLength);
+    responseTail[(short) 0] = TAG_ENCRYPTED_DATA;
+    short lengthSize = TLV.writeLength(responseTail, (short) 1, encryptedValueLength);
+    responseTail[(short) (1 + lengthSize)] = PADDING_INDICATOR;
     while (cursor < end && responseState[OFFSET_RESPONSE_PHASE_OFFSET] < headerLength) {
       short index = responseState[OFFSET_RESPONSE_PHASE_OFFSET];
-      out[cursor] = responseHeaderByte(encryptedValueLength, index);
+      out[cursor] = responseTail[index];
       PIVCrypto.doAesCmacUpdate(out, cursor, (short) 1);
       cursor++;
       responseState[OFFSET_RESPONSE_PHASE_OFFSET]++;
@@ -410,29 +416,8 @@ final class PIVSecureMessaging {
     return cursor;
   }
 
-  private byte responseHeaderByte(short encryptedValueLength, short index) {
-    if (index == (short) 0) return TAG_ENCRYPTED_DATA;
-    if (encryptedValueLength <= (short) 0x7F) {
-      if (index == (short) 1) return (byte) encryptedValueLength;
-      return PADDING_INDICATOR;
-    }
-
-    if (encryptedValueLength <= (short) 0x00FF) {
-      if (index == (short) 1) return (byte) 0x81;
-      if (index == (short) 2) return (byte) encryptedValueLength;
-      return PADDING_INDICATOR;
-    }
-
-    if (index == (short) 1) return (byte) 0x82;
-    if (index == (short) 2) return (byte) (encryptedValueLength >> 8);
-    if (index == (short) 3) return (byte) encryptedValueLength;
-    return PADDING_INDICATOR;
-  }
-
   private short responseHeaderLength(short encryptedValueLength) {
-    if (encryptedValueLength <= (short) 0x7F) return (short) 3;
-    if (encryptedValueLength <= (short) 0x00FF) return (short) 4;
-    return (short) 5;
+    return (short) (TLV.encodedLengthSize(encryptedValueLength) + (short) 2);
   }
 
   private short writeResponseCiphertext(
@@ -579,12 +564,11 @@ final class PIVSecureMessaging {
   /**
    * Checks whether the encryption counter should be incremented.
    *
-   * <p>NIST SP 800-73-5 Part 2 Section 4.2.2 requires the encryption counter to be incremented by
-   * one after each APDU sent over secure messaging, except for the GET RESPONSE command and APDUs
-   * with a CLA of '1C'.
+   * <p>NIST SP 800-73-5 Part 2 Section 4.2.2 requires the encryption counter to be incremented
+   * once per completed logical secure-messaging command, except chained '1C' commands. Plaintext
+   * GET RESPONSE frames only transport the already-computed protected response stream.
    */
   private boolean shouldIncrementCounter() {
-    if (state[OFFSET_LAST_INS] == INS_GET_RESPONSE) return false;
     return state[OFFSET_LAST_CLA] != CLA_CHAINED_SECURE_MESSAGING;
   }
 

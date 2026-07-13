@@ -635,6 +635,99 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void spuriousPlainGetResponseAfterSecureStreamCompletionDoesNotAdvanceSession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before spurious GET RESPONSE check");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      Class<?> pivClass = piv.getClass();
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
+      byte[] work = new byte[512];
+      method(
+              secureMessagingClass,
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(secureMessaging, command, (short) 5, (short) 10, work, (short) 0);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+
+      byte[] outgoing = new byte[256];
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+
+      APDU apdu = streamingApdu((byte) 0xCB);
+      Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class, () -> processOutgoing.invoke(piv, apdu));
+      assertTrue(first.getCause() instanceof ISOException);
+      assertEquals((short) 0x6123, ((ISOException) first.getCause()).getReason());
+
+      apdu.getBuffer()[ISO7816.OFFSET_INS] = (byte) 0xC0;
+      Method continuation = method(pivClass, "processOutgoingSecureContinuation", APDU.class);
+      InvocationTargetException second =
+          assertThrows(
+              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+      assertTrue(second.getCause() instanceof ISOException);
+      assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
+
+      byte[] counterAfterCompletion = counter(secureMessaging);
+      InvocationTargetException third =
+          assertThrows(
+              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+      assertTrue(third.getCause() instanceof ISOException);
+      assertEquals(
+          ISO7816.SW_CONDITIONS_NOT_SATISFIED, ((ISOException) third.getCause()).getReason());
+      assertArrayEquals(
+          counterAfterCompletion,
+          counter(secureMessaging),
+          "Spurious GET RESPONSE must not advance the SM encryption counter");
+    }
+  }
+
+  @Test
+  void secureMessagingFailsClosedWhenCmacProviderIsUnavailable() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before CMAC provider check");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Object original = staticField(PIVCrypto.class, "cspAESCMAC").get(null);
+      try {
+        staticField(PIVCrypto.class, "cspAESCMAC").set(null, null);
+        PIVSecureMessaging secureMessaging = new PIVSecureMessaging();
+        ISOException thrown =
+            assertThrows(
+                ISOException.class,
+                () -> secureMessaging.beginResponseStream((short) 0, ISO7816.SW_NO_ERROR));
+        assertEquals((short) 0x6882, thrown.getReason());
+      } finally {
+        staticField(PIVCrypto.class, "cspAESCMAC").set(null, original);
+      }
+    }
+  }
+
+  @Test
   void protectedGetResponseDoesNotSuppressLogicalCommandCounterIncrement() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
       Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
@@ -1021,6 +1114,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   private static Field field(Object target, String name) throws Exception {
     Field field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    return field;
+  }
+
+  private static Field staticField(Class<?> target, String name) throws Exception {
+    Field field = target.getDeclaredField(name);
     field.setAccessible(true);
     return field;
   }
