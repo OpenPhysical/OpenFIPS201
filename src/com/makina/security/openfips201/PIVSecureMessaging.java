@@ -376,6 +376,10 @@ final class PIVSecureMessaging {
     return responseState[OFFSET_RESPONSE_PHASE] == RESPONSE_PHASE_NONE;
   }
 
+  boolean isResponseStreamActive() {
+    return responseState[OFFSET_RESPONSE_PHASE] != RESPONSE_PHASE_NONE;
+  }
+
   short getResponseStreamStatusWord() {
     if (isResponseStreamComplete()) return ISO7816.SW_NO_ERROR;
 

@@ -540,10 +540,13 @@ final class ChainBuffer {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     } else {
       if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) {
-        ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+        if (!secureMessaging.isResponseStreamActive()) {
+          ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+        }
+      } else {
+        secureMessaging.beginResponseStream((short) 0, sw);
+        context[CONTEXT_SECURE_OUTGOING] = (short) 1;
       }
-      secureMessaging.beginResponseStream((short) 0, sw);
-      context[CONTEXT_SECURE_OUTGOING] = (short) 1;
     }
 
     short le = outgoingLength(apdu);

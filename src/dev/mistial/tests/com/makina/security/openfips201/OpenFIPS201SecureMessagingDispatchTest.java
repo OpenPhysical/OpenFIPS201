@@ -706,6 +706,54 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void plaintextGetResponseContinuesStatusOnlySecureResponseStream() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before status-only secure response check");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> pivClass = piv.getClass();
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+
+      APDU apdu = streamingApdu((byte) 0xCB, (short) 8);
+      Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class, () -> processOutgoing.invoke(piv, apdu));
+      assertTrue(first.getCause() instanceof ISOException);
+      assertEquals((short) 0x6106, ((ISOException) first.getCause()).getReason());
+
+      apdu.getBuffer()[ISO7816.OFFSET_INS] = (byte) 0xC0;
+      Method continuation = method(pivClass, "processOutgoingSecureContinuation", APDU.class);
+      InvocationTargetException second =
+          assertThrows(
+              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+      assertTrue(second.getCause() instanceof ISOException);
+      assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
+
+      byte[] counterAfterCompletion = counter(secureMessaging);
+      InvocationTargetException third =
+          assertThrows(
+              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+      assertTrue(third.getCause() instanceof ISOException);
+      assertEquals(
+          ISO7816.SW_CONDITIONS_NOT_SATISFIED, ((ISOException) third.getCause()).getReason());
+      assertArrayEquals(
+          counterAfterCompletion,
+          counter(secureMessaging),
+          "Spurious GET RESPONSE after status-only response must not advance SM state");
+    }
+  }
+
+  @Test
   void secureMessagingFailsClosedWhenCmacProviderIsUnavailable() throws Exception {
     assertSw(
         0x9000,
@@ -913,11 +961,15 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   private static APDU streamingApdu(byte ins) {
+    return streamingApdu(ins, (short) 256);
+  }
+
+  private static APDU streamingApdu(byte ins, short le) {
     byte[] apduBuffer = new byte[5];
     apduBuffer[ISO7816.OFFSET_INS] = ins;
     APDU apdu = Mockito.mock(APDU.class);
     when(apdu.getBuffer()).thenReturn(apduBuffer);
-    when(apdu.setOutgoing()).thenReturn((short) 256);
+    when(apdu.setOutgoing()).thenReturn(le);
     return apdu;
   }
 

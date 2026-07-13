@@ -348,7 +348,7 @@ final class PIV {
   }
 
   void processOutgoingSecureContinuation(APDU apdu) {
-    if (!chainBuffer.isSecureOutgoingActive()) {
+    if (!chainBuffer.isSecureOutgoingActive() && !secureMessaging.isResponseStreamActive()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
     processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
