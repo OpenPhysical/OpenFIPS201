@@ -94,6 +94,17 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void getDataRejectsTrailingDataOutsideTagList() {
+    assertSw(0x9000, selectApplet(), "SELECT before GET DATA checks");
+
+    // SP 800-73-5 Part 2 Section 3.1.2 fixes Lc to the complete 5C tag-list encoding.
+    assertSw(
+        0x6A80,
+        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E00")),
+        "GET DATA must consume the complete command data field");
+  }
+
+  @Test
   void getDataReturnsFileNotFoundWhenObjectNotProvisioned() {
     assertSw(0x9000, selectApplet(), "SELECT before GET DATA checks");
 
@@ -156,6 +167,28 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
     // APDU shape is valid enough to enter the command path; P1 mismatch should be rejected first.
     ResponseAPDU response = transmit(0x00, 0x47, 0x01, 0x9E, hex("AC03800111"));
     assertSw(0x6A86, response, "GENERATE ASYMMETRIC KEYPAIR requires P1=0x00");
+  }
+
+  @Test
+  void standardGenerateAsymmetricKeypairRejectsRetiredKeyReference() {
+    assertSw(0x9000, selectApplet(), "SELECT before GENERATE ASYMMETRIC KEYPAIR checks");
+
+    // SP 800-73-5 Part 2 Section 3.3.2 restricts P2 to 04, 9A, 9C, 9D, or 9E.
+    assertSw(
+        0x6A86,
+        transmit(0x00, 0x47, 0x00, 0x82, hex("AC03800111")),
+        "Interindustry GENERATE must reject extension key references");
+  }
+
+  @Test
+  void generateAsymmetricKeypairRejectsInconsistentTemplateLength() {
+    assertSw(0x9000, selectApplet(), "SELECT before GENERATE ASYMMETRIC KEYPAIR checks");
+
+    // SP 800-73-5 Part 2 Section 3.3.2 requires one complete AC control reference template.
+    assertSw(
+        0x6A80,
+        transmit(0x84, 0x47, 0x00, 0x9A, hex("AC00800111")),
+        "GENERATE must reject data outside the declared AC template");
   }
 
   @Test

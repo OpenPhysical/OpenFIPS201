@@ -117,6 +117,27 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void pinHistoryRejectsReuseWithoutRuntimeAllocation() {
+    assertSw(0x9000, selectApplet(), "SELECT before PIN history test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 05 A0 03 89 01 02")),
+        "Configure two-entry PIN history");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x24, 0x00, 0x80, hex("313233343536FFFF363534333231FFFF")),
+        "Change PIN to a new value");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x24, 0x00, 0x80, hex("363534333231FFFF373839303132FFFF")),
+        "Change PIN to a second new value");
+    assertSw(
+        0x6984,
+        transmit(0x00, 0x24, 0x00, 0x80, hex("373839303132FFFF363534333231FFFF")),
+        "PIN history must reject reuse of a recent value");
+  }
+
+  @Test
   void contactlessChangeReferenceDataRequiresVciEvenWhenContactlessPinChangeIsEnabled() {
     assertSw(0x9000, selectApplet(), "SELECT before contactless PIN change config");
     assertSw(
@@ -198,6 +219,23 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
           transmit(0x00, 0x47, 0x00, 0x9A, hex("AC03800111")),
           "Strict contactless GENERATE KEY must be unsupported");
     }
+  }
+
+  @Test
+  void strictObjectDefinitionsEnforceStandardAccessRules() {
+    assumeTrue(FIPS_MODE, "Standard object ACRs are frozen by the FIPS profile");
+    assertSw(0x9000, selectApplet(), "SELECT before object ACR policy test");
+
+    assertSw(
+        0x6A80,
+        updateConfigOverMockedScp(
+            hex("64 0E 8B 03 5F C1 07 8C 01 7F 8D 01 7F 91 01 9B")),
+        "CCC must not be contactless-readable without VCI");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(
+            hex("64 0E 8B 03 5F C1 07 8C 01 7F 8D 01 08 91 01 9B")),
+        "CCC definition must accept its standard ACR");
   }
 
   @Test

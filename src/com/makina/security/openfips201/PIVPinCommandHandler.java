@@ -453,6 +453,20 @@ final class PIVPinCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
+    // SP 800-73-5 Part 2 Section 3.2.2 requires a 6A80 format/policy failure for the new
+    // reference data to leave both security status and retry state unchanged. Validate the new
+    // PIN before pin.check(), because a successful OwnerPIN check changes both states.
+    short newReferenceOffset = (short) (offset + pinLength);
+    if (!puk) {
+      if (!verifyPinFormat(buffer, newReferenceOffset, pinLength)) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+
+      if (!verifyPinRules(buffer, newReferenceOffset, pinLength)) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+    }
+
     // Verify the authentication reference data (old PIN/PUK) format
     if (!puk && !verifyPinFormat(buffer, offset, pinLength)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -471,20 +485,8 @@ final class PIVPinCommandHandler {
       ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
     }
 
-    // Move to the new reference data
-    offset += pinLength;
-
-    // Verify the new reference data (new PIN/PUK)
-    if (!puk) {
-      if (!verifyPinFormat(buffer, offset, pinLength)) {
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      }
-
-      // Since this is the new value, apply our PIN complexity rules
-      if (!verifyPinRules(buffer, offset, pinLength)) {
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      }
-    }
+    // Move to the already validated new reference data.
+    offset = newReferenceOffset;
 
     //
     // EXECUTION STEPS

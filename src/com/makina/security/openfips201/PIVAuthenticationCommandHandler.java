@@ -494,8 +494,9 @@ final class PIVAuthenticationCommandHandler {
     writer.setOffset(out);
     short length = writer.finish();
 
-    secureMessaging.markEstablished(
-        config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE);
+    // SP 800-73-5 Part 1, Table 2 footnote 9 binds VCI pairing to the issuer's
+    // stored Discovery policy, not merely to a mutable implementation setting.
+    secureMessaging.markEstablished(owner.isDiscoveryPairingRequired());
     chainBuffer.setOutgoing(smResponse, ZERO, length, true);
     return length;
   }
@@ -1194,9 +1195,18 @@ final class PIVAuthenticationCommandHandler {
    *
    * @param buffer The incoming APDU buffer
    * @param offset The offset of the CDATA element
+   * @param length The length of the CDATA element
    * @return The length of the return data
    */
-  short generateAsymmetricKeyPair(byte[] buffer, short offset) throws ISOException {
+  short generateAsymmetricKeyPair(byte[] buffer, short offset, short length) throws ISOException {
+
+    byte keyReference = buffer[ISO7816.OFFSET_P2];
+
+    // SP 800-73-5 Part 2 Table 2 requires this command to support command chaining.
+    length = chainBuffer.processIncomingAPDU(buffer, offset, length, scratch, ZERO);
+    if (length == ZERO) return ZERO;
+    buffer = scratch;
+    offset = ZERO;
 
     // Request Elements
     final byte CONST_TAG_TEMPLATE = (byte) 0xAC;
@@ -1206,22 +1216,36 @@ final class PIVAuthenticationCommandHandler {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The 'TEMPLATE' tag must be present in the supplied buffer
-    if (buffer[offset++] != CONST_TAG_TEMPLATE) {
+    // PRE-CONDITION 1 - The command data must be exactly one well-formed TEMPLATE.
+    TLVReader reader = TLVReader.getInstance();
+    reader.init(buffer, offset, length);
+    short limit = (short) (offset + length);
+    if (buffer[offset] != CONST_TAG_TEMPLATE
+        || TLV.objectEnd(buffer, offset, limit, false) != limit) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    // Skip the length byte
-    offset++;
+    short templateEnd = limit;
+    offset = TLV.dataOffset(buffer, offset, limit, false);
 
     // PRE-CONDITION 2 - The 'MECHANISM' tag must be present in the supplied buffer
-    if (buffer[offset++] != CONST_TAG_MECHANISM) {
+    if (offset >= templateEnd || buffer[offset] != CONST_TAG_MECHANISM) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // PRE-CONDITION 3 - The 'MECHANISM' tag must have a length of 1
-    if (buffer[offset++] != (short) 1) {
+    if (TLV.readLength(buffer, offset, templateEnd, false) != (short) 1) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    short mechanismOffset = TLV.dataOffset(buffer, offset, templateEnd, false);
+    short next = TLV.objectEnd(buffer, offset, templateEnd, false);
+
+    // Tag 81 is the only conditional element in the control reference template.
+    if (next < templateEnd) {
+      if (buffer[next] != (byte) 0x81
+          || TLV.objectEnd(buffer, next, templateEnd, false) != templateEnd) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
     }
 
     //
@@ -1230,18 +1254,18 @@ final class PIVAuthenticationCommandHandler {
     // ECC keys have no parameter.
 
     // PRE-CONDITION 4A - F9 is the imported attestation authority and must never be generated.
-    if (buffer[ISO7816.OFFSET_P2] == ID_KEY_ATTESTATION) {
+    if (keyReference == ID_KEY_ATTESTATION) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
     // PRE-CONDITION 4B - The key reference and mechanism must exist (key test)
-    if (!cspPIV.keyExists(buffer[ISO7816.OFFSET_P2])) {
+    if (!cspPIV.keyExists(keyReference)) {
       // The key reference is bad
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
     // PRE-CONDITION 4C - The key reference and mechanism must exist (mechanism test)
-    PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[offset]);
+    PIVKeyObject key = cspPIV.selectKey(keyReference, buffer[mechanismOffset]);
     if (key == null) {
       // NOTE: The error message we return here is different dependant on whether the key is bad
       // (6A86), or the mechanism is bad (6A80) (See SP800-73-4 3.3.2 Generate Asymmetric Key pair).
@@ -1266,7 +1290,7 @@ final class PIVAuthenticationCommandHandler {
 
     // STEP 1 - Generate the key pair
     PIVKeyObjectPKI keyPair = (PIVKeyObjectPKI) key;
-    short length = keyPair.generate(scratch, ZERO);
+    length = keyPair.generate(scratch, ZERO);
     keyPair.markGenerated();
 
     chainBuffer.setOutgoing(scratch, ZERO, length, true);

@@ -218,7 +218,7 @@ final class PIV {
   private final byte[] smCommand;
   // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
   private final byte[] secureMessagingCommand;
-  private final FipsSelfTest fipsSelfTest;
+  private final FipsPowerUpSelfTests fipsSelfTest;
   /** Constructor */
   PIV() {
 
@@ -234,7 +234,7 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    fipsSelfTest = FipsPolicy.ENABLED ? new FipsSelfTest() : null;
+    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests() : null;
 
     // Create our configuration provider
     config = new Config();
@@ -313,6 +313,7 @@ final class PIV {
     PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH);
     cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH, ZERO);
     PIVSecurityProvider.zeroise(scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH);
+    cspPIV.clearBootstrapCvmProvisioningState();
 
     //
     // NOTE: We do not initialise the Global PIN as this may have been managed externally.
@@ -322,7 +323,7 @@ final class PIV {
   boolean runFipsSelfTests() {
     if (!FipsPolicy.ENABLED) return true;
     try {
-      return fipsSelfTest.run(scratch);
+      return fipsSelfTest.run(scratch) && opacity.runCryptographicAlgorithmSelfTest();
     } finally {
       PIVSecurityProvider.zeroise(scratch, ZERO, (short) 64);
     }
@@ -584,11 +585,79 @@ final class PIV {
   }
 
   boolean isVciSatisfied() {
-    return isSecureMessagingCommand() && secureMessaging.isVciEstablished();
+    short policy = dataCommands.getDiscoveryPolicy();
+    return policy >= (short) 0
+        && (((byte) (policy >> 8) & (byte) 0x08) != (byte) 0)
+        && isSecureMessagingCommand()
+        && secureMessaging.isVciEstablished();
+  }
+
+  boolean isDiscoveryPairingRequired() {
+    short policy = dataCommands.getDiscoveryPolicy();
+    return policy < (short) 0 || (((byte) (policy >> 8) & (byte) 0x04) == (byte) 0);
   }
 
   boolean isGlobalPinAdvertised() {
     return dataCommands.isGlobalPinAdvertised();
+  }
+
+  boolean isFipsPersonalizationReady() {
+    // SP 800-73-5 Part 1, Table 1 requires these seven data objects. The
+    // certification profile also requires its PIN, PUK, 9A, and 9E material
+    // to be issuer-provisioned before the lifecycle becomes irreversible.
+    if (!cspPIV.areMandatoryCvmsProvisioned()
+        || !cspPIV.hasUsableAsymmetricKey((byte) 0x9A)
+        || !cspPIV.hasUsableAsymmetricKey((byte) 0x9E)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x07)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x02)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x05)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x01)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x03)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x08)
+        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x06)) {
+      return false;
+    }
+    if (isVciConfigured()) {
+      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI;
+      // Discovery carries the advertised VCI and pairing policy.
+      PIVKeyObject smKey = getSecureMessagingKey();
+      if (!(smKey instanceof PIVKeyObjectECC)
+          || ((PIVKeyObjectECC) smKey).getSmCvcLength() == (short) 0
+          || !hasInitialisedDataObject((byte) 0x7E, (byte) 0, (byte) 0)) {
+        return false;
+      }
+      short policy = dataCommands.getDiscoveryPolicy();
+      if (policy < (short) 0) return false;
+      byte first = (byte) (policy >> 8);
+      boolean discoveryVci = (first & (byte) 0x08) != (byte) 0;
+      boolean discoveryPairing = (first & (byte) 0x04) == (byte) 0;
+      boolean configuredPairing =
+          config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE;
+      if (!discoveryVci || discoveryPairing != configuredPairing) return false;
+      if (config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE
+          && !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x23)) {
+        return false;
+      }
+    }
+    // #if ATTESTATION_ENABLED
+    if (!attestation.isAuthorityActive()) return false;
+    // #endif
+    return true;
+  }
+
+  private boolean hasInitialisedDataObject(byte first, byte second, byte third) {
+    short length;
+    if (first == (byte) 0x7E) {
+      scratch[ZERO] = first;
+      length = (short) 1;
+    } else {
+      scratch[ZERO] = first;
+      scratch[(short) 1] = second;
+      scratch[(short) 2] = third;
+      length = (short) 3;
+    }
+    PIVDataObject object = dataStore.find(scratch, ZERO, length);
+    return object != null && object.isInitialised();
   }
 
   void rejectUnsupportedOccAccessMode(byte mode) {
@@ -614,8 +683,9 @@ final class PIV {
    * @param offset The starting offset of the CDATA section
    * @param length The length of the CDATA section
    */
-  short getData(byte[] buffer, short offset) throws ISOException {
-    return dataCommands.getData(buffer, offset, isVciSatisfied(), isVciDiscoveryAdvertised());
+  short getData(byte[] buffer, short offset, short length) throws ISOException {
+    return dataCommands.getData(
+        buffer, offset, length, isVciSatisfied(), isVciDiscoveryAdvertised());
   }
 
   void putData(byte[] buffer, short offset, short length) throws ISOException {
@@ -697,8 +767,8 @@ final class PIV {
     return authenticationCommands.generalAuthenticate(buffer, offset, length);
   }
 
-  short generateAsymmetricKeyPair(byte[] buffer, short offset) throws ISOException {
-    return authenticationCommands.generateAsymmetricKeyPair(buffer, offset);
+  short generateAsymmetricKeyPair(byte[] buffer, short offset, short length) throws ISOException {
+    return authenticationCommands.generateAsymmetricKeyPair(buffer, offset, length);
   }
 
   boolean verifyPinRules(byte[] buffer, short offset, short length) {

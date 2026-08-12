@@ -14,6 +14,11 @@ import javacard.framework.Util;
 /** Handles standard PIV discovery and GET/PUT DATA commands. */
 final class PIVDataCommandHandler {
   private static final short ZERO = (short) 0;
+  private static final short INVALID_DISCOVERY_POLICY = (short) -1;
+  private static final byte[] PIV_AID = {
+    (byte) 0xA0, (byte) 0x00, (byte) 0x00, (byte) 0x03, (byte) 0x08, (byte) 0x00,
+    (byte) 0x00, (byte) 0x10, (byte) 0x00, (byte) 0x01, (byte) 0x00
+  };
 
   private final Config config;
   private final PIVSecurityProvider security;
@@ -37,6 +42,7 @@ final class PIVDataCommandHandler {
   short getData(
       byte[] buffer,
       short offset,
+      short length,
       boolean vciSatisfied,
       boolean vciAdvertised) {
     if (buffer[offset++] != (byte) 0x5C) {
@@ -45,6 +51,9 @@ final class PIVDataCommandHandler {
 
     short idLength = (short) (buffer[offset++] & 0xFF);
     if (idLength < (short) 1 || idLength > (short) 3) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    if (length != (short) (idLength + (short) 2)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -65,54 +74,81 @@ final class PIVDataCommandHandler {
       return (short) 2;
     }
 
-    short length;
+    short responseLength;
     byte[] data;
     if (discovery && object.isInitialised()) {
-      length = object.getLength();
+      responseLength = object.getLength();
       data = object.content;
     } else if (discovery) {
-      length = buildDiscoveryObject(scratch, ZERO, vciAdvertised);
+      responseLength = buildDiscoveryObject(scratch, ZERO, vciAdvertised);
       data = scratch;
     } else {
-      length = object.getLength();
+      responseLength = object.getLength();
       data = object.content;
     }
-    chainBuffer.setOutgoing(data, ZERO, length, false);
-    return length;
+    chainBuffer.setOutgoing(data, ZERO, responseLength, false);
+    return responseLength;
   }
 
   boolean isGlobalPinAdvertised() {
+    short policy = getDiscoveryPolicy();
+    return policy != INVALID_DISCOVERY_POLICY && (((byte) (policy >> 8) & (byte) 0x20) != (byte) 0);
+  }
+
+  /** Returns the validated PIN Usage Policy, or -1 when the stored Discovery Object is absent or invalid. */
+  short getDiscoveryPolicy() {
     PIVDataObject discovery = dataStore.findSingleByte(PIV.ID_DATA_DISCOVERY);
-    if (discovery == null || !discovery.isInitialised()) return false;
+    if (discovery == null || !discovery.isInitialised()) return INVALID_DISCOVERY_POLICY;
 
     byte[] content = discovery.content;
     short total = discovery.getLength();
     try {
-      if (total < (short) 2 || content[ZERO] != (byte) 0x7E) return false;
+      if (total < (short) 2 || content[ZERO] != (byte) 0x7E) return INVALID_DISCOVERY_POLICY;
       short outerLength = TLVReader.getLength(content, ZERO);
       short cursor = TLVReader.getDataOffset(content, ZERO);
       short end = (short) (cursor + outerLength);
-      if (end < cursor || end > total) return false;
+      if (end < cursor || end != total) return INVALID_DISCOVERY_POLICY;
 
-      while (cursor < end) {
-        short tagOffset = cursor;
-        short tagLength = (content[cursor] & (byte) 0x1F) == (byte) 0x1F ? (short) 2 : (short) 1;
-        if ((short) (cursor + tagLength) >= end) return false;
-        short valueLength = TLVReader.getLength(content, tagOffset);
-        short valueOffset = TLVReader.getDataOffset(content, tagOffset);
-        short next = (short) (valueOffset + valueLength);
-        if (next < valueOffset || next > end) return false;
-        if (tagLength == (short) 2
-            && content[tagOffset] == (byte) 0x5F
-            && content[(short) (tagOffset + 1)] == (byte) 0x2F) {
-          return valueLength == (short) 2 && (content[valueOffset] & (byte) 0x20) != (byte) 0;
-        }
-        cursor = next;
+      // SP 800-73-5 Part 1, Section 3.3.2 fixes the Discovery Object to 4F(AID),
+      // followed by the two-byte 5F2F PIN Usage Policy.
+      if (cursor >= end || content[cursor] != (byte) 0x4F) return INVALID_DISCOVERY_POLICY;
+      short aidLength = TLVReader.getLength(content, cursor);
+      short aidOffset = TLVReader.getDataOffset(content, cursor);
+      if (aidLength != (short) 11 || !isPivAid(content, aidOffset)) {
+        return INVALID_DISCOVERY_POLICY;
       }
+      cursor = (short) (aidOffset + aidLength);
+      if ((short) (cursor + 2) >= end
+          || content[cursor] != (byte) 0x5F
+          || content[(short) (cursor + 1)] != (byte) 0x2F) {
+        return INVALID_DISCOVERY_POLICY;
+      }
+      short policyLength = TLVReader.getLength(content, cursor);
+      short policyOffset = TLVReader.getDataOffset(content, cursor);
+      if (policyLength != (short) 2 || (short) (policyOffset + policyLength) != end) {
+        return INVALID_DISCOVERY_POLICY;
+      }
+      byte first = content[policyOffset];
+      byte second = content[(short) (policyOffset + 1)];
+      if ((first & (byte) 0xC3) != (byte) 0x40) return INVALID_DISCOVERY_POLICY;
+      if ((first & (byte) 0x20) == (byte) 0) {
+        if (second != (byte) 0x00) return INVALID_DISCOVERY_POLICY;
+      } else if (second != (byte) 0x10 && second != (byte) 0x20) {
+        return INVALID_DISCOVERY_POLICY;
+      }
+      return (short) (((short) (first & 0xFF) << 8) | (short) (second & 0xFF));
     } catch (RuntimeException ignored) {
-      return false;
+      return INVALID_DISCOVERY_POLICY;
     }
-    return false;
+  }
+
+  private static boolean isPivAid(byte[] content, short offset) {
+    for (short index = ZERO; index < (short) PIV_AID.length; index++) {
+      if (content[(short) (offset + index)] != PIV_AID[index]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   void putData(
@@ -185,16 +221,14 @@ final class PIVDataCommandHandler {
     buffer[offset++] =
         (byte)
             ((config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL) ? (byte) (1 << 6) : (byte) 0)
-                | (config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL) ? (byte) (1 << 5) : (byte) 0)
                 | (vciAdvertised ? (byte) (1 << 3) : (byte) 0)
                 | (vciAdvertised
                         && config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_ENABLED
                     ? (byte) (1 << 2)
                     : (byte) 0));
-    buffer[offset] =
-        config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL)
-            ? (config.readFlag(Config.CONFIG_PIN_PREFER_GLOBAL) ? (byte) 0x20 : (byte) 0x10)
-            : (byte) 0x00;
+    // A synthesized Discovery Object cannot authorize Global PIN use. The issuer must store the
+    // exact policy bytes before key reference 00 becomes available.
+    buffer[offset] = (byte) 0x00;
     return length;
   }
 

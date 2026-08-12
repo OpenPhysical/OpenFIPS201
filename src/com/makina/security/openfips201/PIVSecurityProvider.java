@@ -29,7 +29,6 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.OwnerPIN;
 import javacard.framework.Util;
 
 /**
@@ -75,7 +74,9 @@ final class PIVSecurityProvider {
   // Constants - Security Counters
   //
   private static final short STATE_HISTORY_NEXT = (short) 0;
-  private static final short LENGTH_PERSISTENT_STATE = (short) 1;
+  private static final short STATE_LOCAL_PIN_PROVISIONED = (short) 1;
+  private static final short STATE_PUK_PROVISIONED = (short) 2;
+  private static final short LENGTH_PERSISTENT_STATE = (short) 3;
 
   //
   // Persistent Objects
@@ -85,7 +86,8 @@ final class PIVSecurityProvider {
   private final PIVPIN cardPIN; // 80 - Card Application PIN
   private final PIVPIN cardPUK; // 81 - PIN Unlocking Key (PUK)
   private final PIVPIN globalPIN; // 00 - Global PIN
-  private OwnerPIN[] pinHistory;
+  private final byte[] pinHistory;
+  private final byte[] pinHistoryLengths;
 
   // PERSISTENT - Counters related to security operations
   private final byte[] persistentState;
@@ -130,8 +132,11 @@ final class PIVSecurityProvider {
     // Optional - But we still have to create it because it can be enabled at runtime
     globalPIN = new PIVCVMPIN();
 
-    // Supplemental PIN history is allocated only if the configured policy uses it.
-    pinHistory = null;
+    // Keep history storage compact and allocate it at install time. Command processing must not
+    // create persistent objects on Java Card.
+    pinHistory =
+        new byte[(short) (Config.LIMIT_PIN_HISTORY * Config.LIMIT_PIN_MAX_LENGTH)];
+    pinHistoryLengths = new byte[Config.LIMIT_PIN_HISTORY];
   }
 
   void clearVerification() {
@@ -272,7 +277,8 @@ final class PIVSecurityProvider {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
     }
 
-    if (!FipsPolicy.allowsKeyDefinition(id, mechanism, role, attributes)) {
+    if (!FipsPolicy.allowsKeyDefinition(
+        id, modeContact, modeContactless, mechanism, role, attributes)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -511,6 +517,29 @@ final class PIVSecurityProvider {
     }
   }
 
+  void clearBootstrapCvmProvisioningState() {
+    persistentState[STATE_LOCAL_PIN_PROVISIONED] = FLAG_FALSE;
+    persistentState[STATE_PUK_PROVISIONED] = FLAG_FALSE;
+  }
+
+  boolean areMandatoryCvmsProvisioned() {
+    return persistentState[STATE_LOCAL_PIN_PROVISIONED] == FLAG_TRUE
+        && persistentState[STATE_PUK_PROVISIONED] == FLAG_TRUE;
+  }
+
+  boolean hasUsableAsymmetricKey(byte id) {
+    PIVKeyObject key = firstKey;
+    while (key != null) {
+      if (key.getId() == id
+          && key instanceof PIVKeyObjectPKI
+          && ((PIVKeyObjectPKI) key).isInitialised()) {
+        return true;
+      }
+      key = (PIVKeyObject) key.getNext();
+    }
+    return false;
+  }
+
   void updatePIN(byte id, byte[] buffer, short offset, byte length, byte historyCount) {
 
     PIVPIN pin;
@@ -518,6 +547,7 @@ final class PIVSecurityProvider {
     switch (id) {
       case PIV.ID_CVM_LOCAL_PIN:
         pin = cardPIN;
+        persistentState[STATE_LOCAL_PIN_PROVISIONED] = FLAG_TRUE;
         break;
 
       case PIV.ID_CVM_GLOBAL_PIN:
@@ -527,14 +557,13 @@ final class PIVSecurityProvider {
       case PIV.ID_CVM_PUK:
         // Update the PUK, no history matching required
         cardPUK.update(buffer, offset, length);
+        persistentState[STATE_PUK_PROVISIONED] = FLAG_TRUE;
         return;
 
       default:
         ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
         return; // Keep compiler happy
     }
-
-    ensureHistoryCapacity(historyCount);
 
     // Optionally verify the PIN history
     // NOTE: Any elements beyond the historyCheck count will not be used at all, so we ignore
@@ -543,14 +572,11 @@ final class PIVSecurityProvider {
 
     // Interate through our history list (which may be zero)
     for (byte i = 0; i < historyCount; i++) {
-      OwnerPIN p = pinHistory[i];
-      if (p != null) {
-        if (p.getTriesRemaining() == 0) p.resetAndUnblock();
-        if (p.check(buffer, offset, length)) {
-          // We matched, no further checks required
-          matched = true;
-          break;
-        }
+      short historyOffset = (short) (i * Config.LIMIT_PIN_MAX_LENGTH);
+      if (pinHistoryLengths[i] == length
+          && arrayEqualsConstantTime(pinHistory, historyOffset, buffer, offset, length)) {
+        matched = true;
+        break;
       }
     }
 
@@ -567,24 +593,14 @@ final class PIVSecurityProvider {
     if (historyCount > 0) {
       // Move/Roll to the next position we will write to
       byte next = persistentState[STATE_HISTORY_NEXT];
-      pinHistory[next].update(buffer, offset, length);
+      if (next >= historyCount) next = (byte) 0;
+      short historyOffset = (short) (next * Config.LIMIT_PIN_MAX_LENGTH);
+      Util.arrayCopy(
+          buffer, offset, pinHistory, historyOffset, length);
+      pinHistoryLengths[next] = length;
       next = (byte) ((byte) (next + (byte) 1) % historyCount);
       persistentState[STATE_HISTORY_NEXT] = next;
     }
-  }
-
-  private void ensureHistoryCapacity(byte historyCount) {
-    if (historyCount == (byte) 0
-        || (pinHistory != null && pinHistory.length >= (short) historyCount)) return;
-
-    OwnerPIN[] expanded = new OwnerPIN[historyCount];
-    short existing = pinHistory == null ? (short) 0 : (short) pinHistory.length;
-    for (short i = 0; i < existing; i++) expanded[i] = pinHistory[i];
-    for (short i = existing; i < (short) historyCount; i++) {
-      expanded[i] = new OwnerPIN((byte) 1, Config.LIMIT_PIN_MAX_LENGTH);
-    }
-    pinHistory = expanded;
-    if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
   }
 
   /**

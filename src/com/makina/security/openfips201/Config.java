@@ -151,7 +151,7 @@ final class Config {
         '1',
 
         // 3 + 73 bytes - Uniform resource locator
-        // http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73-4.pdf
+        // http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-73-5.pdf
         (byte) 0x5F,
         (byte) 0x50,
         (byte) 0x49,
@@ -223,7 +223,7 @@ final class Config {
         '7',
         '3',
         '-',
-        '4',
+        '5',
         '.',
         'p',
         'd',

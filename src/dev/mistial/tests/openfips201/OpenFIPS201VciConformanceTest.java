@@ -14,7 +14,9 @@ import org.junit.jupiter.api.Test;
  */
 class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
+  private static final byte ACCESS_MODE_PIN = (byte) 0x01;
   private static final byte ACCESS_MODE_OCC = (byte) 0x04;
+  private static final byte ACCESS_MODE_VCI = (byte) 0x08;
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
   private static final byte KEY_REF_SECURE_MESSAGING = (byte) 0x04;
   private static final byte ALG_CS2 = (byte) 0x27;
@@ -56,7 +58,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       (byte) 0x5A,
                       (byte) 0x8C,
                       (byte) 0x01,
-                      ACCESS_MODE_ALWAYS,
+                      ACCESS_MODE_PIN,
                       (byte) 0x8D,
                       (byte) 0x01,
                       ACCESS_MODE_OCC,
@@ -322,10 +324,10 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       (byte) 0x23,
                       (byte) 0x8C,
                       (byte) 0x01,
-                      ACCESS_MODE_ALWAYS,
+                      ACCESS_MODE_PIN,
                       (byte) 0x8D,
                       (byte) 0x01,
-                      ACCESS_MODE_ALWAYS,
+                      (byte) (ACCESS_MODE_VCI | ACCESS_MODE_PIN),
                       (byte) 0x91,
                       (byte) 0x01,
                       (byte) 0x9B

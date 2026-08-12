@@ -34,7 +34,7 @@
   <property name="coverage.xmlfile" value="${coverage.outputpath}/jacoco.xml"/>
   <property name="coverage.htmlpath" value="${coverage.outputpath}/html"/>
   <property name="coverage.instrumented" value="${coverage.outputpath}/instrumented"/>
-  <property name="coverage.minimum.openfips201.line" value="0.55"/>
+  <property name="coverage.minimum.openfips201.line" value="0.80"/>
   <property name="deps.outputpath" value="build/lib"/>
   <property name="jpp.sourcepath" value="build/vendor/jpp/src/main/java"/>
   <property name="jpp.antpath" value="build/vendor/jpp/src/main/ant"/>
@@ -461,8 +461,6 @@ platform.id=${build.platform.id}
       <sysproperty key="fips.mode" value="${fips.mode}"/>
       <sysproperty key="cap.path" value="${build.outputpath}/${build.outputfile}"/>
       <arg value="execute" />
-      <arg value="--exclude-tag" />
-      <arg value="slow" />
       <arg value="--select-package" />
       <arg value="com.makina.security.openfips201" />
       <arg value="--select-package" />

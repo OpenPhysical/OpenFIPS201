@@ -161,11 +161,9 @@ final class TLVReader {
         }
         if (lengthBytes == 1) {
           valueLength = (short) (data[position++] & 0xFF);
-          if (valueLength <= 127) return false;
         } else {
           valueLength = Util.getShort(data, position);
           position += 2;
-          if (valueLength <= 255) return false;
         }
       }
 

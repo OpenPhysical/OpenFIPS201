@@ -47,6 +47,25 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void generatesP256KeyPairFromChainedControlReferenceTemplate() {
+    withMockedScp(
+        () -> {
+          createKey(0x11, 0x04);
+
+          // SP 800-73-5 Part 2 Table 2 and Section 3.3.2 require INS 47 chaining.
+          assertSw(
+              0x9000,
+              transmit(0x14, 0x47, 0x00, KEY_REFERENCE, hex("AC03")),
+              "First protected GENERATE fragment");
+          ResponseAPDU response =
+              transmit(0x04, 0x47, 0x00, KEY_REFERENCE, hex("800111"), 0);
+          assertSw(0x9000, response, "Final protected GENERATE fragment");
+          assertEquals((byte) 0x7F, response.getData()[0]);
+          assertEquals((byte) 0x49, response.getData()[1]);
+        });
+  }
+
+  @Test
   void generatesRsa2048WithRequiredPublicExponent() {
     withMockedScp(
         () -> {

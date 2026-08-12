@@ -3,6 +3,8 @@ package dev.mistial.tests.openfips201;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.util.concurrent.TimeUnit;
 import javacard.framework.ISO7816;
@@ -42,6 +44,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
   @Test
   void personalizeAppletTransitionIsOneWayAndBlocksStructuralChanges() {
+    assumeFalse(Boolean.getBoolean("fips.mode"), "FIPS personalization requires the full profile");
     provisionManagementKeyOverScp(keyMaterialAes128((byte) 0x30));
     withMockedScp(
         () -> {
@@ -92,6 +95,23 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertTrue(
               contains(status.getData(), hex("80010F")),
               "GET STATUS must report the raw GP application state");
+        });
+  }
+
+  @Test
+  void fipsPersonalizationRejectsIncompleteProfile() {
+    // SP 800-73-5 Part 1, Table 1: a strict card profile includes all seven
+    // mandatory data objects before the lifecycle is permanently locked.
+    assumeTrue(Boolean.getBoolean("fips.mode"), "Strict readiness applies to the FIPS profile");
+    provisionManagementKeyOverScp(keyMaterialAes128((byte) 0x30));
+    withMockedScp(
+        () -> {
+          Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
+          assertSw(0x9000, selectApplet(), "SELECT before FIPS readiness test");
+          assertSw(
+              ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              "FIPS personalization must require the complete card profile");
         });
   }
 

@@ -65,6 +65,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   private static final byte SLOT_SIGNATURE = (byte) 0x9C;
   private static final byte SLOT_KEY_MANAGEMENT = (byte) 0x9D;
   private static final byte SLOT_RETIRED = (byte) 0x82;
+  private static final byte SLOT_RETIRED_SECOND = (byte) 0x83;
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
   private static final byte LOCAL_PIN_REFERENCE = (byte) 0x80;
   private static final byte ACCESS_MODE_PIN = (byte) 0x01;
@@ -107,9 +108,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertGeneratedTargetAttests(authority, SLOT_AUTHENTICATION, ALG_ECC_P256, "AC03800111");
     assertGeneratedTargetAttests(authority, SLOT_SIGNATURE, ALG_ECC_P384, "AC03800114");
     if (!Boolean.getBoolean("fips.mode")) {
-      assertGeneratedTargetAttests(authority, SLOT_KEY_MANAGEMENT, ALG_RSA_1024, "AC03800106");
+      assertGeneratedTargetAttests(authority, SLOT_RETIRED, ALG_RSA_1024, "AC03800106");
     }
-    assertGeneratedTargetAttests(authority, SLOT_RETIRED, ALG_RSA_2048, "AC03800107");
+    assertGeneratedTargetAttests(authority, SLOT_RETIRED_SECOND, ALG_RSA_2048, "AC03800107");
   }
 
   @Test
@@ -261,9 +262,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertImportedEccTargetIsNotAttestable(SLOT_AUTHENTICATION, ALG_ECC_P256, 32);
     assertImportedEccTargetIsNotAttestable(SLOT_SIGNATURE, ALG_ECC_P384, 48);
     if (!Boolean.getBoolean("fips.mode")) {
-      assertImportedRsaTargetIsNotAttestable(SLOT_KEY_MANAGEMENT, ALG_RSA_1024, 128);
+      assertImportedRsaTargetIsNotAttestable(SLOT_RETIRED, ALG_RSA_1024, 128);
     }
-    assertImportedRsaTargetIsNotAttestable(SLOT_RETIRED, ALG_RSA_2048, 256);
+    assertImportedRsaTargetIsNotAttestable(SLOT_RETIRED_SECOND, ALG_RSA_2048, 256);
   }
 
   @Test

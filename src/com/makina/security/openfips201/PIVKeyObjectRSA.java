@@ -216,6 +216,13 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
    * @param length The length of the exponent to write
    */
   void setPublicExponent(byte[] buffer, short offset, short length) {
+    // SP 800-78-5 Section 3.1 requires every PIV RSA key to use public exponent 65537.
+    if (length != CONST_LENGTH_EXPONENT
+        || buffer[offset] != EXPONENT_FIRST_BYTE
+        || buffer[(short) (offset + 1)] != (byte) 0x00
+        || buffer[(short) (offset + 2)] != EXPONENT_FIRST_BYTE) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
     if (publicKey == null) allocatePublic();
     publicKey.setExponent(buffer, offset, length);
   }

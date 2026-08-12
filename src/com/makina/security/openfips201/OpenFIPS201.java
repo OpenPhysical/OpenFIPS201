@@ -371,7 +371,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
-          processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
+          processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu, length);
           break;
 
           // #if ATTESTATION_ENABLED
@@ -608,7 +608,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     if (extended) {
       piv.getDataExtended(buffer, offset, length);
     } else {
-      piv.getData(buffer, offset);
+      piv.getData(buffer, offset, length);
     }
 
     // NOTE: If no exception occurred during processing, the ChainBuffer now contains a reference
@@ -634,6 +634,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     if (FipsPolicy.ENABLED && piv.isContactless()) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
+
     boolean proprietary =
         isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
             || (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84
@@ -906,7 +907,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    *
    * @param apdu The incoming APDU object
    */
-  private void processPIV_GENERATE_ASYMMETRIC_KEYPAIR(APDU apdu) {
+  private void processPIV_GENERATE_ASYMMETRIC_KEYPAIR(APDU apdu, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
 
@@ -914,6 +915,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     if (FipsPolicy.ENABLED && piv.isContactless()) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
+
+    // SP 800-73-5 Part 2 Section 3.3.2 limits the interindustry command to these key
+    // references. Proprietary administration may generate extension slots such as retired keys.
+    byte baseCla = (byte) (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF);
+    if ((baseCla == (byte) 0x00 || baseCla == (byte) 0x0C)
+        && !isGenerateKeyReference(buffer[ISO7816.OFFSET_P2])) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
     /*
@@ -930,19 +939,24 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // PRE-CONDITION 3 - The P2 value must be set to one of '04', '9A', '9C', '9D', '9E'
-    // NOTE: This is ignored because we use a flexible key system internally
-
     /*
      * EXECUTION STEPS
      */
 
     // STEP 1 - Call the PIV GENERATE ASYMMETRIC KEY command
     short offset = apdu.getOffsetCdata();
-    piv.generateAsymmetricKeyPair(buffer, offset);
+    length = piv.generateAsymmetricKeyPair(buffer, offset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
-    piv.processOutgoing(apdu);
+    if (length > 0) piv.processOutgoing(apdu);
+  }
+
+  private static boolean isGenerateKeyReference(byte keyReference) {
+    return keyReference == PIV.ID_KEY_SECURE_MESSAGING
+        || keyReference == (byte) 0x9A
+        || keyReference == (byte) 0x9C
+        || keyReference == (byte) 0x9D
+        || keyReference == (byte) 0x9E;
   }
 
   // #if ATTESTATION_ENABLED
