@@ -60,6 +60,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   // The key values
   protected RSAPrivateKey privateKey;
   protected RSAPublicKey publicKey;
+  private KeyPair keyPair;
 
   PIVKeyObjectRSA(
       byte id,
@@ -70,6 +71,8 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte role,
       byte attributes) {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+    allocatePrivate();
+    allocatePublic();
   }
 
   /**
@@ -125,6 +128,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       privateKey =
           (RSAPrivateKey)
               KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PRIVATE, getKeyLengthBits(), false);
+      allocateKeyPair();
     }
   }
 
@@ -133,6 +137,13 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     if (publicKey == null) {
       publicKey =
           (RSAPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PUBLIC, getKeyLengthBits(), false);
+      allocateKeyPair();
+    }
+  }
+
+  private void allocateKeyPair() {
+    if (keyPair == null && publicKey != null && privateKey != null) {
+      keyPair = new KeyPair(publicKey, privateKey);
     }
   }
 
@@ -146,16 +157,8 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
   @Override
   void clear() {
-    if (publicKey != null) {
-      publicKey.clearKey();
-      publicKey = null;
-    }
-    if (privateKey != null) {
-      privateKey.clearKey();
-      privateKey = null;
-    }
-
-    runGc();
+    publicKey.clearKey();
+    privateKey.clearKey();
   }
 
   /**
@@ -218,7 +221,12 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   /* Implements RSA Key Transport, which is just a private decrypt operation */
   @Override
   short keyAgreement(
-      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset,
+      ECPointValidator validator) {
 
     if (inLength != getBlockLength()) {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
@@ -230,7 +238,6 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   @Override
   short generate(byte[] outBuffer, short outOffset) throws CardRuntimeException {
 
-    KeyPair keyPair;
     try {
       // Clear any key material
       clear();
@@ -239,8 +246,6 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       allocatePrivate();
       allocatePublic();
 
-      // We re-create every time generate() is called
-      keyPair = new KeyPair(publicKey, privateKey);
       keyPair.genKeyPair();
 
       TLVWriter writer = TLVWriter.getInstance();
@@ -279,9 +284,6 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       clear();
       CardRuntimeException.throwIt(ex.getReason());
       return (short) 0; // Keep compiler happy
-    } finally {
-      // We new'd the keyPair, so we make sure the memory is freed up once it is out of scope.
-      runGc();
     }
   }
 
@@ -305,6 +307,9 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
       case PIV.ID_ALG_RSA_2048:
         return KeyBuilder.LENGTH_RSA_2048;
+
+      case PIV.ID_ALG_RSA_3072:
+        return KeyBuilder.LENGTH_RSA_3072;
 
       default:
         ISOException.throwIt(ISO7816.SW_DATA_INVALID);

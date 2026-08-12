@@ -32,20 +32,10 @@ package com.makina.security.openfips201;
  */
 final class ECParamsP384 extends ECParams {
 
-  private static ECParams instance;
-
   private ECParamsP384() {}
 
   static ECParams getInstance() {
-    if (instance == null) {
-      instance = new ECParamsP384();
-    }
-    return instance;
-  }
-
-  static void terminate() {
-    // NOTE: It is the responsibility of the caller to perform garbage collection
-    instance = null;
+    return new ECParamsP384();
   }
 
   // Curve polynomial element a

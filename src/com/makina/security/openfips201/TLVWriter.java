@@ -70,15 +70,6 @@ final class TLVWriter {
     context = JCSystem.makeTransientShortArray(LENGTH_CONTEXT, JCSystem.CLEAR_ON_DESELECT);
   }
 
-  private TLVWriter(Object[] dataStorage, short[] contextStorage) {
-    dataPtr = dataStorage;
-    context = contextStorage;
-  }
-
-  static TLVWriter createForTest() {
-    return new TLVWriter(new Object[1], new short[LENGTH_CONTEXT]);
-  }
-
   static TLVWriter getInstance() {
 
     if (instance == null) {
@@ -496,7 +487,7 @@ final class TLVWriter {
     if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     if (length < 0
         || context[CONTEXT_OFFSET] > (short) (context[CONTEXT_BUFFER_END] - length)
-        || context[CONTEXT_OFFSET] - context[CONTEXT_CONTENT_START]
+        || (short) (context[CONTEXT_OFFSET] - context[CONTEXT_CONTENT_START])
             > (short) (context[CONTEXT_LENGTH_MAX] - length)) {
       ISOException.throwIt(ISO7816.SW_FILE_FULL);
     }
@@ -513,7 +504,8 @@ final class TLVWriter {
   }
 
   static short encodedLength(short tag, short length) {
-    return (short) (tagLength(tag) + lengthLength(length) + length);
+    short headerLength = (short) (tagLength(tag) + lengthLength(length));
+    return (short) (headerLength + length);
   }
 
   private static short lengthLength(short length) {

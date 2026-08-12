@@ -85,7 +85,6 @@ final class PIVCrypto {
   private static RandomData cspRNG;
 
   static void terminate() {
-    ECPointValidator.terminate();
     cspRNG = null;
     cspTDEA = null;
     cspAES = null;
@@ -205,6 +204,7 @@ final class PIVCrypto {
 
       case PIV.ID_ALG_RSA_1024:
       case PIV.ID_ALG_RSA_2048:
+      case PIV.ID_ALG_RSA_3072:
         return (cspRSA != null);
 
       case PIV.ID_ALG_ECC_P256:
@@ -440,7 +440,8 @@ final class PIVCrypto {
       short inOffset,
       short inLength,
       byte[] outBuffer,
-      short outOffset) {
+      short outOffset,
+      ECPointValidator validator) {
 
     // Uncompressed ECC public keys are marshaled as the concatenation of:
     // CONST_POINT_UNCOMPRESSED | X | Y
@@ -457,7 +458,7 @@ final class PIVCrypto {
         theKey.getSize() == KeyBuilder.LENGTH_EC_FP_256
             ? ECParamsP256.getInstance()
             : ECParamsP384.getInstance();
-    if (!ECPointValidator.isValid(inBuffer, inOffset, inLength, params)) {
+    if (!validator.isValid(inBuffer, inOffset, inLength, params)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 

@@ -40,6 +40,7 @@ final class PIVDataObject extends PIVObject {
   // - Do NOT use content.length to determine the number of bytes in the content array rather use
   //   getLength().
   byte[] content;
+  private byte[] pendingContent;
 
   // Indicates the number of bytes currently allocated.  In the case where an object is
   // reallocated with a smaller size this will be less than content.length
@@ -78,6 +79,31 @@ final class PIVDataObject extends PIVObject {
     bytesAllocated = length;
   }
 
+  byte[] beginUpdate(short length) {
+    if (length <= (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    abortUpdate();
+    pendingContent = new byte[length];
+    return pendingContent;
+  }
+
+  void commitUpdate() {
+    byte[] previous = content;
+    JCSystem.beginTransaction();
+    content = pendingContent;
+    bytesAllocated = (short) pendingContent.length;
+    pendingContent = null;
+    JCSystem.commitTransaction();
+    if (previous != null) PIVSecurityProvider.zeroise(previous, (short) 0, (short) previous.length);
+    if (previous != null && JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+  }
+
+  void abortUpdate() {
+    if (pendingContent == null) return;
+    PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
+    pendingContent = null;
+    if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+  }
+
   /**
    * Returns true if this object is populated with data
    *
@@ -91,6 +117,7 @@ final class PIVDataObject extends PIVObject {
    * Wipes all data from the current object
    */
   void clear() {
+    abortUpdate();
     if (content == null) return;
 
     PIVSecurityProvider.zeroise(content, (short) 0, (short) content.length);

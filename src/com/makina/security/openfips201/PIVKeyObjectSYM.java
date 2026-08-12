@@ -28,6 +28,7 @@ package com.makina.security.openfips201;
 
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
 import javacard.security.AESKey;
 import javacard.security.DESKey;
 import javacard.security.KeyBuilder;
@@ -58,79 +59,69 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
   void updateElement(byte element, byte[] buffer, short offset, short length) throws ISOException {
     short keyLengthBytes = getKeyLengthBytes();
     if (length != keyLengthBytes) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-    switch (element) {
-      case ELEMENT_KEY:
-        clear();
-        allocate();
-        switch (key.getType()) {
-          case KeyBuilder.TYPE_DES:
-            try {
-              ((DESKey) key).setKey(buffer, offset);
-            } catch (Exception ex) {
-              clear();
-              ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    try {
+      switch (element) {
+        case ELEMENT_KEY:
+          SecretKey replacement = allocateKey();
+          try {
+            if (replacement.getType() == KeyBuilder.TYPE_DES) {
+              ((DESKey) replacement).setKey(buffer, offset);
+            } else if (replacement.getType() == KeyBuilder.TYPE_AES) {
+              ((AESKey) replacement).setKey(buffer, offset);
+            } else {
+              ISOException.throwIt(ISO7816.SW_DATA_INVALID);
             }
-            break;
+          } catch (Exception ex) {
+            replacement.clearKey();
+            ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          }
 
-          case KeyBuilder.TYPE_AES:
-            try {
-              ((AESKey) key).setKey(buffer, offset);
-            } catch (Exception ex) {
-              clear();
-              ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-            }
-            break;
+          SecretKey previous = key;
+          JCSystem.beginTransaction();
+          key = replacement;
+          JCSystem.commitTransaction();
+          if (previous != null) previous.clearKey();
+          runGc();
+          break;
 
-          default:
-            // Error state
-            clear();
-            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-            break;
-        }
-        break;
+          // Clear Key
+        case ELEMENT_KEY_CLEAR:
+          clear();
+          break;
 
-        // Clear Key
-      case ELEMENT_KEY_CLEAR:
-        clear();
-        break;
-
-      default:
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        break;
+        default:
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          break;
+      }
+    } finally {
+      PIVSecurityProvider.zeroise(buffer, offset, keyLengthBytes);
     }
-    PIVSecurityProvider.zeroise(buffer, offset, keyLengthBytes);
   }
 
-  private void allocate() throws ISOException {
-
-    clear();
+  private SecretKey allocateKey() throws ISOException {
     switch (header[HEADER_MECHANISM]) {
       case PIV.ID_ALG_DEFAULT:
       case PIV.ID_ALG_TDEA_3KEY:
         // If the TDEA cipher is null, the card does not support this key type!
-        key =
+        return
             (SecretKey)
                 KeyBuilder.buildKey(KeyBuilder.TYPE_DES, KeyBuilder.LENGTH_DES3_3KEY, false);
-        break;
 
       case PIV.ID_ALG_AES_128:
-        key =
+        return
             (SecretKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
-        break;
 
       case PIV.ID_ALG_AES_192:
-        key =
+        return
             (SecretKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_192, false);
-        break;
 
       case PIV.ID_ALG_AES_256:
-        key =
+        return
             (SecretKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
-        break;
 
       default:
         ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        break;
+        return null;
     }
   }
 

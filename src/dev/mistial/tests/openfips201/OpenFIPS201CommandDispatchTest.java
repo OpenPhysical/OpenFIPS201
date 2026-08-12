@@ -18,19 +18,20 @@ import org.junit.jupiter.api.Timeout;
 class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
   @Test
-  void selectReturnsPivApplicationPropertyTemplate() {
-    ResponseAPDU response = selectApplet();
-    assertSw(0x9000, response, "SELECT by applet AID");
-    // jcardsim/JCardEngine may model SELECT response data differently; command-level success is
-    // the stable invariant we require in CI.
-    assertEquals(0x9000, response.getSW(), "SELECT must complete successfully");
-  }
-
-  @Test
   void unsupportedInstructionReturnsInsNotSupported() {
     assertSw(0x9000, selectApplet(), "SELECT before unsupported INS test");
     ResponseAPDU response = transmit(0x00, 0xFE, 0x00, 0x00);
     assertSw(0x6D00, response, "Unknown INS must return INS_NOT_SUPPORTED");
+  }
+
+  @Test
+  void pivCommandsRejectUnsupportedClassBytes() {
+    int[] invalidClasses = {0x04, 0x0C, 0x40, 0x80, 0xFC};
+    for (int cla : invalidClasses) {
+      assertSw(0x9000, selectApplet(), "SELECT before CLA validation");
+      ResponseAPDU response = transmit(cla, 0x20, 0x00, 0x80, hex("313233343536FFFF"));
+      assertSw(0x6E00, response, String.format("VERIFY must reject CLA %02X", cla));
+    }
   }
 
   @Test

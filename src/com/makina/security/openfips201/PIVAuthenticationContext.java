@@ -17,14 +17,6 @@ final class PIVAuthenticationContext {
     state = JCSystem.makeTransientByteArray(length, JCSystem.CLEAR_ON_DESELECT);
   }
 
-  private PIVAuthenticationContext(byte[] storage) {
-    state = storage;
-  }
-
-  static PIVAuthenticationContext createForTest(short length) {
-    return new PIVAuthenticationContext(new byte[length]);
-  }
-
   byte[] buffer() {
     return state;
   }

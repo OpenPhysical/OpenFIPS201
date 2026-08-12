@@ -1,7 +1,6 @@
 package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import java.util.concurrent.TimeUnit;
 import javacard.framework.ISO7816;
@@ -42,16 +41,14 @@ class OpenFIPS201SecureChannelAndExtendedLengthTest extends OpenFIPS201TestSuppo
       // Wrapped length is 20 bytes. Plaintext length seen by handlers should become 16.
       byte[] resetRetryWrapped =
           hex(
-              "E4 2C 00 80 14 "
+              "84 2C 00 80 14 "
                   + "31 32 33 34 35 36 37 38 " // wrong PUK guess
                   + "39 38 37 36 35 34 FF FF " // new PIN in valid format
                   + "AA BB CC DD"); // synthetic SCP wrapper overhead
 
       ResponseAPDU response = transmit(new CommandAPDU(resetRetryWrapped));
 
-      // If wrapped length leaks into handler logic, this tends to fail as WRONG_DATA (6A80).
-      // Correct logic should proceed into the command and return a business status.
-      assertNotEquals(ISO7816.SW_WRONG_DATA, response.getSW(), "Handler must use unwrapped Lc");
+      assertSw(0x63C9, response, "Handler must use unwrapped Lc before checking the PUK");
       Mockito.verify(secureChannel, Mockito.atLeastOnce())
           .unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort());
     }

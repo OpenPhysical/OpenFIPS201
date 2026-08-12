@@ -5,7 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 
 class TLVValidationTest {
   @Test
@@ -38,6 +41,14 @@ class TLVValidationTest {
   }
 
   private static void init(byte[] encoded) {
-    TLVReader.createForTest().init(encoded, (short) 0, (short) encoded.length);
+    try (MockedStatic<JCSystem> mocked = Mockito.mockStatic(JCSystem.class)) {
+      mocked
+          .when(() -> JCSystem.makeTransientObjectArray(Mockito.anyShort(), Mockito.anyByte()))
+          .thenReturn(new Object[1]);
+      mocked
+          .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
+          .thenReturn(new short[4]);
+      TLVReader.getInstance().init(encoded, (short) 0, (short) encoded.length);
+    }
   }
 }

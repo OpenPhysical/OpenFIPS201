@@ -169,6 +169,7 @@ abstract class PIVKeyObject extends PIVObject {
 
       case PIV.ID_ALG_RSA_1024:
       case PIV.ID_ALG_RSA_2048:
+      case PIV.ID_ALG_RSA_3072:
         // Attribute Check - The INTERNAL attribute MUST NOT be set for asymmetric keys
         if ((attributes & ATTR_PERMIT_INTERNAL) != (byte) 0) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -179,6 +180,10 @@ abstract class PIVKeyObject extends PIVObject {
         }
         // Attribute Check - The MUTUAL attribute MUST NOT be set for asymmetric keys
         if ((attributes & ATTR_PERMIT_MUTUAL) != (byte) 0) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        }
+        if ((role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
+            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         return new PIVKeyObjectRSA(
@@ -196,6 +201,10 @@ abstract class PIVKeyObject extends PIVObject {
         }
         // Attribute Check - The MUTUAL attribute MUST NOT be set for asymmetric keys
         if ((attributes & ATTR_PERMIT_MUTUAL) != (byte) 0) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        }
+        if ((role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
+            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         return new PIVKeyObjectECC(

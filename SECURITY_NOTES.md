@@ -6,14 +6,13 @@
    When an ECDH key agreement is carried out it is possible to derive a private key by initiating an ECDH using a carefully
    chosen set of points (ECC Public Keys) existing on a low order curve.
    
-   The defence against this attack is to verify that the presented point is on the expected curve prior to carrying out the scalar
-   multiplication used to compute the ECDH shared secret and to reject points not on the expected curve. Alas, this turns
-   out to be non-trivial (and probably very slow) in the JavaCard realm because of the limited number of crypto primitives
-   supported by `javacardx.framework.math.BigNumber`.
-   
-   The current implementation of OpenFIPS201 permits limiting the crypto operations available to a key (see issue [#29](https://github.com/makinako/OpenFIPS201/issues/29)) and so we recommend that users:
-   * Confirm that the cards or tokens they use actively defend against the attack
-   * Never enable the `keyAgreement` role in conjunction with either of the `sign` or `authenticate` roles for any given ECC key object.
+   OpenFIPS201 validates the uncompressed-point prefix, coordinate ranges, and the curve equation
+   before invoking ECDH. Invalid and off-curve points are rejected. ECC key objects also reject a
+   configuration that combines signing and key-establishment roles.
+
+   Point validation uses software multi-precision arithmetic. Qualify P-256 and P-384 GENERAL
+   AUTHENTICATE latency on every target card and reader combination before deployment; simulator
+   correctness tests do not establish reader-timeout performance on physical silicon.
    
    Information about this attack can be found [here](https://web-in-security.blogspot.com/2015/09/practical-invalid-curve-attacks.html)
    

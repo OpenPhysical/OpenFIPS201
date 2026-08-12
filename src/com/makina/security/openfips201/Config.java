@@ -99,7 +99,7 @@ final class Config {
         // 2 bytes - Application Property Template (TAG '61')
         (byte) 0x61,
         (byte) 0x81,
-        (byte) 0x8F,
+        (byte) 0x92,
 
         // 2 + 11 bytes - Application identifier of application (TAG '4F')
         (byte) 0x4F,
@@ -222,9 +222,9 @@ final class Config {
         'd',
         'f',
 
-        // 2 + 24 - Cryptographic Algorithm Identifier Template (Tag 'AC')
+        // 2 + 33 - Cryptographic Algorithm Identifier Template (Tag 'AC')
         (byte) 0xAC,
-        (byte) 0x1E,
+        (byte) 0x21,
 
         // Supported mechanisms
         (byte) 0x80,
@@ -248,6 +248,9 @@ final class Config {
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_RSA_2048,
+        (byte) 0x80,
+        (byte) 0x01,
+        PIV.ID_ALG_RSA_3072,
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_ECC_P256,
@@ -443,6 +446,9 @@ final class Config {
     config[CONFIG_PUK_LENGTH] = DEFAULT_PUK_LENGTH;
     config[CONFIG_PUK_RETRIES_CONTACT] = DEFAULT_PUK_RETRIES_CONTACT;
     config[CONFIG_PUK_RETRIES_CONTACTLESS] = DEFAULT_PUK_RETRIES_CONTACTLESS;
+
+    // Administration over contactless media is opt-in because it expands the attack surface.
+    config[OPTION_RESTRICT_CONTACTLESS_ADMIN] = TLV.TRUE;
   }
 
   byte readValue(byte address) {
@@ -640,7 +646,8 @@ final class Config {
       // Length
       if (reader.match(TAG_PUK_LENGTH)) {
         byte value = reader.toByte();
-        if (value < LIMIT_PUK_MIN_LENGTH || value > LIMIT_PUK_MAX_LENGTH) {
+        // SP 800-73 fixes the RESET RETRY COUNTER PUK field at eight bytes.
+        if (value != DEFAULT_PUK_LENGTH) {
           ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
         config[CONFIG_PUK_LENGTH] = value;
@@ -674,8 +681,7 @@ final class Config {
 
       // Updateable
       if (reader.match(TAG_PUK_RESTRICT_UPDATE)) {
-        setBoolean(CONFIG_PUK_RESTRICT_UPDATE, reader.toByte());
-        reader.moveNext();
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
     }
 
@@ -683,38 +689,14 @@ final class Config {
     // VCI POLICY
     //
     if (reader.match(TAG_VCI_POLICY)) {
-
-      // Sanity check for empty constructed tag
-      if (reader.isNull()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-      }
-      reader.moveInto();
-
-      // Mode
-      if (reader.match(TAG_VCI_MODE)) {
-        // TODO: Validation
-        config[CONFIG_VCI_MODE] = reader.toByte();
-        reader.moveNext();
-      }
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
     //
     // OCC POLICY
     //
     if (reader.match(TAG_OCC_POLICY)) {
-
-      // Sanity check for empty constructed tag
-      if (reader.isNull()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-      }
-      reader.moveInto();
-
-      // Mode
-      if (reader.match(TAG_OCC_MODE)) {
-        // TODO: Validation
-        config[CONFIG_OCC_MODE] = reader.toByte();
-        reader.moveNext();
-      }
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
     //
@@ -742,8 +724,7 @@ final class Config {
 
       // Restrict Enumeration
       if (reader.match(TAG_RESTRICT_ENUMERATION)) {
-        setBoolean(OPTION_RESTRICT_ENUMERATION, reader.toByte());
-        reader.moveNext();
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
 
       // Restrict Single Key
@@ -766,8 +747,7 @@ final class Config {
 
       // Use RSA CRT
       if (reader.match(TAG_USE_RSA_CRT)) {
-        setBoolean(OPTION_USE_RSA_CRT, reader.toByte());
-        reader.moveNext();
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
     }
   }

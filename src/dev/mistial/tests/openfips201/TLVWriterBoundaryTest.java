@@ -6,13 +6,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 
 class TLVWriterBoundaryTest {
   @Test
   void writesExactlyToBufferBoundary() {
     byte[] output = new byte[5];
-    TLVWriter writer = TLVWriter.createForTest();
+    TLVWriter writer = writer();
 
     writer.init(output, (short) 0, (short) 3, (short) 0x53);
     writer.writeNull((short) 0x81);
@@ -24,7 +27,7 @@ class TLVWriterBoundaryTest {
   @Test
   void rejectsOutputOverflowBeforeWriting() {
     byte[] output = new byte[4];
-    TLVWriter writer = TLVWriter.createForTest();
+    TLVWriter writer = writer();
     writer.init(output, (short) 0, (short) 2, (short) 0x53);
 
     ISOException error =
@@ -36,7 +39,7 @@ class TLVWriterBoundaryTest {
   @Test
   void rejectsLogicalLengthOverflowWithSparePhysicalCapacity() {
     byte[] output = new byte[16];
-    TLVWriter writer = TLVWriter.createForTest();
+    TLVWriter writer = writer();
     writer.init(output, (short) 0, (short) 2, (short) 0x53);
 
     ISOException error =
@@ -50,7 +53,7 @@ class TLVWriterBoundaryTest {
 
   @Test
   void rejectsInvalidInputRange() {
-    TLVWriter writer = TLVWriter.createForTest();
+    TLVWriter writer = writer();
     writer.init(new byte[16], (short) 0, (short) 8, (short) 0x53);
 
     ISOException error =
@@ -64,7 +67,7 @@ class TLVWriterBoundaryTest {
     ISOException error =
         assertThrows(
             ISOException.class,
-            () -> TLVWriter.createForTest().init(new byte[2], (short) 3, (short) 0, (short) 0x53));
+            () -> writer().init(new byte[2], (short) 3, (short) 0, (short) 0x53));
     assertEquals(ISO7816.SW_WRONG_LENGTH, error.getReason());
   }
 
@@ -72,7 +75,7 @@ class TLVWriterBoundaryTest {
   void writes128ByteContentWithExact81LengthHeader() {
     byte[] output = new byte[131];
     byte[] value = new byte[126];
-    TLVWriter writer = TLVWriter.createForTest();
+    TLVWriter writer = writer();
 
     writer.init(output, (short) 0, (short) 128, (short) 0x53);
     writer.write((byte) 0x81, value, (short) 0, (short) value.length);
@@ -89,7 +92,7 @@ class TLVWriterBoundaryTest {
   void writes255ByteContentWithoutUninitialisedGap() {
     byte[] output = new byte[258];
     byte[] value = new byte[252];
-    TLVWriter writer = TLVWriter.createForTest();
+    TLVWriter writer = writer();
 
     writer.init(output, (short) 0, (short) 255, (short) 0x53);
     writer.write((byte) 0x81, value, (short) 0, (short) value.length);
@@ -101,5 +104,19 @@ class TLVWriterBoundaryTest {
     assertEquals((byte) 0x81, output[3]);
     assertEquals((byte) 0x81, output[4]);
     assertEquals((byte) 0xFC, output[5]);
+  }
+
+  private static TLVWriter writer() {
+    try (MockedStatic<JCSystem> mocked = Mockito.mockStatic(JCSystem.class)) {
+      mocked
+          .when(() -> JCSystem.makeTransientObjectArray(Mockito.anyShort(), Mockito.anyByte()))
+          .thenReturn(new Object[1]);
+      mocked
+          .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
+          .thenReturn(new short[6]);
+      TLVWriter writer = TLVWriter.getInstance();
+      writer.reset();
+      return writer;
+    }
   }
 }

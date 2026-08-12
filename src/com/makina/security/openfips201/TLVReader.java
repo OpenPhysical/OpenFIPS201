@@ -61,15 +61,6 @@ final class TLVReader {
     context = JCSystem.makeTransientShortArray(LENGTH_CONTEXT, JCSystem.CLEAR_ON_DESELECT);
   }
 
-  private TLVReader(Object[] dataStorage, short[] contextStorage) {
-    dataPtr = dataStorage;
-    context = contextStorage;
-  }
-
-  static TLVReader createForTest() {
-    return new TLVReader(new Object[1], new short[LENGTH_CONTEXT]);
-  }
-
   static TLVReader getInstance() {
 
     if (instance == null) {
@@ -97,7 +88,7 @@ final class TLVReader {
     // Skip the TAG element
     //
 
-    // If the bits B5-B1 of the leading byte are not all set to 1, then may they shall encode
+    // If bits B5-B1 of the leading byte are not all 1, they encode the tag number.
     // an integer equal to the tag number which therefore lies in the range from 0 to 30.
     // Then the tag field consists of a single byte.
     // Otherwise (B5-B1 set to 1 in the leading byte), the tag field shall continue on one or more
@@ -146,7 +137,7 @@ final class TLVReader {
     // Skip the TAG element
     //
 
-    // If the bits B5-B1 of the leading byte are not all set to 1, then may they shall encode
+    // If bits B5-B1 of the leading byte are not all 1, they encode the tag number.
     // an integer equal to the tag number which therefore lies in the range from 0 to 30.
     // Then the tag field consists of a single byte.
     // Otherwise (B5-B1 set to 1 in the leading byte), the tag field shall continue on one or more

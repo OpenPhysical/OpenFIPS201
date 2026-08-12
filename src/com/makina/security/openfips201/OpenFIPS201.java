@@ -140,12 +140,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // - Get rid of all static instances that would prevent GP from deleting the applet instance
     //   without also deleting the corresponding package
     // - TODO: Change TLVReader and TLVWriter to an instance
-    // - TODO: Change ECParams to public final const arrays, there's no need to instantiate.
     TLVReader.terminate();
     TLVWriter.terminate();
     PIVCrypto.terminate();
-    ECParamsP256.terminate();
-    ECParamsP384.terminate();
   }
 
   /**
@@ -195,6 +192,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       processPIV_SELECT(apdu);
       return;
     }
+
+    validateCommandClass(buffer);
 
     // SPECIAL CASE 1 - GET RESPONSE
     // We handle the GET RESPONSE command differently because it is the only ISO 7816 Case 1 / 3
@@ -260,8 +259,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     //
     // Normal APDU processing
     //
-    // TODO: Re-introduce CLA checking
-
     switch (buffer[ISO7816.OFFSET_INS]) {
       case INS_GP_INITIALIZE_UPDATE: // Case 4
         processGP_SECURECHANNEL(apdu, true);
@@ -306,6 +303,27 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
       default:
         ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+    }
+  }
+
+  private static void validateCommandClass(byte[] buffer) {
+    byte cla = buffer[ISO7816.OFFSET_CLA];
+    byte ins = buffer[ISO7816.OFFSET_INS];
+
+    if (ins == INS_GP_INITIALIZE_UPDATE) {
+      if (cla != (byte) 0x80) ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+      return;
+    }
+    if (ins == INS_GP_EXTERNAL_AUTHENTICATE) {
+      if (cla != (byte) 0x84) ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+      return;
+    }
+
+    // PIV uses the interindustry class. Administrative commands may use GP SCP (84), and either
+    // class may carry the ISO command-chaining bit (10).
+    byte baseCla = (byte) (cla & (byte) 0xEF);
+    if (baseCla != (byte) 0x00 && baseCla != (byte) 0x84) {
+      ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
     }
   }
 

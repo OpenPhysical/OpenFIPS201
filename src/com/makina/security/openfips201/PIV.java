@@ -57,7 +57,8 @@ final class PIV {
   //
 
   // Transient buffer allocation
-  static final short LENGTH_SCRATCH = (short) 284;
+  // RSA-3072 operations require a 384-byte block plus response TLV headers.
+  static final short LENGTH_SCRATCH = (short) 512;
 
   //
   // Static PIV identifiers
@@ -71,6 +72,7 @@ final class PIV {
   static final byte ID_ALG_TDEA_3KEY = (byte) 0x03;
   static final byte ID_ALG_RSA_1024 = (byte) 0x06;
   static final byte ID_ALG_RSA_2048 = (byte) 0x07;
+  static final byte ID_ALG_RSA_3072 = (byte) 0x0E;
   static final byte ID_ALG_AES_128 = (byte) 0x08;
   static final byte ID_ALG_AES_192 = (byte) 0x0A;
   static final byte ID_ALG_AES_256 = (byte) 0x0C;
@@ -170,6 +172,8 @@ final class PIV {
 
   // TRANSIENT - A working area to hold intermediate data and outgoing buffers
   private final byte[] scratch;
+  // TRANSIENT - Per-applet workspace for EC public-point validation
+  private final ECPointValidator ecPointValidator;
   // TRANSIENT - Holds any authentication related intermediary state
   private final PIVAuthenticationContext authenticationContext;
 
@@ -182,6 +186,7 @@ final class PIV {
 
     // Create our transient buffers
     scratch = JCSystem.makeTransientByteArray(LENGTH_SCRATCH, JCSystem.CLEAR_ON_DESELECT);
+    ecPointValidator = new ECPointValidator();
     authenticationContext = new PIVAuthenticationContext(LENGTH_AUTH_STATE);
 
     // Create our configuration provider
@@ -226,6 +231,7 @@ final class PIV {
    * @param length The length of the data to read
    */
   void processIncomingObject(byte[] buffer, short offset, short length) {
+    chainBuffer.checkIncomingAPDU(buffer);
     chainBuffer.processIncomingObject(buffer, offset, length);
   }
 
@@ -615,18 +621,14 @@ final class PIV {
       // STEP 2b - Calculate the total length of the object to allocate including TLV tag+length
       objectLength += (short) (TLVReader.getDataOffset(buffer, offset) - offset);
 
-      // STEP 3 - Allocate the data object
-      // NOTE: if the passed length is zero, this method will
-      object.allocate(objectLength);
-
-      // STEP 4 - Recalculate the length of the first write, to account for the tag element being
+      // STEP 3 - Recalculate the length of the first write, to account for the tag element being
       // removed
       length -= (short) (offset - initialOffset);
 
-      // STEP 5 - Set up the incoming chainbuffer
-      chainBuffer.setIncomingObject(object.content, ZERO, objectLength, false);
+      // STEP 4 - Stage the replacement. ChainBuffer publishes it only after the final segment.
+      chainBuffer.setIncomingObject(object, objectLength);
 
-      // STEP 6 - Start processing the first segment of data here so we can give it our modified
+      // STEP 5 - Start processing the first segment of data here so we can give it our modified
       // offset / length
       chainBuffer.processIncomingObject(buffer, offset, length);
     }
@@ -1127,11 +1129,13 @@ final class PIV {
       return; // Keep compiler happy
     }
 
-    // PRE-CONDITION 5 - The supplied length must equal the PUK + NEW PIN lengths
-    byte pinLength = config.readValue(Config.CONFIG_PIN_MAX_LENGTH);
-    short expectedLength = (short) (config.readValue(Config.CONFIG_PUK_LENGTH) + pinLength);
+    // SP 800-73 defines RESET RETRY COUNTER as two fixed eight-byte fields. Configured
+    // significant-value limits do not change the wire representation.
+    byte pinLength = Config.LIMIT_PIN_MAX_LENGTH;
+    byte pukLength = Config.LIMIT_PIN_MAX_LENGTH;
+    short expectedLength = (short) (pukLength + pinLength);
 
-    if (length != expectedLength) ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+    if (length != expectedLength) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
 
     // PRE-CONDITION 6 - The PUK must not be blocked
     // If the current value of the PUK's retry counter is zero, then the PIN's retry counter shall
@@ -1155,7 +1159,7 @@ final class PIV {
     // If the reset retry counter authentication data (PUK) in the command data field of the command
     // does not match reference data associated with the PUK, then the PIV Card Application shall
     // return the status word '63 CX'.
-    if (!puk.check(buffer, offset, pinLength)) {
+    if (!puk.check(buffer, offset, pukLength)) {
 
       // Reset the PIN's security condition (see paragraph below for explanation)
       pin.reset();
@@ -1172,7 +1176,7 @@ final class PIV {
     }
 
     // Move to the start of the new PIN
-    offset += config.readValue(Config.CONFIG_PUK_LENGTH);
+    offset += pukLength;
 
     // PRE-CONDITION 8 - Check the format of the NEW pin value
     // If the new reference data (PIN) in the command data field of the command does not satisfy the
@@ -1654,12 +1658,19 @@ final class PIV {
     // - RSA1024 should not be permitted for this operation, but that should be restricted
     //   using key roles rather than here.
 
+    // DER ECDSA signatures can be a little over twice the digest size because each INTEGER may
+    // need a leading zero. RSA signatures remain exactly one block.
+    short maximumResponseLength = challengeLength;
+    if (key instanceof PIVKeyObjectECC) {
+      maximumResponseLength = (short) ((short) (challengeLength * (short) 2) + (short) 8);
+    }
+
     // Construct the TLV response and RESPONSE tag
     TLVWriter writer = TLVWriter.getInstance();
     writer.init(
         scratch,
         ZERO,
-        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, challengeLength),
+        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, maximumResponseLength),
         CONST_TAG_AUTH_TEMPLATE);
     writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
 
@@ -1785,7 +1796,7 @@ final class PIV {
     // Decrypt the CHALLENGE data
     short length;
     try {
-      length = key.keyAgreement(scratch, challengeOffset, challengeLength, scratch, offset);
+      length = key.keyAgreement(scratch, challengeOffset, challengeLength, scratch, offset, null);
     } catch (Exception e) {
       authenticateReset();
       // Presume that we have a problem with the input data, instead of throwing 6F00.
@@ -2246,7 +2257,12 @@ final class PIV {
     // Compute the shared secret
     length =
         key.keyAgreement(
-            scratch, exponentiationOffset, exponentiationLength, scratch, writer.getOffset());
+            scratch,
+            exponentiationOffset,
+            exponentiationLength,
+            scratch,
+            writer.getOffset(),
+            ecPointValidator);
 
     // Move to the end of the key agreement output data
     writer.move(length);
@@ -2483,6 +2499,7 @@ final class PIV {
     byte minPermitted;
     byte maxPermitted;
     boolean invariant = false;
+    boolean raw = false;
 
     switch (config.readValue(Config.CONFIG_PIN_CHARSET)) {
       case Config.PIN_CHARSET_ALPHA:
@@ -2495,8 +2512,10 @@ final class PIV {
         invariant = true;
         break;
       case Config.PIN_CHARSET_RAW:
-        // No further processing required
-        return true;
+        minPermitted = (byte) 0;
+        maxPermitted = (byte) 0;
+        raw = true;
+        break;
 
       case Config.PIN_CHARSET_NUMERIC:
       default:
@@ -2529,7 +2548,7 @@ final class PIV {
           }
 
           // Range Check
-          if (buffer[offset] < minPermitted || buffer[offset] > maxPermitted) {
+          if (!raw && (buffer[offset] < minPermitted || buffer[offset] > maxPermitted)) {
             // RULE: The PIN character does not fall in the permissable range
             return false;
           }
@@ -2980,8 +2999,10 @@ final class PIV {
     // with an array of objects. If it doesn't, we are already at the start of the only request.
     boolean isBulk;
     if (reader.match(CONST_TAG_BULK_REQUEST)) {
-      isBulk = true;
-      reader.moveInto();
+      // Object allocation and key deletion cannot be rolled back reliably as one Java Card
+      // transaction. Reject batches instead of leaving a partially applied administration set.
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+      return;
     } else {
       isBulk = false;
     }
@@ -3053,7 +3074,9 @@ final class PIV {
 
           // Update one or more configuration parameters
         case CONST_TAG_UPDATE_CONFIG:
+          JCSystem.beginTransaction();
           config.update(reader);
+          JCSystem.commitTransaction();
           break;
 
         default:
@@ -3077,9 +3100,10 @@ final class PIV {
    * @param length The length of the CDATA section
    *     <p>The main differences to CHANGE REFERENCE DATA are: - It supports updating any key
    *     reference that is not covered by CHANGE REFERENCE DATA already - It requires a global
-   *     platform secure channel to be operating with the CEncDec attribute (encrypted) - It does
-   *     NOT require the old value to be supplied in order to change a key - It also supports
-   *     updating the PIN/PUK values, without requiring knowledge of the old value
+   *     platform secure channel with CEncDec, or prior authentication of the applicable
+   *     administrative key - It does NOT require the old value to be supplied in order to change a
+   *     key - It also supports updating the PIN/PUK values, without requiring knowledge of the old
+   *     value
    */
   void changeReferenceDataAdmin(byte id, byte[] buffer, short offset, short length)
       throws ISOException {
@@ -3106,13 +3130,13 @@ final class PIV {
     // If we got this far, the scratch buffer now contains the incoming DATA. Keep in mind that the
     // original buffer
     // still contains the APDU header.
+    try {
 
     //
     // SPECIAL CASE 1 - LOCAL PIN
     //
     if (id == ID_CVM_LOCAL_PIN) {
-      // Administrative PIN updates are a pre-personalisation operation and remain SCP-only.
-      if (!cspPIV.getIsSecureChannel()) {
+      if (!cspPIV.checkAccessModeAdmin(PIVObject.DEFAULT_ADMIN_KEY)) {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       }
 
@@ -3138,8 +3162,7 @@ final class PIV {
     // SPECIAL CASE 2 - PUK
     //
     if (id == ID_CVM_PUK) {
-      // Administrative PUK updates are a pre-personalisation operation and remain SCP-only.
-      if (!cspPIV.getIsSecureChannel()) {
+      if (!cspPIV.checkAccessModeAdmin(PIVObject.DEFAULT_ADMIN_KEY)) {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       }
 
@@ -3224,11 +3247,28 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    // STEP 3 - Update the relevant key element.
-    key.updateElement(elementTag, scratch, elementOffset, elementLength);
+    // STEP 3 - Update the relevant key element. Symmetric replacements stage and swap their key
+    // object internally. Asymmetric elements can touch multiple persistent key components, so keep
+    // the published state transactional if a setter fails partway through.
+    if (key instanceof PIVKeyObjectPKI) {
+      JCSystem.beginTransaction();
+      try {
+        key.updateElement(elementTag, scratch, elementOffset, elementLength);
+        JCSystem.commitTransaction();
+      } finally {
+        if (JCSystem.getTransactionDepth() != (byte) 0) {
+          JCSystem.abortTransaction();
+        }
+      }
+    } else {
+      key.updateElement(elementTag, scratch, elementOffset, elementLength);
+    }
 
     // STEP 4 - Clear any prior key-authenticated session after a key value change.
-    cspPIV.clearAuthenticatedKey();
+      cspPIV.clearAuthenticatedKey();
+    } finally {
+      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+    }
   }
 
   private short processGetVersion(TLVWriter writer) {
@@ -3341,6 +3381,13 @@ final class PIV {
     //
 
     // Copy the APDU buffer to the scratch buffer so that we can reference it with our TLVReader
+    if (buffer == null
+        || offset < ZERO
+        || length < ZERO
+        || offset > (short) (buffer.length - length)
+        || length > LENGTH_SCRATCH) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
     Util.arrayCopyNonAtomic(buffer, offset, scratch, ZERO, length);
     TLVReader reader = TLVReader.getInstance();
     reader.init(scratch, ZERO, length);

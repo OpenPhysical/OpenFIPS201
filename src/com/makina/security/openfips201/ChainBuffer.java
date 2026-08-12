@@ -89,12 +89,14 @@ final class ChainBuffer {
 
   // A pointer to our read/write data buffer
   private final Object[] dataPtr;
+  private final Object[] ownerPtr;
 
   // Holds transient context information about the current chain
   private final short[] context;
 
   ChainBuffer() {
     dataPtr = JCSystem.makeTransientObjectArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
+    ownerPtr = JCSystem.makeTransientObjectArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
     context = JCSystem.makeTransientShortArray(LENGTH_CONTEXT, JCSystem.CLEAR_ON_DESELECT);
 
     reset();
@@ -102,6 +104,11 @@ final class ChainBuffer {
 
   /** Resets the ChainBuffer, aborting any outstanding transaction */
   private void resetAbort() {
+
+    if (ownerPtr[0] != null) {
+      ((PIVDataObject) ownerPtr[0]).abortUpdate();
+      ownerPtr[0] = null;
+    }
 
     // Have we been asked to conduct this in a transaction?
     if ((short) 0 != context[CONTEXT_TRANSACTION]) {
@@ -115,6 +122,11 @@ final class ChainBuffer {
   /** Resets the ChainBuffer, committing any outstanding transaction */
   private void resetCommit() {
 
+    if (ownerPtr[0] != null) {
+      ((PIVDataObject) ownerPtr[0]).commitUpdate();
+      ownerPtr[0] = null;
+    }
+
     // Have we been asked to conduct this in a transaction?
     if ((short) 0 != context[CONTEXT_TRANSACTION]) {
       JCSystem.commitTransaction();
@@ -127,10 +139,15 @@ final class ChainBuffer {
   /** Resets the ChainBuffer and clears any internal buffer and state tracking values */
   void reset() {
 
+    if (ownerPtr[0] != null) {
+      ((PIVDataObject) ownerPtr[0]).abortUpdate();
+      ownerPtr[0] = null;
+    }
+
     // Have we been asked to clear the buffer?
     if (dataPtr[0] != null && context[CONTEXT_CLEAR_ON_COMPLETE] != (short) 0) {
-      Util.arrayFillNonAtomic(
-          (byte[]) dataPtr[0], context[CONTEXT_INITIAL], context[CONTEXT_LENGTH], (byte) 0x00);
+      byte[] data = (byte[]) dataPtr[0];
+      Util.arrayFillNonAtomic(data, (short) 0, (short) data.length, (byte) 0x00);
     }
 
     // Burn them... Burn them all
@@ -147,6 +164,20 @@ final class ChainBuffer {
     context[CONTEXT_TRANSACTION] = (short) 0;
   }
 
+  /** Rejects an unrelated command while a command-data chain is incomplete. */
+  void checkIncomingAPDU(byte[] apdu) {
+    if (context[CONTEXT_STATE] != STATE_INCOMING_APDU) return;
+
+    final short CLA_MASK = ~(short) 0x1000;
+    short command = (short) (Util.getShort(apdu, ISO7816.OFFSET_CLA) & CLA_MASK);
+    short expected = (short) (context[CONTEXT_APDU_CLASS] & CLA_MASK);
+    if (command != expected
+        || context[CONTEXT_APDU_P1P2] != Util.getShort(apdu, ISO7816.OFFSET_P1)) {
+      resetAbort();
+      ISOException.throwIt(ISO7816.SW_LAST_COMMAND_EXPECTED);
+    }
+  }
+
   /**
    * Configures the ChainBuffer class to process a stream of outgoing data which will be retrieved
    * by subsequent GET RESPONSE commands
@@ -154,7 +185,7 @@ final class ChainBuffer {
    * @param buffer the buffer to read data from
    * @param offset The starting offset of the data to read from
    * @param length The total number of bytes to read
-   * @param clearOnCompletion If true, the buffer will be wiped when the chain operation ends
+   * @param clearOnCompletion If true, the entire backing buffer will be wiped when the chain ends
    */
   void setOutgoing(byte[] buffer, short offset, short length, boolean clearOnCompletion) {
 
@@ -193,6 +224,17 @@ final class ChainBuffer {
       JCSystem.beginTransaction();
       context[CONTEXT_TRANSACTION] = (short) 1;
     }
+  }
+
+  void setIncomingObject(PIVDataObject destination, short length) {
+    reset();
+    byte[] staged = destination.beginUpdate(length);
+    dataPtr[0] = staged;
+    ownerPtr[0] = destination;
+    context[CONTEXT_STATE] = STATE_INCOMING_OBJECT;
+    context[CONTEXT_OFFSET] = (short) 0;
+    context[CONTEXT_REMAINING] = length;
+    context[CONTEXT_LENGTH] = length;
   }
 
   /**

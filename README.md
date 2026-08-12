@@ -44,6 +44,29 @@ baseline:
 - Updated test and tooling dependencies, including JCardEngine, GlobalPlatformPro,
   APDU4J, JUnit, Mockito, Bouncy Castle, ASM, SLF4J, and JaCoCo.
 
+Administrative `CHANGE REFERENCE DATA` operations intentionally support two parallel authorization
+paths: an SCP session with command encryption, or prior authentication of the applicable
+administrative key (normally `9B`). This applies to management keys, PINs, and PUKs, allowing card
+administration when GlobalPlatform secure-channel credentials are unavailable. Deployments that
+require transport confidentiality must use SCP; the authenticated-`9B` path does not encrypt APDU
+contents.
+
+Administrative PUT DATA accepts one operation per command. Legacy bulk containers are rejected
+because Java Card allocation and deletion cannot be rolled back reliably as one transaction; an
+issuance system must submit and verify each operation separately.
+
+Configuration fields for VCI, OCC, PUK update restriction, enumeration restriction, and RSA-CRT
+selection are rejected with `6A81` because those behaviors are not implemented. They are not
+accepted as inert settings. Configuration updates that are supported are applied transactionally.
+
+Incoming TLV lengths must use their shortest valid encoding, and trailing bytes after the declared
+top-level value are rejected. This deliberate strictness catches malformed issuance data, but tools
+that emit non-minimal BER lengths must canonicalize their encoding before sending it to the applet.
+
+ECDH public points are validated on-card before key agreement. Because validation uses software
+multi-precision arithmetic, each target card model must be qualified on real hardware for P-256 and
+P-384 GENERAL AUTHENTICATE latency and reader timeout behavior before deployment.
+
 ## Repository Layout
 
 - `src/com/makina/security/openfips201/` contains the Java Card applet source.

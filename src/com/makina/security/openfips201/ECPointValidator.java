@@ -14,7 +14,7 @@ import javacard.framework.Util;
 final class ECPointValidator {
   private static final short MAX_FIELD_LENGTH = (short) 48;
   private static final short SLOT_COUNT = (short) 7;
-  private static final short WORKSPACE_LENGTH = (short) (MAX_FIELD_LENGTH * SLOT_COUNT);
+  static final short WORKSPACE_LENGTH = (short) (MAX_FIELD_LENGTH * SLOT_COUNT);
 
   private static final short SLOT_X = (short) 0;
   private static final short SLOT_Y = (short) 1;
@@ -24,26 +24,23 @@ final class ECPointValidator {
   private static final short SLOT_ACC = (short) 5;
   private static final short SLOT_TMP = (short) 6;
 
-  private static byte[] workspace;
+  private final byte[] workspace;
 
-  private ECPointValidator() {}
-
-  static void terminate() {
-    workspace = null;
+  ECPointValidator() {
+    workspace = JCSystem.makeTransientByteArray(WORKSPACE_LENGTH, JCSystem.CLEAR_ON_DESELECT);
   }
 
-  static void setWorkspaceForTest(byte[] testWorkspace) {
-    workspace = testWorkspace;
+  ECPointValidator(byte[] workspace) {
+    this.workspace = workspace;
   }
 
-  static boolean isValid(byte[] encoded, short offset, short length, ECParams params) {
+  boolean isValid(byte[] encoded, short offset, short length, ECParams params) {
     byte[] modulus = params.getP();
     short fieldLength = (short) modulus.length;
     if (length != (short) (fieldLength * (short) 2 + (short) 1) || encoded[offset] != (byte) 0x04) {
       return false;
     }
 
-    ensureWorkspace();
     short x = slot(SLOT_X);
     short y = slot(SLOT_Y);
     short y2 = slot(SLOT_Y2);
@@ -71,17 +68,11 @@ final class ECPointValidator {
     return valid;
   }
 
-  private static void ensureWorkspace() {
-    if (workspace == null) {
-      workspace = JCSystem.makeTransientByteArray(WORKSPACE_LENGTH, JCSystem.CLEAR_ON_DESELECT);
-    }
-  }
-
-  private static short slot(short index) {
+  private short slot(short index) {
     return (short) (index * MAX_FIELD_LENGTH);
   }
 
-  private static void multiply(
+  private void multiply(
       byte[] left,
       short leftOffset,
       byte[] right,
@@ -108,7 +99,7 @@ final class ECPointValidator {
     Util.arrayCopyNonAtomic(workspace, acc, output, outputOffset, length);
   }
 
-  private static void addMod(
+  private void addMod(
       byte[] left,
       short leftOffset,
       byte[] right,
@@ -139,7 +130,7 @@ final class ECPointValidator {
     }
   }
 
-  private static short compare(
+  private short compare(
       byte[] left, short leftOffset, byte[] right, short rightOffset, short length) {
     for (short i = 0; i < length; i++) {
       short a = (short) (left[(short) (leftOffset + i)] & 0xFF);
@@ -150,7 +141,7 @@ final class ECPointValidator {
     return (short) 0;
   }
 
-  private static void clearWorkspace() {
+  private void clearWorkspace() {
     Util.arrayFillNonAtomic(workspace, (short) 0, WORKSPACE_LENGTH, (byte) 0);
   }
 }

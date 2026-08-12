@@ -83,7 +83,7 @@ final class PIVSecurityProvider {
   private final PIVPIN cardPIN; // 80 - Card Application PIN
   private final PIVPIN cardPUK; // 81 - PIN Unlocking Key (PUK)
   private final PIVPIN globalPIN; // 00 - Global PIN
-  private final OwnerPIN[] pinHistory;
+  private OwnerPIN[] pinHistory;
 
   // PERSISTENT - Counters related to security operations
   private final byte[] persistentState;
@@ -127,14 +127,8 @@ final class PIVSecurityProvider {
     // Optional - But we still have to create it because it can be enabled at runtime
     globalPIN = new PIVCVMPIN();
 
-    // Supplemental - PIN History
-    pinHistory = new OwnerPIN[Config.LIMIT_PIN_HISTORY];
-    for (short i = 0; i < Config.LIMIT_PIN_HISTORY; i++) {
-      // We don't need to make use of retry features for history PIN values
-      // as we will reset them every time.
-      pinHistory[i] = new OwnerPIN((byte) 1, Config.LIMIT_PIN_MAX_LENGTH);
-      // TODO: Probably need to initialise these even though it isn't a security risk
-    }
+    // Supplemental PIN history is allocated only if the configured policy uses it.
+    pinHistory = null;
   }
 
   void clearVerification() {
@@ -368,6 +362,11 @@ final class PIVSecurityProvider {
     return result;
   }
 
+  /** Returns whether SCP or the specified administrative key currently authorizes management. */
+  boolean checkAccessModeAdmin(byte adminKey) {
+    return getIsSecureChannel() || transientState[STATE_AUTH_KEY] == adminKey;
+  }
+
   /**
    * Validates the current security conditions for access to a given data or key object
    *
@@ -455,6 +454,8 @@ final class PIVSecurityProvider {
         return; // Keep compiler happy
     }
 
+    ensureHistoryCapacity(historyCount);
+
     // Optionally verify the PIN history
     // NOTE: Any elements beyond the historyCheck count will not be used at all, so we ignore
     // their values
@@ -490,6 +491,20 @@ final class PIVSecurityProvider {
       next = (byte) ((byte) (next + (byte) 1) % historyCount);
       persistentState[STATE_HISTORY_NEXT] = next;
     }
+  }
+
+  private void ensureHistoryCapacity(byte historyCount) {
+    if (historyCount == (byte) 0
+        || (pinHistory != null && pinHistory.length >= (short) historyCount)) return;
+
+    OwnerPIN[] expanded = new OwnerPIN[historyCount];
+    short existing = pinHistory == null ? (short) 0 : (short) pinHistory.length;
+    for (short i = 0; i < existing; i++) expanded[i] = pinHistory[i];
+    for (short i = existing; i < (short) historyCount; i++) {
+      expanded[i] = new OwnerPIN((byte) 1, Config.LIMIT_PIN_MAX_LENGTH);
+    }
+    pinHistory = expanded;
+    if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
   }
 
   /**

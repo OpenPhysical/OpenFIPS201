@@ -57,9 +57,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
     // SP 800-73-5 (Part 2, VERIFY/CHANGE REFERENCE DATA behavior) caps retry counters at 10.
     // This APDU attempts to configure contact and contactless PIN retries to 11.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A0 06 86 01 0B 87 01 0B"));
-    assertTrue(
-        response.getSW() != 0x9000,
-        "Configuring PIN retry limits above 10 should be rejected as non-conformant");
+    assertSw(0x6984, response, "Configuring PIN retry limits above 10 must be rejected");
   }
 
   @Test
@@ -68,9 +66,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
     // Same conformance requirement as PIN retries; attempts to set PUK retries to 11.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A1 06 83 01 0B 84 01 0B"));
-    assertTrue(
-        response.getSW() != 0x9000,
-        "Configuring PUK retry limits above 10 should be rejected as non-conformant");
+    assertSw(0x6984, response, "Configuring PUK retry limits above 10 must be rejected");
   }
 
   @Test
@@ -79,9 +75,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
     // SP 800-73-5 PIN encoding rules require at least six significant PIN bytes.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A0 06 84 01 05 85 01 08"));
-    assertTrue(
-        response.getSW() != 0x9000,
-        "Configuring PIN minimum length below 6 should be rejected as non-conformant");
+    assertSw(0x6984, response, "Configuring PIN minimum length below 6 must be rejected");
   }
 
   @Test
@@ -90,9 +84,20 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
     // SP 800-73-5 PIN presentation is 8 bytes with 0xFF padding, so max significant length is 8.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A0 06 84 01 06 85 01 09"));
-    assertTrue(
-        response.getSW() != 0x9000,
-        "Configuring PIN maximum length above 8 should be rejected as non-conformant");
+    assertSw(0x6984, response, "Configuring PIN maximum length above 8 must be rejected");
+  }
+
+  @Test
+  void resetRetryCounterWireLengthDoesNotFollowConfiguredPinLimit() {
+    assertSw(0x9000, selectApplet(), "SELECT before RESET RETRY COUNTER length test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 08 A0 06 84 01 06 85 01 07")),
+        "Configure a seven-byte significant PIN limit");
+
+    ResponseAPDU response =
+        transmit(0x00, 0x2C, 0x00, 0x80, hex("3031323334353637393837363534FFFF"));
+    assertSw(0x63C9, response, "RESET RETRY COUNTER must still consume two eight-byte fields");
   }
 
   private ResponseAPDU updateConfigOverMockedScp(byte[] payload) {
@@ -107,7 +112,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
           .thenAnswer(invocation -> (short) invocation.getArgument(2));
 
       byte[] apdu = new byte[5 + payload.length];
-      apdu[0] = (byte) 0x04; // Secure messaging CLA, no command chaining bit
+      apdu[0] = (byte) 0x84; // GlobalPlatform secure-messaging CLA
       apdu[1] = (byte) 0xDB; // PUT DATA
       apdu[2] = (byte) 0x3F; // P1
       apdu[3] = (byte) 0x00; // P2 admin path

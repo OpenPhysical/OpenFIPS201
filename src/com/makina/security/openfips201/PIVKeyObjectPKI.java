@@ -65,7 +65,12 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
    * @return the length of the key agreement output
    */
   abstract short keyAgreement(
-      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset);
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset,
+      ECPointValidator validator);
 
   /**
    * Generates a new asymmetric key pair and returns the public component.

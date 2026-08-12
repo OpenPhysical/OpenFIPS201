@@ -46,6 +46,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
+  private KeyPair keyPair = null;
 
   // TODO: Refactor to remove the need for a permanent ECParams object
   private final ECParams params;
@@ -81,6 +82,9 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     // where the length of the X and Y coordinates is the byte length of the key.
     // TODO: We can use 2 consts and decide which to compare against based on the mechanism!
     marshaledPubKeyLen = (short) (getKeyLengthBytes() * 2 + 1);
+
+    allocatePrivate();
+    allocatePublic();
   }
 
   /**
@@ -151,6 +155,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
           (ECPrivateKey)
               KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, getKeyLengthBits(), false);
       setPrivateParams();
+      allocateKeyPair();
     }
   }
 
@@ -161,13 +166,19 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
           (ECPublicKey)
               KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, getKeyLengthBits(), false);
       setPublicParams();
+      allocateKeyPair();
+    }
+  }
+
+  private void allocateKeyPair() {
+    if (keyPair == null && publicKey != null && privateKey != null) {
+      keyPair = new KeyPair(publicKey, privateKey);
     }
   }
 
   @Override
   short generate(byte[] scratch, short offset) throws CardRuntimeException {
 
-    KeyPair keyPair;
     short length = 0;
     try {
       // Clear any key material
@@ -177,8 +188,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       allocatePrivate();
       allocatePublic();
 
-      // Since the call to clear() will delete this object automatically, it is safe to re-create
-      keyPair = new KeyPair(publicKey, privateKey);
       keyPair.genKeyPair();
 
       TLVWriter writer = TLVWriter.getInstance();
@@ -197,9 +206,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       // clear both the public and private keys if they exist
       clear();
       CardRuntimeException.throwIt(cre.getReason());
-    } finally {
-      // We new'd the keyPair, so we make sure the memory is freed up once it is out of scope.
-      runGc();
     }
 
     return length;
@@ -261,14 +267,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
   @Override
   void clear() {
-    if (publicKey != null) {
-      publicKey.clearKey();
-      publicKey = null;
-    }
-    if (privateKey != null) {
-      privateKey.clearKey();
-      privateKey = null;
-    }
+    publicKey.clearKey();
+    privateKey.clearKey();
+    setPublicParams();
+    setPrivateParams();
   }
 
   /** Set ECC domain parameters. */
@@ -316,9 +318,15 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
    */
   @Override
   short keyAgreement(
-      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset)
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset,
+      ECPointValidator validator)
       throws ISOException {
-    return PIVCrypto.doKeyAgreement(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return PIVCrypto.doKeyAgreement(
+        privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset, validator);
   }
 
   /**

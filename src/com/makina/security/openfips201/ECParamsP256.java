@@ -101,20 +101,10 @@ final class ECParamsP256 extends ECParams {
     (byte) 0xFC, (byte) 0x63, (byte) 0x25, (byte) 0x51
   };
 
-  private static ECParams instance;
-
   private ECParamsP256() {}
 
   static ECParams getInstance() {
-    if (instance == null) {
-      instance = new ECParamsP256();
-    }
-    return instance;
-  }
-
-  static void terminate() {
-    // NOTE: It is the responsibility of the caller to perform garbage collection
-    instance = null;
+    return new ECParamsP256();
   }
 
   @Override

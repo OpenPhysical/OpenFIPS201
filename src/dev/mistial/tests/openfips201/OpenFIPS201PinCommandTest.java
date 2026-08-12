@@ -173,14 +173,14 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
   }
 
   @Test
-  void changeReferenceDataAdminVariantRequiresSecureChannel() {
+  void changeReferenceDataAdminVariantRequiresAdministrativeAuthorization() {
     assertSw(0x9000, selectApplet(), "SELECT before CHANGE REFERENCE DATA checks");
 
-    // P1=FF with standard reference routes to administrative handler, which requires SCP.
+    // P1=FF routes to the administrative handler. Neither SCP nor 9B is authenticated here.
     byte[] payload = hex("313233343536FFFF393837363534FFFF");
     ResponseAPDU response =
         transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0xFF, LOCAL_PIN_REFERENCE, payload);
-    assertSw(0x6982, response, "Administrative CHANGE REFERENCE DATA must require SCP");
+    assertSw(0x6982, response, "Administrative CHANGE REFERENCE DATA must require authorization");
   }
 
   @Test

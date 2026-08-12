@@ -115,6 +115,40 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @Test
+  void abortedChainedPutDataPreservesPreviousObjectValue() {
+    byte[] managementKey = keyMaterialAes128((byte) 0x19);
+    provisionManagementKeyOverScp(managementKey);
+    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    authenticateManagementKey(managementKey);
+
+    byte[] previousValue = hex("5303A1A2A3");
+    assertSw(
+        0x9000,
+        transmit(
+            0x00,
+            0xDB,
+            0x3F,
+            0xFF,
+            concat(normalTagList(DATA_ID_NORMAL), previousValue)),
+        "Initial object value");
+
+    byte[] partialValue = new byte[200];
+    for (int i = 0; i < partialValue.length; i++) partialValue[i] = (byte) i;
+    byte[] declaredReplacement =
+        concat(
+            normalTagList(DATA_ID_NORMAL),
+            concat(hex("5382012C"), partialValue));
+    assertSw(
+        0x9000,
+        transmit(0x10, 0xDB, 0x3F, 0xFF, declaredReplacement),
+        "Incomplete chained PUT DATA segment");
+
+    ResponseAPDU readBack = getDataNormal(DATA_ID_NORMAL);
+    assertSw(0x9000, readBack, "GET DATA aborts the incomplete replacement");
+    assertArrayEquals(previousValue, readBack.getData(), "Aborted PUT DATA must preserve old data");
+  }
+
+  @Test
   void putDataBiometricObjectUpdateSucceedsAfterManagementAuthentication() {
     byte[] managementKey = keyMaterialAes128((byte) 0x21);
 
@@ -373,6 +407,36 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         response,
         "Administrative PUT DATA remains SCP-gated");
+  }
+
+  @Test
+  void putDataAdminRejectsNonAtomicBulkContainers() {
+    withMockedScp(
+        new Runnable() {
+          @Override
+          public void run() {
+            assertSw(0x9000, selectApplet(), "SELECT before bulk administration check");
+            assertSw(
+                ISO7816.SW_FUNC_NOT_SUPPORTED,
+                transmit(0x84, 0xDB, 0x3F, 0x00, hex("6A00")),
+                "Bulk administration must fail before applying any operation");
+          }
+        });
+  }
+
+  @Test
+  void putDataAdminRejectsUnsupportedOccConfiguration() {
+    withMockedScp(
+        new Runnable() {
+          @Override
+          public void run() {
+            assertSw(0x9000, selectApplet(), "SELECT before OCC configuration check");
+            assertSw(
+                ISO7816.SW_FUNC_NOT_SUPPORTED,
+                transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A303800100")),
+                "Unsupported OCC configuration must not be accepted as an inert setting");
+          }
+        });
   }
 
   @Test
