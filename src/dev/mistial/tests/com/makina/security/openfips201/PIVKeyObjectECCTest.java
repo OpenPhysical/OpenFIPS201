@@ -35,15 +35,15 @@ class PIVKeyObjectECCTest {
 
       assertNull(field(key, "smCvc").get(key));
 
-    ISOException thrown =
-        org.junit.jupiter.api.Assertions.assertThrows(
-            ISOException.class,
-            () ->
-                key.updateElement(
-                    PIVKeyObjectECC.ELEMENT_SM_CVC,
-                    new byte[] {0x7F, 0x21, 0x00},
-                    (short) 0,
-                    (short) 3));
+      ISOException thrown =
+          org.junit.jupiter.api.Assertions.assertThrows(
+              ISOException.class,
+              () ->
+                  key.updateElement(
+                      PIVKeyObjectECC.ELEMENT_SM_CVC,
+                      new byte[] {0x7F, 0x21, 0x00},
+                      (short) 0,
+                      (short) 3));
       assertEquals(ISO7816.SW_WRONG_DATA, thrown.getReason());
       assertNull(field(key, "smCvc").get(key));
     }
@@ -58,7 +58,8 @@ class PIVKeyObjectECCTest {
             (byte) 0x00,
             mechanism,
             PIVKeyObject.ROLE_KEY_ESTABLISH,
-            (byte) 0x00);
+            (byte) 0x00,
+            new ECCurveRegistry());
   }
 
   private static Field field(Object target, String name) throws Exception {

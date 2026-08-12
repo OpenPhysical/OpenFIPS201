@@ -231,6 +231,7 @@ abstract class OpenFIPS201TestSupport {
 
   protected void withMockedScp(Runnable action) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
           .thenReturn(

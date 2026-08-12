@@ -87,6 +87,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
   private void provisionManagementKeyOverScp(byte[] keyBytes, byte attributes) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
           .thenReturn(

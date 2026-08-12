@@ -13,7 +13,8 @@ import pro.javacard.capfile.AID;
 import pro.javacard.capfile.CAPFile;
 
 public final class AppletInstallService {
-  public void install(GlobalPlatformSession session, AppletInstallRequest request) throws Exception {
+  public void install(GlobalPlatformSession session, AppletInstallRequest request)
+      throws Exception {
     CAPFile cap = CAPFile.fromFile(request.capPath);
     AID packageAid = new AID(HexUtil.parse(request.packageAid));
     AID appletAid = new AID(HexUtil.parse(request.appletAid));

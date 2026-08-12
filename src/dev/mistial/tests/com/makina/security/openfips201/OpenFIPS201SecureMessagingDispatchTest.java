@@ -30,8 +30,8 @@ import pro.javacard.engine.JavaCardEngine;
 /**
  * Conformance tests for secure messaging APDU dispatching.
  *
- * <p>NIST SP 800-73-5 Part 2 Sections 4.2.4-4.2.7 define protected command and
- * response APDUs; Section 4.3 defines session key destruction.
+ * <p>NIST SP 800-73-5 Part 2 Sections 4.2.4-4.2.7 define protected command and response APDUs;
+ * Section 4.3 defines session key destruction.
  */
 @Tag("slow")
 class OpenFIPS201SecureMessagingDispatchTest {
@@ -145,6 +145,143 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
   }
 
+  @Test
+  void unrelatedCommandAbortsPlainOutgoingResponse() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before interrupted plaintext response");
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, new byte[300], (short) 0, (short) 300, false);
+    }
+
+    ResponseAPDU verifyStatus = transmit(new CommandAPDU(0x00, 0x20, 0x00, 0x80));
+    assertEquals(0x63C6, verifyStatus.getSW(), "The intervening command must execute normally");
+    assertSw(
+        ISO7816.SW_WRONG_DATA,
+        transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0)),
+        "GET RESPONSE must not resume the abandoned response");
+  }
+
+  @Test
+  void objectChainRejectsProtectionContextChangeAndRollsBack() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      ChainBuffer chain = new ChainBuffer();
+      PIVDataObject destination =
+          new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
+      destination.allocate((short) 4);
+      byte[] original = new byte[] {0x11, 0x22, 0x33, 0x44};
+      System.arraycopy(original, 0, destination.content, 0, original.length);
+      chain.setIncomingObject(destination, (short) 4);
+
+      byte[] first = hex("10DB3FFF02AABB");
+      ISOException accepted =
+          assertThrows(
+              ISOException.class,
+              () ->
+                  chain.processIncomingObject(
+                      first, (short) 5, (short) 2, ChainBuffer.PROTECTION_SCP));
+      assertEquals(ISO7816.SW_NO_ERROR, accepted.getReason());
+
+      byte[] downgraded = hex("00DB3FFF02CCDD");
+      ISOException rejected =
+          assertThrows(
+              ISOException.class,
+              () ->
+                  chain.processIncomingObject(
+                      downgraded, (short) 5, (short) 2, ChainBuffer.PROTECTION_PLAIN));
+      assertEquals(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED, rejected.getReason());
+      assertArrayEquals(
+          original, destination.content, "A protection mismatch must roll back staged data");
+    }
+  }
+
+  @Test
+  void interruptedProtectedResponseKeepsDeliveredRmacAndAdvancesCounterOnce() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before interrupted protected response");
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Class<?> pivClass = piv.getClass();
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      Class<?> secureMessagingClass = secureMessaging.getClass();
+      byte[] sessionKeys = new byte[64];
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+
+      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
+      method(
+              secureMessagingClass,
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(secureMessaging, command, (short) 5, (short) 10, new byte[512], (short) 0);
+
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, new byte[256], (short) 0, (short) 256, true);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+
+      byte[] deliveredRmac = ((byte[]) field(secureMessaging, "responseMcv").get(secureMessaging)).clone();
+      byte[] counterBefore = counter(secureMessaging);
+      APDU apdu = streamingApdu((byte) 0xCB, (short) 32);
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class,
+              () -> method(pivClass, "processOutgoing", APDU.class).invoke(piv, apdu));
+      assertTrue(first.getCause() instanceof ISOException);
+      assertEquals((short) 0x6100, ((ISOException) first.getCause()).getReason());
+
+      assertArrayEquals(
+          deliveredRmac,
+          (byte[]) field(secureMessaging, "responseMcv").get(secureMessaging),
+          "An R-MCV is published only after its complete response is delivered");
+
+      method(pivClass, "abortOutgoingResponse").invoke(piv);
+      byte[] expectedCounter = counterBefore.clone();
+      expectedCounter[15]++;
+      assertArrayEquals(expectedCounter, counter(secureMessaging));
+      assertArrayEquals(
+          deliveredRmac,
+          (byte[]) field(secureMessaging, "responseMcv").get(secureMessaging));
+      assertEquals(
+          false,
+          method(secureMessagingClass, "isResponseStreamActive").invoke(secureMessaging));
+      assertEquals(false, method(chainBuffer.getClass(), "isOutgoingActive").invoke(chainBuffer));
+
+      method(pivClass, "abortOutgoingResponse").invoke(piv);
+      assertArrayEquals(
+          expectedCounter,
+          counter(secureMessaging),
+          "Repeated aborts must not advance the logical command counter again");
+    }
+  }
+
   /**
    * Verifies that command unwrapping preserves the command chaining bit in CLA.
    *
@@ -241,9 +378,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
                           (short) 0));
 
       assertTrue(thrown.getCause() instanceof ISOException);
-      assertEquals(
-          (short) 0x6988,
-          ((ISOException) thrown.getCause()).getReason());
+      assertEquals((short) 0x6988, ((ISOException) thrown.getCause()).getReason());
     }
   }
 
@@ -444,8 +579,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
    * Verifies that plaintext APDUs sent while VCI is established are rejected and destroy the
    * session.
    *
-   * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as communication over secure
-   * messaging; Part 2 Section 4.3 requires session key destruction after SM errors.
+   * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as communication over secure messaging; Part
+   * 2 Section 4.3 requires session key destruction after SM errors.
    */
   @Test
   void plaintextApduDuringActiveVciSecureMessagingIsRejectedAndClearsSession() throws Exception {
@@ -578,8 +713,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * Verifies that a secure response stream increments the encryption counter once when the
-   * logical response completes.
+   * Verifies that a secure response stream increments the encryption counter once when the logical
+   * response completes.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.2.2 (Encryption counter increment
    * exceptions).
@@ -683,23 +818,20 @@ class OpenFIPS201SecureMessagingDispatchTest {
       APDU apdu = streamingApdu((byte) 0xCB);
       Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
       InvocationTargetException first =
-          assertThrows(
-              InvocationTargetException.class, () -> processOutgoing.invoke(piv, apdu));
+          assertThrows(InvocationTargetException.class, () -> processOutgoing.invoke(piv, apdu));
       assertTrue(first.getCause() instanceof ISOException);
       assertEquals((short) 0x6123, ((ISOException) first.getCause()).getReason());
 
       apdu.getBuffer()[ISO7816.OFFSET_INS] = (byte) 0xC0;
       Method continuation = method(pivClass, "processOutgoingSecureContinuation", APDU.class);
       InvocationTargetException second =
-          assertThrows(
-              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+          assertThrows(InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
       assertTrue(second.getCause() instanceof ISOException);
       assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
 
       byte[] counterAfterCompletion = counter(secureMessaging);
       InvocationTargetException third =
-          assertThrows(
-              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+          assertThrows(InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
       assertTrue(third.getCause() instanceof ISOException);
       assertEquals(
           ISO7816.SW_CONDITIONS_NOT_SATISFIED, ((ISOException) third.getCause()).getReason());
@@ -731,23 +863,20 @@ class OpenFIPS201SecureMessagingDispatchTest {
       APDU apdu = streamingApdu((byte) 0xCB, (short) 8);
       Method processOutgoing = method(pivClass, "processOutgoing", APDU.class);
       InvocationTargetException first =
-          assertThrows(
-              InvocationTargetException.class, () -> processOutgoing.invoke(piv, apdu));
+          assertThrows(InvocationTargetException.class, () -> processOutgoing.invoke(piv, apdu));
       assertTrue(first.getCause() instanceof ISOException);
       assertEquals((short) 0x6106, ((ISOException) first.getCause()).getReason());
 
       apdu.getBuffer()[ISO7816.OFFSET_INS] = (byte) 0xC0;
       Method continuation = method(pivClass, "processOutgoingSecureContinuation", APDU.class);
       InvocationTargetException second =
-          assertThrows(
-              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+          assertThrows(InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
       assertTrue(second.getCause() instanceof ISOException);
       assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
 
       byte[] counterAfterCompletion = counter(secureMessaging);
       InvocationTargetException third =
-          assertThrows(
-              InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
+          assertThrows(InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
       assertTrue(third.getCause() instanceof ISOException);
       assertEquals(
           ISO7816.SW_CONDITIONS_NOT_SATISFIED, ((ISOException) third.getCause()).getReason());
@@ -794,8 +923,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] firstMcv = new byte[16];
-      byte[] command = chainedMacOnlySecureCommand(
-          new byte[16], (byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, firstMcv);
+      byte[] command =
+          chainedMacOnlySecureCommand(
+              new byte[16], (byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, firstMcv);
       byte[] work = new byte[512];
       method(
               secureMessagingClass,

@@ -13,15 +13,13 @@ import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.common.ZmqBibo;
-import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
+import dev.mistial.tools.openfips201.emulator.ZmqEmulatorFixture;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.SecureRandom;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.math.ec.ECPoint;
 import org.junit.jupiter.api.AfterEach;
@@ -42,48 +40,20 @@ import pro.javacard.gp.keys.PlaintextKeys;
 @Tag("slow")
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201VciEndToEndTest {
-  private ZmqApduServer server;
-  private Thread serverThread;
+  private ZmqEmulatorFixture fixture;
   private String endpoint;
 
   @BeforeEach
   void startServer() throws Exception {
-    server = new ZmqApduServer(PlaintextKeys.DEFAULT_KEY());
-    endpoint = server.bind("tcp://127.0.0.1:*");
-
-    CountDownLatch started = new CountDownLatch(1);
-    AtomicReference<Throwable> failure = new AtomicReference<>();
-    serverThread =
-        new Thread(
-            () -> {
-              try {
-                server.start();
-                started.countDown();
-                server.serve();
-              } catch (Throwable t) {
-                failure.set(t);
-                started.countDown();
-              }
-            },
-            "vci-e2e-emulator");
-    serverThread.start();
-    assertTrue(started.await(30, TimeUnit.SECONDS), "Emulator did not start");
-    if (failure.get() != null) {
-      throw new IllegalStateException("Emulator failed to start", failure.get());
-    }
+    fixture = ZmqEmulatorFixture.start(PlaintextKeys.DEFAULT_KEY());
+    endpoint = fixture.endpoint();
     installOpenFips201Applet();
   }
 
   @AfterEach
   void stopServer() throws Exception {
-    if (server != null) {
-      server.stop();
-    }
-    if (serverThread != null) {
-      serverThread.join(10_000);
-    }
-    if (server != null) {
-      server.close();
+    if (fixture != null) {
+      fixture.close();
     }
   }
 
@@ -245,8 +215,7 @@ class OpenFIPS201VciEndToEndTest {
     assumeTrue(isCs7Build(), "CS7 E2E test requires -Dvci.suite=CS7");
     String caPrefix = tempDir.resolve("vci-ca-cs7").toString();
     try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
-      VciProvisioning.provision(
-          bibo, null, null, caPrefix, "12345678", null, VciSupport.ALG_CS7);
+      VciProvisioning.provision(bibo, null, null, caPrefix, "12345678", null, VciSupport.ALG_CS7);
     }
     try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
       assertTrue(
@@ -370,7 +339,7 @@ class OpenFIPS201VciEndToEndTest {
 
   private void installOpenFips201Applet() throws Exception {
     AppletInstallRequest request = new AppletInstallRequest();
-    request.capPath = Paths.get("build/bin/OpenFIPS201-OP-0.1.cap");
+    request.capPath = Paths.get("build/bin/OpenFIPS201-v1_10_openphy-r1.cap");
     request.packageAid = "A00000030800001000";
     request.appletAid = "A000000308000010000100";
     request.instanceAid = "A000000308000010000100";

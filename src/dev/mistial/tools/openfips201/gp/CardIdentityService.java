@@ -7,8 +7,8 @@
 
 package dev.mistial.tools.openfips201.gp;
 
-import apdu4j.core.BIBO;
 import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -18,18 +18,22 @@ import pro.javacard.gp.GPData;
 
 public final class CardIdentityService {
   public Result read(CardTarget target) throws Exception {
-    try (BIBO bibo = target.openBibo()) {
-      byte[] cplcBytes = GPData.fetchCPLC(bibo);
-      if (cplcBytes == null) {
-        return new Result("unavailable", Collections.<String, String>emptyMap());
-      }
-      CPLC cplc = CPLC.fromBytes(cplcBytes);
-      Map<String, String> fields = new LinkedHashMap<String, String>();
-      for (CPLC.Field field : CPLC.Field.values()) {
-        fields.put(field.name(), HexUtil.format(cplc.get(field)));
-      }
-      return new Result(HexUtil.format(cplcBytes), fields);
+    try (CardTransport transport = target.openTransport()) {
+      return read(transport);
     }
+  }
+
+  public Result read(CardTransport transport) {
+    byte[] cplcBytes = GPData.fetchCPLC(transport.bibo());
+    if (cplcBytes == null) {
+      return new Result("unavailable", Collections.<String, String>emptyMap());
+    }
+    CPLC cplc = CPLC.fromBytes(cplcBytes);
+    Map<String, String> fields = new LinkedHashMap<String, String>();
+    for (CPLC.Field field : CPLC.Field.values()) {
+      fields.put(field.name(), HexUtil.format(cplc.get(field)));
+    }
+    return new Result(HexUtil.format(cplcBytes), fields);
   }
 
   public static final class Result {

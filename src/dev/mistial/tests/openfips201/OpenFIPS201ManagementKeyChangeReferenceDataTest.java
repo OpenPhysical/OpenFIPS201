@@ -82,15 +82,13 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(ALG_AES_128, managementKey);
     authenticateManagementKey(ALG_AES_128, managementKey);
 
-    ResponseAPDU response =
-        transmit(0x00, 0x24, 0xFF, 0x80, hex("393837363534FFFF"));
+    ResponseAPDU response = transmit(0x00, 0x24, 0xFF, 0x80, hex("393837363534FFFF"));
     assertSw(0x9000, response, "Authenticated 9B must authorize administrative PIN changes");
   }
 
   @Test
   void localPinAdministrativeChangeSucceedsOverScp() {
-    ResponseAPDU response =
-        transmitAdminChangeOverScp(0xFF, 0x80, hex("393837363534FFFF"));
+    ResponseAPDU response = transmitAdminChangeOverScp(0xFF, 0x80, hex("393837363534FFFF"));
     assertSw(0x9000, response, "SCP must authorize administrative PIN changes");
   }
 
@@ -106,8 +104,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
 
   @Test
   void pukAdministrativeChangeSucceedsOverScp() {
-    ResponseAPDU response =
-        transmitAdminChangeOverScp(0xFF, 0x81, hex("3132333435363738"));
+    ResponseAPDU response = transmitAdminChangeOverScp(0xFF, 0x81, hex("3132333435363738"));
     assertSw(0x9000, response, "SCP must authorize administrative PUK changes");
   }
 
@@ -361,6 +358,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
 
   protected void provisionManagementKeyOverScp(byte algorithm, byte[] keyBytes) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
           .thenReturn(
@@ -477,9 +475,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
   private void changeManagementKeyOverScp(byte algorithm, byte[] keyBytes) {
     ResponseAPDU updateResponse =
         transmitAdminChangeOverScp(
-            algorithm & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            keyUpdateData(keyBytes));
+            algorithm & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(keyBytes));
     assertSw(0x9000, updateResponse, "SCP 9B update should succeed for PIV algorithm identifier");
   }
 

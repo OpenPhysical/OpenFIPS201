@@ -9,8 +9,7 @@ import org.junit.jupiter.api.Test;
 class BerTlvReaderTest {
   @Test
   void readsShortAndExtendedLengths() {
-    BerTlvReader.Tlv shortTlv =
-        BerTlvReader.read(new byte[] {(byte) 0x53, 0x02, 0x11, 0x22}, 0);
+    BerTlvReader.Tlv shortTlv = BerTlvReader.read(new byte[] {(byte) 0x53, 0x02, 0x11, 0x22}, 0);
     assertEquals(0x53, shortTlv.tag);
     assertEquals(2, shortTlv.valueOffset);
     assertEquals(2, shortTlv.length);
@@ -41,17 +40,14 @@ class BerTlvReaderTest {
   void rejectsTruncatedOrUnsupportedEncodings() {
     assertThrows(IllegalArgumentException.class, () -> BerTlvReader.read(new byte[] {0x53}, 0));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> BerTlvReader.read(new byte[] {0x53, (byte) 0x81}, 0));
+        IllegalArgumentException.class, () -> BerTlvReader.read(new byte[] {0x53, (byte) 0x81}, 0));
     assertThrows(
         IllegalArgumentException.class,
         () -> BerTlvReader.read(new byte[] {0x53, (byte) 0x82, 0x01}, 0));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> BerTlvReader.read(new byte[] {0x53, (byte) 0x80}, 0));
+        IllegalArgumentException.class, () -> BerTlvReader.read(new byte[] {0x53, (byte) 0x80}, 0));
     assertThrows(
-        IllegalArgumentException.class,
-        () -> BerTlvReader.read(new byte[] {0x53, 0x02, 0x01}, 0));
+        IllegalArgumentException.class, () -> BerTlvReader.read(new byte[] {0x53, 0x02, 0x01}, 0));
   }
 
   @Test
@@ -66,8 +62,7 @@ class BerTlvReaderTest {
 
   @Test
   void readsThreeBytePivObjectTags() {
-    BerTlvReader.Tlv tlv =
-        BerTlvReader.read(new byte[] {0x5F, (byte) 0xC1, 0x22, 0x01, 0x7F}, 0);
+    BerTlvReader.Tlv tlv = BerTlvReader.read(new byte[] {0x5F, (byte) 0xC1, 0x22, 0x01, 0x7F}, 0);
     assertEquals(0x5FC122, tlv.tag);
     assertEquals(4, tlv.valueOffset);
     assertEquals(1, tlv.length);

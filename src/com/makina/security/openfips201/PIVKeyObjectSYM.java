@@ -43,7 +43,7 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
   static final byte ELEMENT_KEY_CLEAR = ELEMENT_CLEAR;
   private SecretKey key;
 
-  PIVKeyObjectSYM(
+  private PIVKeyObjectSYM(
       byte id,
       byte modeContact,
       byte modeContactless,
@@ -53,6 +53,22 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       byte attributes)
       throws ISOException {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+  }
+
+  static PIVKeyObjectSYM create(
+      byte id,
+      byte modeContact,
+      byte modeContactless,
+      byte adminKey,
+      byte mechanism,
+      byte role,
+      byte attributes) {
+    if ((role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) != (byte) 0
+        || (attributes & ATTR_IMPORTABLE) == (byte) 0) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    return new PIVKeyObjectSYM(
+        id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
   }
 
   @Override
@@ -103,21 +119,20 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       case PIV.ID_ALG_DEFAULT:
       case PIV.ID_ALG_TDEA_3KEY:
         // If the TDEA cipher is null, the card does not support this key type!
-        return
-            (SecretKey)
-                KeyBuilder.buildKey(KeyBuilder.TYPE_DES, KeyBuilder.LENGTH_DES3_3KEY, false);
+        return (SecretKey)
+            KeyBuilder.buildKey(KeyBuilder.TYPE_DES, KeyBuilder.LENGTH_DES3_3KEY, false);
 
       case PIV.ID_ALG_AES_128:
-        return
-            (SecretKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
+        return (SecretKey)
+            KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
 
       case PIV.ID_ALG_AES_192:
-        return
-            (SecretKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_192, false);
+        return (SecretKey)
+            KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_192, false);
 
       case PIV.ID_ALG_AES_256:
-        return
-            (SecretKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
+        return (SecretKey)
+            KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
 
       default:
         ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);

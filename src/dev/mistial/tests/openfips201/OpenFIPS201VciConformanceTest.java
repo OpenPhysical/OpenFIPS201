@@ -1,21 +1,19 @@
 package dev.mistial.tests.openfips201;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.BeforeEach;
-
-import javax.smartcardio.ResponseAPDU;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import javax.smartcardio.ResponseAPDU;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 /**
  * Conformance tests for Virtual Contact Interface (VCI) behavior.
  *
- * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI, Section 3.3.2 defines
- * Discovery Object policy bits, and Appendix C.3 defines APT secure-messaging algorithm
- * advertisement.
+ * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI, Section 3.3.2 defines Discovery Object policy
+ * bits, and Appendix C.3 defines APT secure-messaging algorithm advertisement.
  */
 class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
@@ -33,9 +31,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     assumeTrue(isCs2Build(), "VCI conformance fixtures use the default CS2 applet build");
   }
 
-  /**
-   * Verifies that invalid VCI modes are rejected.
-   */
+  /** Verifies that invalid VCI modes are rejected. */
   @Test
   void invalidVciModeIsRejectedByConfiguration() {
     withMockedScp(
@@ -56,18 +52,25 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
           @Override
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before OCC config update");
-            ResponseAPDU config =
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A3 03 80 01 01"));
+            ResponseAPDU config = transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A3 03 80 01 01"));
             assertSw(0x6A81, config, "OCC configuration must remain unsupported");
 
             byte[] objectWithOcc =
                 tlv(
                     (byte) 0x64,
                     new byte[] {
-                      (byte) 0x8B, (byte) 0x01, (byte) 0x5A,
-                      (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
-                      (byte) 0x8D, (byte) 0x01, ACCESS_MODE_OCC,
-                      (byte) 0x91, (byte) 0x01, (byte) 0x9B
+                      (byte) 0x8B,
+                      (byte) 0x01,
+                      (byte) 0x5A,
+                      (byte) 0x8C,
+                      (byte) 0x01,
+                      ACCESS_MODE_ALWAYS,
+                      (byte) 0x8D,
+                      (byte) 0x01,
+                      ACCESS_MODE_OCC,
+                      (byte) 0x91,
+                      (byte) 0x01,
+                      (byte) 0x9B
                     });
             ResponseAPDU object = transmit(0x84, 0xDB, 0x3F, 0x00, objectWithOcc);
             assertSw(0x6A81, object, "OCC-bearing ACLs are unsupported until OCC CVM exists");
@@ -78,8 +81,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that the Discovery Object correctly advertises VCI capability and its pairing policy.
    *
-   * <p>NIST SP 800-73-5 Part 1 Section 3.3.2/Table 1: PIN Usage Policy bit 4
-   * indicates VCI support; bit 3 selects pairing-required (0) or no-pairing (1) VCI.
+   * <p>NIST SP 800-73-5 Part 1 Section 3.3.2/Table 1: PIN Usage Policy bit 4 indicates VCI support;
+   * bit 3 selects pairing-required (0) or no-pairing (1) VCI.
    */
   @Test
   void discoveryObjectAdvertisesVciAndPairingPolicy() {
@@ -139,25 +142,32 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   /**
-   * Verifies that the Application Property Template (APT) advertises CS2 only after key material and CVC are loaded.
+   * Verifies that the Application Property Template (APT) advertises CS2 only after key material
+   * and CVC are loaded.
    *
-   * <p>NIST SP 800-73-5 Part 1 Appendix C.3: APT tag 'AC' advertises secure
-   * messaging algorithm identifiers; '27' means CS2 is supported and the card has the
-   * matching PIV Secure Messaging key.
+   * <p>NIST SP 800-73-5 Part 1 Appendix C.3: APT tag 'AC' advertises secure messaging algorithm
+   * identifiers; '27' means CS2 is supported and the card has the matching PIV Secure Messaging
+   * key.
    */
   @Test
   void applicationPropertyTemplateAdvertisesCs2OnlyAfterKeyMaterialAndCvc() {
     assertSw(0x9000, selectApplet(), "Initial SELECT");
-    assertFalse(contains(selectAppletWithData().getData(), hex("800127")), "APT must not advertise CS2 by default");
+    assertFalse(
+        contains(selectAppletWithData().getData(), hex("800127")),
+        "APT must not advertise CS2 by default");
 
     configureVciMode((byte) 0x02);
     createVciKeyOverScp(ATTR_IMPORTABLE);
     importVciPrivateKeyOverScp(p256ScalarOne());
     importVciPublicKeyOverScp(p256BasePoint());
-    assertFalse(contains(selectAppletWithData().getData(), hex("800127")), "APT requires CVC as well as key material");
+    assertFalse(
+        contains(selectAppletWithData().getData(), hex("800127")),
+        "APT requires CVC as well as key material");
 
     loadVciCvcOverScp(hex("7F2181100102030405060708090A0B0C0D0E0F10"));
-    assertTrue(contains(selectAppletWithData().getData(), hex("800127")), "APT must advertise CS2 after key and CVC");
+    assertTrue(
+        contains(selectAppletWithData().getData(), hex("800127")),
+        "APT must advertise CS2 after key and CVC");
   }
 
   /**
@@ -180,8 +190,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that an imported VCI key requires its CVC to be loaded before APT advertisement.
    *
-   * <p>NIST SP 800-73-5 Part 1 Appendix C.3 requires a PIV Secure Messaging key before
-   * APT secure-messaging algorithm advertisement.
+   * <p>NIST SP 800-73-5 Part 1 Appendix C.3 requires a PIV Secure Messaging key before APT
+   * secure-messaging algorithm advertisement.
    */
   @Test
   void importedVciKeyRequiresCvcBeforeAptAdvertisement() {
@@ -189,10 +199,14 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     createVciKeyOverScp(ATTR_IMPORTABLE);
     importVciPrivateKeyOverScp(p256ScalarOne());
     importVciPublicKeyOverScp(p256BasePoint());
-    assertFalse(contains(selectAppletWithData().getData(), hex("800127")), "Imported VCI key still requires CVC");
+    assertFalse(
+        contains(selectAppletWithData().getData(), hex("800127")),
+        "Imported VCI key still requires CVC");
 
     loadVciCvcOverScp(hex("7F210401020304"));
-    assertTrue(contains(selectAppletWithData().getData(), hex("800127")), "Imported VCI key advertises after CVC");
+    assertTrue(
+        contains(selectAppletWithData().getData(), hex("800127")),
+        "Imported VCI key advertises after CVC");
   }
 
   @Test
@@ -200,7 +214,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     configureVciMode((byte) 0x02);
     ResponseAPDU response = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, ALG_CS7);
     assertEquals(0x6A81, response.getSW(), "CS2 build must reject CS7 SM key definition");
-    assertFalse(contains(selectAppletWithData().getData(), hex("80012E")), "APT must not advertise CS7");
+    assertFalse(
+        contains(selectAppletWithData().getData(), hex("80012E")), "APT must not advertise CS7");
   }
 
   @Test
@@ -220,7 +235,12 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
             assertSw(0x9000, selectApplet(), "SELECT before VCI config");
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A2 03 80 01 " + String.format("%02X", mode))),
+                transmit(
+                    0x84,
+                    0xDB,
+                    0x3F,
+                    0x00,
+                    hex("68 05 A2 03 80 01 " + String.format("%02X", mode))),
                 "Update VCI mode");
           }
         });
@@ -265,10 +285,18 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         tlv(
             (byte) 0x64,
             new byte[] {
-              (byte) 0x8B, (byte) 0x01, (byte) 0x7E,
-              (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
-              (byte) 0x8D, (byte) 0x01, ACCESS_MODE_ALWAYS,
-              (byte) 0x91, (byte) 0x01, (byte) 0x9B
+              (byte) 0x8B,
+              (byte) 0x01,
+              (byte) 0x7E,
+              (byte) 0x8C,
+              (byte) 0x01,
+              ACCESS_MODE_ALWAYS,
+              (byte) 0x8D,
+              (byte) 0x01,
+              ACCESS_MODE_ALWAYS,
+              (byte) 0x91,
+              (byte) 0x01,
+              (byte) 0x9B
             });
     assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, request), "Create Discovery Object");
   }
@@ -289,10 +317,20 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                 tlv(
                     (byte) 0x64,
                     new byte[] {
-                      (byte) 0x8B, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, (byte) 0x23,
-                      (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
-                      (byte) 0x8D, (byte) 0x01, ACCESS_MODE_ALWAYS,
-                      (byte) 0x91, (byte) 0x01, (byte) 0x9B
+                      (byte) 0x8B,
+                      (byte) 0x03,
+                      (byte) 0x5F,
+                      (byte) 0xC1,
+                      (byte) 0x23,
+                      (byte) 0x8C,
+                      (byte) 0x01,
+                      ACCESS_MODE_ALWAYS,
+                      (byte) 0x8D,
+                      (byte) 0x01,
+                      ACCESS_MODE_ALWAYS,
+                      (byte) 0x91,
+                      (byte) 0x01,
+                      (byte) 0x9B
                     });
             assertSw(
                 0x9000,
@@ -301,8 +339,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
             byte[] content =
                 concat(
-                    hex("5C035FC123"),
-                    tlv((byte) 0x53, tlv((byte) 0x99, hex("3132333435363738"))));
+                    hex("5C035FC123"), tlv((byte) 0x53, tlv((byte) 0x99, hex("3132333435363738"))));
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0xFF, content),
@@ -370,7 +407,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private ResponseAPDU selectAppletWithData() {
-    return transmit(new javax.smartcardio.CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 256));
+    return transmit(
+        new javax.smartcardio.CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 256));
   }
 
   private static byte[] fixed(byte value, int length) {
@@ -410,8 +448,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static byte[] p384BasePoint() {
     // secp384r1 generator (uncompressed).
     return hex(
-        "04"
-            + "AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7"
+        "04AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7"
             + "3617DE4A96262C6F5D9E98BF9292DC29F8F41DBD289A147CE9DA3113B5F0B8C00A60B1CE1D7E819D7A431D7C90EA0E5F");
   }
 

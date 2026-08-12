@@ -47,12 +47,12 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   // The PIV secure messaging CVC element tag (OpenFIPS201 ASN.1 smCVC [10]).
   static final byte ELEMENT_SM_CVC = (byte) 0x8A;
 
-  //#if VCI_CS2
+  // #if VCI_CS2
   private static final short LENGTH_SM_CVC_MAX = (short) 256;
-  //#else
+  // #else
   // CS7 (P-384) production CVCs are ~275 bytes; allow headroom for encoding variance.
   private static final short LENGTH_SM_CVC_MAX = (short) 384;
-  //#endif
+  // #endif
 
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
@@ -60,32 +60,22 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   private byte[] smCvc = null;
   private short smCvcLength = (short) 0;
 
-  // TODO: Refactor to remove the need for a permanent ECParams object
   private final ECParams params;
   private final short marshaledPubKeyLen;
 
-  PIVKeyObjectECC(
+  private PIVKeyObjectECC(
       byte id,
       byte modeContact,
       byte modeContactless,
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes)
+      byte attributes,
+      ECParams params)
       throws ISOException {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
-
-    switch (getMechanism()) {
-      case PIV.ID_ALG_ECC_P256:
-      case PIV.ID_ALG_ECC_CS2:
-        params = ECParamsP256.getInstance();
-        break;
-      case PIV.ID_ALG_ECC_P384:
-      case PIV.ID_ALG_ECC_CS7:
-        params = ECParamsP384.getInstance();
-        break;
-      default:
-        params = null; // Keep the compiler happy
+    this.params = params;
+    if (params == null) {
         ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
@@ -99,6 +89,33 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     if (isSecureMessagingMechanism()) {
       smCvc = new byte[LENGTH_SM_CVC_MAX];
     }
+  }
+
+  static PIVKeyObjectECC create(
+      byte id,
+      byte modeContact,
+      byte modeContactless,
+      byte adminKey,
+      byte mechanism,
+      byte role,
+      byte attributes,
+      ECCurveRegistry curves) {
+    byte symmetricAttributes =
+        (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
+    if ((attributes & symmetricAttributes) != (byte) 0
+        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
+            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    return new PIVKeyObjectECC(
+        id,
+        modeContact,
+        modeContactless,
+        adminKey,
+        mechanism,
+        role,
+        attributes,
+        curves.forMechanism(mechanism));
   }
 
   /**
@@ -317,7 +334,8 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     return smCvcLength;
   }
 
-  boolean validatePublicPoint(byte[] buffer, short offset, short length, byte[] work, short workOffset) {
+  boolean validatePublicPoint(
+      byte[] buffer, short offset, short length, byte[] work, short workOffset) {
     short fieldLength = getKeyLengthBytes();
     if (length != (short) (1 + fieldLength + fieldLength)
         || buffer[offset] != CONST_POINT_UNCOMPRESSED) {
@@ -530,7 +548,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       ECPointValidator validator)
       throws ISOException {
     return PIVCrypto.doKeyAgreement(
-        privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset, validator);
+        privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset, validator, params);
   }
 
   /**

@@ -7,8 +7,8 @@
 
 package dev.mistial.tools.openfips201.pkcs11;
 
-import com.sun.jna.Memory;
 import com.sun.jna.Library;
+import com.sun.jna.Memory;
 import com.sun.jna.Native;
 import com.sun.jna.NativeLong;
 import com.sun.jna.Pointer;
@@ -68,11 +68,12 @@ final class Pkcs11Token implements AutoCloseable {
     Arrays.fill(pinChars, '\0');
     try {
       long login =
-          rv(library.C_Login(
-              session,
-              new NativeLong(Pkcs11Constants.CKU_USER),
-              pin,
-              new NativeLong(pin.length)));
+          rv(
+              library.C_Login(
+                  session,
+                  new NativeLong(Pkcs11Constants.CKU_USER),
+                  pin,
+                  new NativeLong(pin.length)));
       if (login != Pkcs11Constants.CKR_OK && login != Pkcs11Constants.CKR_USER_ALREADY_LOGGED_IN) {
         throw new Pkcs11Exception("C_Login", login);
       }
@@ -111,7 +112,8 @@ final class Pkcs11Token implements AutoCloseable {
     } else if (label != null && !label.isEmpty()) {
       attributes.add(attribute(Pkcs11Constants.CKA_LABEL, label.getBytes(StandardCharsets.UTF_8)));
     } else {
-      throw new IllegalArgumentException("PKCS#11 signing key needs CKA_ID or label to find certificate");
+      throw new IllegalArgumentException(
+          "PKCS#11 signing key needs CKA_ID or label to find certificate");
     }
     KeyHandle certificate = findOne("certificate", attributes.toArray(new AttributeValue[0]));
     return getAttribute(certificate.handle, Pkcs11Constants.CKA_VALUE);
@@ -121,7 +123,8 @@ final class Pkcs11Token implements AutoCloseable {
     Pkcs11Structs.Mechanism mechanism =
         new Pkcs11Structs.Mechanism(Pkcs11Constants.CKM_EC_KEY_PAIR_GEN);
     mechanism.write();
-    byte[] ecParams = new byte[] {0x06, 0x08, 0x2A, (byte) 0x86, 0x48, (byte) 0xCE, 0x3D, 0x03, 0x01, 0x07};
+    byte[] ecParams =
+        new byte[] {0x06, 0x08, 0x2A, (byte) 0x86, 0x48, (byte) 0xCE, 0x3D, 0x03, 0x01, 0x07};
     Pkcs11Structs.Attribute[] publicTemplate =
         writeTemplate(
             attribute(Pkcs11Constants.CKA_CLASS, Pkcs11Constants.CKO_PUBLIC_KEY),
@@ -159,7 +162,8 @@ final class Pkcs11Token implements AutoCloseable {
   }
 
   KeyHandle generateAesKey(String label, byte[] id, int bytes) {
-    Pkcs11Structs.Mechanism mechanism = new Pkcs11Structs.Mechanism(Pkcs11Constants.CKM_AES_KEY_GEN);
+    Pkcs11Structs.Mechanism mechanism =
+        new Pkcs11Structs.Mechanism(Pkcs11Constants.CKM_AES_KEY_GEN);
     mechanism.write();
     Pkcs11Structs.Attribute[] template =
         writeTemplate(
@@ -181,7 +185,13 @@ final class Pkcs11Token implements AutoCloseable {
     return new KeyHandle(key.getValue(), id, label);
   }
 
-  void createCertificate(String label, byte[] id, byte[] subjectDer, byte[] issuerDer, byte[] serialDer, byte[] certificateDer) {
+  void createCertificate(
+      String label,
+      byte[] id,
+      byte[] subjectDer,
+      byte[] issuerDer,
+      byte[] serialDer,
+      byte[] certificateDer) {
     Pkcs11Structs.Attribute[] template =
         writeTemplate(
             attribute(Pkcs11Constants.CKA_CLASS, Pkcs11Constants.CKO_CERTIFICATE),
@@ -210,12 +220,15 @@ final class Pkcs11Token implements AutoCloseable {
             id == null ? null : attribute(Pkcs11Constants.CKA_ID, id));
     byte[] point = unwrapEcPoint(getAttribute(handle.handle, Pkcs11Constants.CKA_EC_POINT));
     int coordinateLength = (point.length - 1) / 2;
-    java.math.BigInteger x = new java.math.BigInteger(1, Arrays.copyOfRange(point, 1, 1 + coordinateLength));
-    java.math.BigInteger y = new java.math.BigInteger(1, Arrays.copyOfRange(point, 1 + coordinateLength, point.length));
+    java.math.BigInteger x =
+        new java.math.BigInteger(1, Arrays.copyOfRange(point, 1, 1 + coordinateLength));
+    java.math.BigInteger y =
+        new java.math.BigInteger(1, Arrays.copyOfRange(point, 1 + coordinateLength, point.length));
     AlgorithmParameters parameters = AlgorithmParameters.getInstance("EC");
     parameters.init(new ECGenParameterSpec("secp256r1"));
     ECParameterSpec spec = parameters.getParameterSpec(ECParameterSpec.class);
-    return KeyFactory.getInstance("EC").generatePublic(new ECPublicKeySpec(new ECPoint(x, y), spec));
+    return KeyFactory.getInstance("EC")
+        .generatePublic(new ECPublicKeySpec(new ECPoint(x, y), spec));
   }
 
   byte[] sign(long mechanism, KeyHandle key, byte[] data) {
@@ -224,12 +237,12 @@ final class Pkcs11Token implements AutoCloseable {
     mech.write();
     check("C_SignInit", cryptoki.C_SignInit(session, mech, key.handle));
     NativeLongByReference length = new NativeLongByReference();
-    check("C_Sign(length)", cryptoki.C_Sign(session, data, new NativeLong(data.length), null, length));
+    check(
+        "C_Sign(length)",
+        cryptoki.C_Sign(session, data, new NativeLong(data.length), null, length));
     byte[] signature = new byte[(int) length.getValue().longValue()];
     length.setValue(new NativeLong(signature.length));
-    check(
-        "C_Sign",
-        cryptoki.C_Sign(session, data, new NativeLong(data.length), signature, length));
+    check("C_Sign", cryptoki.C_Sign(session, data, new NativeLong(data.length), signature, length));
     return Arrays.copyOf(signature, (int) length.getValue().longValue());
   }
 
@@ -259,7 +272,8 @@ final class Pkcs11Token implements AutoCloseable {
         throw new IllegalArgumentException("PKCS#11 " + label + " was not found");
       }
       if (found > 1) {
-        throw new IllegalArgumentException("PKCS#11 " + label + " selection matched multiple objects");
+        throw new IllegalArgumentException(
+            "PKCS#11 " + label + " selection matched multiple objects");
       }
       return new KeyHandle(objects[0], null, null);
     } finally {

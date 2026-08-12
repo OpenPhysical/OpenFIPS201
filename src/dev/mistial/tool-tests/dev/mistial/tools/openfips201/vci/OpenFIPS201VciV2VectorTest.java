@@ -27,20 +27,21 @@ import org.junit.jupiter.api.TestFactory;
  * Known-answer tests for the longer v2 APDU capture format used by OpenPhysical.Net vector capture
  * and related {@code nist-sd33-apdu} fixtures.
  *
- * <p>These fixtures exercise 50+ SM exchanges per card (pairing, exhaustive GET DATA under VCI,
- * GEN AUTH challenges) with per-exchange {@code plain_command}/{@code plain_response} and
- * SM state snapshots — significantly more chaining surface than the compact v1 vectors.
+ * <p>These fixtures exercise 50+ SM exchanges per card (pairing, exhaustive GET DATA under VCI, GEN
+ * AUTH challenges) with per-exchange {@code plain_command}/{@code plain_response} and SM state
+ * snapshots — significantly more chaining surface than the compact v1 vectors.
  *
  * <p>Schema notes (v2 vs v1):
  *
  * <ul>
  *   <li>OPACITY lives under {@code sm.opacity} with PascalCase field names
  *   <li>Session keys are also under {@code sm.opacity} ({@code SkMac}, {@code SkEnc}, …)
- *   <li>Each APDU may carry {@code sm_state_before}/{@code sm_state_after_wrap}/
- *       {@code sm_state_after_unwrap}
+ *   <li>Each APDU may carry {@code sm_state_before}/{@code sm_state_after_wrap}/ {@code
+ *       sm_state_after_unwrap}
  * </ul>
  *
- * <p>Aligned with NIST SP 800-73-5 Part 2 Sections 4.1–4.2. Includes CS2 (cards 3, 4) and CS7 (cards 2, 5, 16) captures.
+ * <p>Aligned with NIST SP 800-73-5 Part 2 Sections 4.1–4.2. Includes CS2 (cards 3, 4) and CS7
+ * (cards 2, 5, 16) captures.
  */
 @Tag("slow")
 class OpenFIPS201VciV2VectorTest {
@@ -61,7 +62,8 @@ class OpenFIPS201VciV2VectorTest {
         (name, doc) -> {
           int firstOpacity = firstOpacityExchangeId(doc);
           int lastOpacity = lastOpacityExchangeId(doc);
-          assertTrue(firstOpacity >= 0 && lastOpacity > firstOpacity, name + ": two OPACITY events");
+          assertTrue(
+              firstOpacity >= 0 && lastOpacity > firstOpacity, name + ": two OPACITY events");
 
           // Enrolment SM exchanges: after first OPACITY, before last OPACITY.
           List<Exchange> enrolment = loadSmExchangesBetween(doc, firstOpacity, lastOpacity);
@@ -125,7 +127,8 @@ class OpenFIPS201VciV2VectorTest {
           byte[] idSicc = VciSupport.computeIdSicc(cvcRaw);
           byte[] idH = new byte[8]; // zeros in this profile
           // NIcc is not a top-level field in the compact opacity block; recover from OtherInfo if
-          // present, otherwise skip full derive and only check published keys + cryptogram equality.
+          // present, otherwise skip full derive and only check published keys + cryptogram
+          // equality.
           if (o.has("OtherInfo") && o.get("OtherInfo").getAsString().length() > 0) {
             byte[] otherInfo = hexField(o, "OtherInfo");
             // PartyVInfo ends with: 08 || idSicc(8) || nLen || nIcc || 01 || cb
@@ -171,8 +174,7 @@ class OpenFIPS201VciV2VectorTest {
           // use). The compact sm.opacity block publishes keys for the *last* establishment only,
           // so restrict replay to SM exchanges after that establishment exchange id.
           int lastOpacityId = lastOpacityExchangeId(doc);
-          List<Exchange> exchanges =
-              mergeTransportChains(loadSmExchanges(doc, lastOpacityId));
+          List<Exchange> exchanges = mergeTransportChains(loadSmExchanges(doc, lastOpacityId));
           assertTrue(
               exchanges.size() >= 5,
               name
@@ -337,9 +339,7 @@ class OpenFIPS201VciV2VectorTest {
                       && e.get("response").getAsString().length() > 0
                   ? hexField(e, "response")
                   : new byte[0],
-              e.has("sw")
-                  ? Integer.parseInt(stripHex(e.get("sw").getAsString()), 16)
-                  : 0x9000,
+              e.has("sw") ? Integer.parseInt(stripHex(e.get("sw").getAsString()), 16) : 0x9000,
               e.has("plain_command")
                       && !e.get("plain_command").isJsonNull()
                       && e.get("plain_command").getAsString().length() > 0
@@ -378,7 +378,8 @@ class OpenFIPS201VciV2VectorTest {
 
   private static Stream<DynamicTest> forEachV2(Assertion assertion) throws Exception {
     List<Path> vectors = listV2Vectors();
-    assertTrue(vectors.size() >= 5, "expected at least 5 v2 fixtures (CS2+CS7), found " + vectors.size());
+    assertTrue(
+        vectors.size() >= 5, "expected at least 5 v2 fixtures (CS2+CS7), found " + vectors.size());
     return vectors.stream()
         .map(
             path ->
@@ -427,7 +428,9 @@ class OpenFIPS201VciV2VectorTest {
     JsonArray arr = doc.getAsJsonArray("apdu_exchanges");
     for (JsonElement el : arr) {
       JsonObject e = el.getAsJsonObject();
-      if (afterExchangeId >= 0 && e.has("exchange_id") && e.get("exchange_id").getAsInt() <= afterExchangeId) {
+      if (afterExchangeId >= 0
+          && e.has("exchange_id")
+          && e.get("exchange_id").getAsInt() <= afterExchangeId) {
         continue;
       }
       byte[] command = hexField(e, "command");
@@ -441,10 +444,7 @@ class OpenFIPS201VciV2VectorTest {
                   && e.get("response").getAsString().length() > 0
               ? hexField(e, "response")
               : new byte[0];
-      int sw =
-          e.has("sw")
-              ? Integer.parseInt(stripHex(e.get("sw").getAsString()), 16)
-              : 0x9000;
+      int sw = e.has("sw") ? Integer.parseInt(stripHex(e.get("sw").getAsString()), 16) : 0x9000;
       byte[] plainCommand =
           e.has("plain_command")
                   && !e.get("plain_command").isJsonNull()

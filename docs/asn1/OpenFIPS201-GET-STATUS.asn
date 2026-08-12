@@ -1,12 +1,9 @@
 OpenFIPS201_GET_STATUS_Schema DEFINITIONS IMPLICIT TAGS ::= 
 BEGIN
 
-AppletState ::= ENUMERATED {
-	selectable	 	(0),
-	personalised	(1),
-	blocked 		(2),
-	terminated  	(127)
-}
+-- Raw GlobalPlatform Application lifecycle byte. OpenFIPS201 uses application-specific
+-- value 0x0F for its personalised state; other platform-defined values remain valid.
+AppletState ::= INTEGER (0..255)
 
 GetStatusResponse ::= [APPLICATION 19] SEQUENCE {
 	appletState		[0] AppletState,

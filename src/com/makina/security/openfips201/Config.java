@@ -318,7 +318,9 @@ final class Config {
   // 23 is reserved for the former restrict-single-key option. The one-key-per-reference rule is
   // now an invariant in PIVSecurityProvider, not configurable policy.
   static final byte OPTION_IGNORE_CONTACTLESS_ACL = (byte) 24;
-  static final byte OPTION_READ_EMPTY_DATA_OBJECT = (byte) 25;
+  // 25 is reserved for the former configurable empty-object response. SP 800-73 requires the
+  // zero-length data container unconditionally.
+  static final byte OPTION_READ_EMPTY_DATA_OBJECT_RESERVED = (byte) 25;
   static final byte OPTION_USE_RSA_CRT = (byte) 26;
 
   //
@@ -759,10 +761,9 @@ final class Config {
         reader.moveNext();
       }
 
-      // Error On Empty Data Object
+      // Former empty-object response option. Empty objects now have one conformant encoding.
       if (reader.match(TAG_READ_EMPTY_DATA_OBJECT)) {
-        setBoolean(OPTION_READ_EMPTY_DATA_OBJECT, reader.toByte());
-        reader.moveNext();
+        ISOException.throwIt(PIV.SW_PUT_DATA_CONFIG_INVALID_VALUE);
       }
 
       // Use RSA CRT

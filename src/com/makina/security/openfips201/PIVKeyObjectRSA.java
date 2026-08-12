@@ -63,7 +63,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   protected RSAPublicKey publicKey;
   private KeyPair keyPair;
 
-  PIVKeyObjectRSA(
+  private PIVKeyObjectRSA(
       byte id,
       byte modeContact,
       byte modeContactless,
@@ -74,6 +74,25 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
     allocatePrivate();
     allocatePublic();
+  }
+
+  static PIVKeyObjectRSA create(
+      byte id,
+      byte modeContact,
+      byte modeContactless,
+      byte adminKey,
+      byte mechanism,
+      byte role,
+      byte attributes) {
+    byte symmetricAttributes =
+        (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
+    if ((attributes & symmetricAttributes) != (byte) 0
+        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
+            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    return new PIVKeyObjectRSA(
+        id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
   }
 
   /**

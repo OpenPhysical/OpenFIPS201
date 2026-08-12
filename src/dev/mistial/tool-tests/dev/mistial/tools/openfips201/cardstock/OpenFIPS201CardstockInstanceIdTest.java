@@ -16,7 +16,7 @@ import com.google.gson.Gson;
 import dev.mistial.tools.openfips201.attestation.F9InstanceId;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.crypto.PemSigningKey;
-import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
+import dev.mistial.tools.openfips201.emulator.ZmqEmulatorFixture;
 import dev.mistial.tools.openfips201.profiles.IssuerProfile;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
 import java.io.ByteArrayOutputStream;
@@ -30,9 +30,7 @@ import java.security.KeyPairGenerator;
 import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,47 +45,19 @@ import pro.javacard.gp.keys.PlaintextKeys;
  */
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201CardstockInstanceIdTest {
-  private ZmqApduServer server;
-  private Thread serverThread;
+  private ZmqEmulatorFixture fixture;
   private String endpoint;
 
   @BeforeEach
   void startServer() throws Exception {
-    server = new ZmqApduServer(PlaintextKeys.DEFAULT_KEY());
-    endpoint = server.bind("tcp://127.0.0.1:*");
-
-    CountDownLatch started = new CountDownLatch(1);
-    AtomicReference<Throwable> startupFailure = new AtomicReference<>();
-    serverThread =
-        new Thread(
-            () -> {
-              try {
-                server.start();
-                started.countDown();
-                server.serve();
-              } catch (Throwable t) {
-                startupFailure.set(t);
-                started.countDown();
-              }
-            },
-            "cardstock-instance-id-emulator");
-    serverThread.start();
-    assertTrue(started.await(20, TimeUnit.SECONDS), "Server did not start in time");
-    if (startupFailure.get() != null) {
-      throw new IllegalStateException("Server failed to start", startupFailure.get());
-    }
+    fixture = ZmqEmulatorFixture.start(PlaintextKeys.DEFAULT_KEY());
+    endpoint = fixture.endpoint();
   }
 
   @AfterEach
   void stopServer() throws Exception {
-    if (server != null) {
-      server.stop();
-    }
-    if (serverThread != null) {
-      serverThread.join(10_000);
-    }
-    if (server != null) {
-      server.close();
+    if (fixture != null) {
+      fixture.close();
     }
   }
 
@@ -159,8 +129,7 @@ class OpenFIPS201CardstockInstanceIdTest {
             .orElseThrow(() -> new AssertionError("proof leaf missing serialNumber RDN")),
         "proof leaf instance id");
     assertTrue(F9InstanceId.subjectsMatch(f9, proofLeaf), "subjectsMatch");
-    CardstockPreparationService.verifyProofMatchesF9Instance(
-        f9, receipt.instanceId, proofLeaf);
+    CardstockPreparationService.verifyProofMatchesF9Instance(f9, receipt.instanceId, proofLeaf);
 
     assertTrue(
         receipt.operationsPerformed.stream()

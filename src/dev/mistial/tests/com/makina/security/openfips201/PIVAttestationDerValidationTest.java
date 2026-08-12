@@ -14,11 +14,9 @@ class PIVAttestationDerValidationTest {
     byte[] name = new byte[] {0x30, 0x03, 0x31, 0x01, 0x00};
     byte[] validity =
         new byte[] {
-          0x30, 0x1E,
-          0x17, 0x0D, 0x32, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-          0x5A,
-          0x17, 0x0D, 0x33, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
-          0x5A
+          0x30, 0x1E, 0x17, 0x0D, 0x32, 0x36, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30,
+          0x30, 0x5A, 0x17, 0x0D, 0x33, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30,
+          0x30, 0x5A
         };
 
     PIVAttestation.validateDerName(name, (short) 0, (short) name.length);
@@ -27,15 +25,12 @@ class PIVAttestationDerValidationTest {
 
   @Test
   void rejectsMalformedDerProfileElements() {
-    assertWrongData(() -> PIVAttestation.validateDerName(new byte[] {0x31, 0x00}, (short) 0, (short) 2));
     assertWrongData(
-        () ->
-            PIVAttestation.validateDerName(
-                new byte[] {0x30, 0x00, 0x00}, (short) 0, (short) 3));
+        () -> PIVAttestation.validateDerName(new byte[] {0x31, 0x00}, (short) 0, (short) 2));
     assertWrongData(
-        () ->
-            PIVAttestation.validateDerName(
-                new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2));
+        () -> PIVAttestation.validateDerName(new byte[] {0x30, 0x00, 0x00}, (short) 0, (short) 3));
+    assertWrongData(
+        () -> PIVAttestation.validateDerName(new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2));
     assertWrongData(
         () ->
             PIVAttestation.validateDerName(

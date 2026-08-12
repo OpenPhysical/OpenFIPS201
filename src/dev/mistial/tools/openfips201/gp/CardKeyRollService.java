@@ -45,11 +45,11 @@ public final class CardKeyRollService {
     if (!request.yes && !request.target.isZmq()) {
       throw new IllegalArgumentException("gp keys keyroll requires --yes for physical cards");
     }
-    byte[] kdd =
-        request.kdd == null ? kddService.readKdd(request.target).kdd : request.kdd.clone();
-    ScpConfig stock = request.stockScpOverride == null
-        ? issuerKeys.stockScp(request.profile)
-        : request.stockScpOverride;
+    byte[] kdd = request.kdd == null ? kddService.readKdd(request.target).kdd : request.kdd.clone();
+    ScpConfig stock =
+        request.stockScpOverride == null
+            ? issuerKeys.stockScp(request.profile)
+            : request.stockScpOverride;
     DerivedScpKeys profileKeys = issuerKeys.deriveCardKeys(request.profile, kdd);
 
     ScpConfig current;

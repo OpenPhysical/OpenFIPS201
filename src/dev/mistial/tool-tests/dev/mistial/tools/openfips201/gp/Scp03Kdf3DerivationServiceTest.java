@@ -35,8 +35,7 @@ class Scp03Kdf3DerivationServiceTest {
     Pkcs11Config config = new Pkcs11Config();
     config.keyAlias = "scp03-master-known";
     byte[] kdd = HexUtil.parse("00002345496554204839");
-    Scp03Kdf3DerivationService service =
-        new Scp03Kdf3DerivationService(new FixtureCmacService());
+    Scp03Kdf3DerivationService service = new Scp03Kdf3DerivationService(new FixtureCmacService());
 
     DerivedScpKeys keys = service.derive(config, kdd, 1);
 
@@ -57,8 +56,7 @@ class Scp03Kdf3DerivationServiceTest {
     Pkcs11Config config = new Pkcs11Config();
     config.keyAlias = "scp03-master-known";
     byte[] kdd = HexUtil.parse("00002345496554204839");
-    Scp03Kdf3DerivationService service =
-        new Scp03Kdf3DerivationService(new FixtureCmacService());
+    Scp03Kdf3DerivationService service = new Scp03Kdf3DerivationService(new FixtureCmacService());
 
     DerivedScpKeys keys = service.derive(config, kdd, 1, 16);
 

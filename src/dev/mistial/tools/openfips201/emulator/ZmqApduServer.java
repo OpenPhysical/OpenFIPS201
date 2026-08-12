@@ -27,14 +27,16 @@ package dev.mistial.tools.openfips201.emulator;
 
 import apdu4j.core.BIBO;
 import com.makina.security.openfips201.OpenFIPS201;
+import dev.mistial.tools.openfips201.common.ZmqProtocol;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import javacard.framework.AID;
-import pro.javacard.engine.JavaCardEngine;
-import pro.javacard.engine.globalplatform.SCPConfig;
 import org.zeromq.SocketType;
 import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
+import pro.javacard.engine.JavaCardEngine;
+import pro.javacard.engine.globalplatform.SCPConfig;
 
 /**
  * ZeroMQ REP server exposing an OpenFIPS201 jCardEngine emulator as a remote card.
@@ -53,22 +55,22 @@ import org.zeromq.ZMQ;
  *   <li>any failure -> {@code ["ERR", UTF-8 message]}
  * </ul>
  *
- * <p>Threading: jCardEngine binds the simulator and its sessions to the creating thread, so
- * {@link #start()} and {@link #serve()} must be called on the same thread. {@link #stop()} and
- * {@link #close()} may be called from any thread. The card is one global session; clients are
- * expected to take turns, exactly as with a shared physical reader.
+ * <p>Threading: {@link #run(String, Consumer)} owns the ZeroMQ socket and jCardEngine session on
+ * its calling thread. {@link #stop()} and {@link #close()} may be called from another thread after
+ * the run loop exits. The card is one global session; clients are expected to take turns, exactly
+ * as with a shared physical reader.
  */
 public final class ZmqApduServer implements AutoCloseable {
 
   public static final String DEFAULT_ENDPOINT = "tcp://127.0.0.1:5555";
-  public static final String PING_RESPONSE = "OpenFIPS201-emulator";
+  public static final String PING_RESPONSE = ZmqProtocol.PING_RESPONSE;
 
-  static final String VERB_APDU = "APDU";
-  static final String VERB_RESET = "RESET";
-  static final String VERB_ATR = "ATR";
-  static final String VERB_PING = "PING";
-  static final String REPLY_OK = "OK";
-  static final String REPLY_ERR = "ERR";
+  static final String VERB_APDU = ZmqProtocol.VERB_APDU;
+  static final String VERB_RESET = ZmqProtocol.VERB_RESET;
+  static final String VERB_ATR = ZmqProtocol.VERB_ATR;
+  static final String VERB_PING = ZmqProtocol.VERB_PING;
+  static final String REPLY_OK = ZmqProtocol.REPLY_OK;
+  static final String REPLY_ERR = ZmqProtocol.REPLY_ERR;
 
   private static final byte[] PACKAGE_AID_BYTES = hex("A00000030800001000");
   private static final byte[] APPLET_AID_BYTES = hex("A000000308000010000100");
@@ -79,9 +81,9 @@ public final class ZmqApduServer implements AutoCloseable {
 
   private final byte[] scp03MasterKey;
   private final ZContext context;
-  private final ZMQ.Socket socket;
   private final AtomicBoolean running = new AtomicBoolean(false);
 
+  private ZMQ.Socket socket;
   private JavaCardEngine engine;
   private BIBO card;
   private String boundEndpoint;
@@ -89,50 +91,46 @@ public final class ZmqApduServer implements AutoCloseable {
   public ZmqApduServer(byte[] scp03MasterKey) {
     this.scp03MasterKey = scp03MasterKey.clone();
     this.context = new ZContext();
-    this.socket = context.createSocket(SocketType.REP);
-    this.socket.setReceiveTimeOut(RECEIVE_TIMEOUT_MS);
   }
 
-  /**
-   * Binds the REP socket. Endpoints with a wildcard port (e.g. {@code tcp://127.0.0.1:*}) are
-   * supported; the resolved endpoint is returned and also available via {@link
-   * #getBoundEndpoint()}.
-   */
-  public String bind(String endpoint) {
+  /** Runs the emulator until {@link #stop()} is called. */
+  public void run(String endpoint, Consumer<String> ready) {
+    String resolvedEndpoint = bind(endpoint);
+    start();
+    ready.accept(resolvedEndpoint);
+    serve();
+  }
+
+  private String bind(String endpoint) {
+    if (socket != null) {
+      throw new IllegalStateException("ZeroMQ server is already bound");
+    }
+    socket = context.createSocket(SocketType.REP);
+    socket.setReceiveTimeOut(RECEIVE_TIMEOUT_MS);
     if (!socket.bind(endpoint)) {
+      socket.close();
+      socket = null;
       throw new IllegalStateException("Could not bind ZeroMQ endpoint " + endpoint);
     }
     boundEndpoint = socket.getLastEndpoint();
     return boundEndpoint;
   }
 
-  public String getBoundEndpoint() {
-    return boundEndpoint;
-  }
-
-  /**
-   * Creates the stock emulator and registers installable applet classes. Must be called on the
-   * thread that will run {@link #serve()}.
-   */
-  public void start() {
+  private void start() {
     engine =
-        new JavaCardEngine.Builder()
-            .withSCP(new SCPConfig.SCP03(scp03MasterKey, false))
-            .build();
+        new JavaCardEngine.Builder().withSCP(new SCPConfig.SCP03(scp03MasterKey, false)).build();
     registerAppletClass();
     card = connectCard();
     running.set(true);
   }
 
-  /** Serves requests until {@link #stop()} is called. Must run on the {@link #start()} thread. */
-  public void serve() {
+  private void serve() {
     while (running.get()) {
       serveOnce();
     }
   }
 
-  /** Handles at most one request; returns false on receive timeout. */
-  public boolean serveOnce() {
+  private boolean serveOnce() {
     byte[] verbFrame = socket.recv();
     if (verbFrame == null) {
       return false;
@@ -161,7 +159,7 @@ public final class ZmqApduServer implements AutoCloseable {
       } else {
         reply(REPLY_ERR, utf8("Unknown verb: " + verb));
       }
-    } catch (Exception e) {
+    } catch (Exception | AssertionError e) {
       // Always answer so the REQ/REP exchange never wedges; the card session may have been
       // power-cycled by a failed RESET, so surface the failure to the client instead.
       reply(REPLY_ERR, utf8(e.getClass().getSimpleName() + ": " + e.getMessage()));

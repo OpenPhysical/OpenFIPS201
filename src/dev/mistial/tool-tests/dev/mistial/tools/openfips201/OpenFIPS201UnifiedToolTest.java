@@ -22,11 +22,11 @@ import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
 import dev.mistial.tools.openfips201.producer.BatchCreateService;
 import dev.mistial.tools.openfips201.producer.ProducerPaths;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
-import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
-import java.io.StringReader;
-import java.io.PrintWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -116,25 +116,30 @@ class OpenFIPS201UnifiedToolTest {
   @Test
   void sameVersionRotationFailsBeforeCardAccess() throws Exception {
     ScpConfig current =
-        ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 1, HexUtil.parse("404142434445464748494A4B4C4D4E4F"));
+        ScpConfig.fromMaster(
+            ScpConfig.Mode.SCP03, 1, HexUtil.parse("404142434445464748494A4B4C4D4E4F"));
     DerivedScpKeys target = DerivedScpKeys.fromConfig(current);
 
     assertThrows(
         IllegalArgumentException.class,
-        () -> new CardKeyRotationService().rotate(CardTarget.parse("pcsc:No Reader"), current, target));
+        () ->
+            new CardKeyRotationService()
+                .rotate(CardTarget.parse("pcsc:No Reader"), current, target));
   }
 
   @Test
   void sameVersionPreflightFailsBeforeCardAccess() throws Exception {
     ScpConfig current =
-        ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 1, HexUtil.parse("404142434445464748494A4B4C4D4E4F"));
+        ScpConfig.fromMaster(
+            ScpConfig.Mode.SCP03, 1, HexUtil.parse("404142434445464748494A4B4C4D4E4F"));
     CardKeyPreflightService.Request request = new CardKeyPreflightService.Request();
     request.target = CardTarget.parse("pcsc:No Reader");
     request.current = current;
     request.targetKeys = DerivedScpKeys.fromConfig(current);
     request.kdd = HexUtil.parse("00002345496554204839");
 
-    assertThrows(IllegalArgumentException.class, () -> new CardKeyPreflightService().preflight(request));
+    assertThrows(
+        IllegalArgumentException.class, () -> new CardKeyPreflightService().preflight(request));
   }
 
   @Test
@@ -143,10 +148,10 @@ class OpenFIPS201UnifiedToolTest {
     Files.write(
         profile,
         ("{"
-            + "\"name\":\"issuer\","
-            + "\"cardKeys\":{\"masterKeyAlias\":\"issuer-card-master\"},"
-            + "\"pkcs11\":{\"module\":\"/does/not/matter\"}"
-            + "}")
+                + "\"name\":\"issuer\","
+                + "\"cardKeys\":{\"masterKeyAlias\":\"issuer-card-master\"},"
+                + "\"pkcs11\":{\"module\":\"/does/not/matter\"}"
+                + "}")
             .getBytes(StandardCharsets.UTF_8));
     CommandLine commandLine = new CommandLine(new OpenFips201Tool());
     ByteArrayOutputStream err = new ByteArrayOutputStream();
@@ -175,18 +180,13 @@ class OpenFIPS201UnifiedToolTest {
     Files.write(
         profile,
         ("{"
-            + "\"name\":\"emulator-dev\","
-            + "\"stockScp\":{},"
-            + "\"cardKeys\":{},"
-            + "\"pkcs11\":{}"
-            + "}")
+                + "\"name\":\"emulator-dev\","
+                + "\"stockScp\":{},"
+                + "\"cardKeys\":{},"
+                + "\"pkcs11\":{}"
+                + "}")
             .getBytes(StandardCharsets.UTF_8));
-    String input =
-        profile
-            + "\n"
-            + "zmq\n"
-            + "tcp://127.0.0.1:35963\n"
-            + "ephemeral\n";
+    String input = profile + "\n" + "zmq\n" + "tcp://127.0.0.1:35963\n" + "ephemeral\n";
     ByteArrayOutputStream out = new ByteArrayOutputStream();
 
     int exit =
@@ -208,7 +208,8 @@ class OpenFIPS201UnifiedToolTest {
   void cardTargetRequiresExplicitScheme() {
     assertThrows(IllegalArgumentException.class, () -> CardTarget.parse("Reader 1"));
     assertEquals("pcsc:Reader 1", CardTarget.parse("pcsc:Reader 1").displayName());
-    assertEquals("zmq:tcp://127.0.0.1:5555", CardTarget.parse("zmq:tcp://127.0.0.1:5555").displayName());
+    assertEquals(
+        "zmq:tcp://127.0.0.1:5555", CardTarget.parse("zmq:tcp://127.0.0.1:5555").displayName());
   }
 
   @Test
@@ -244,14 +245,18 @@ class OpenFIPS201UnifiedToolTest {
     try {
       Path producer = ProducerPaths.producer("bigcorp_01");
       Files.createDirectories(producer);
-      Files.write(producer.resolve("producer.json"), "{\"name\":\"bigcorp_01\"}".getBytes(StandardCharsets.UTF_8));
+      Files.write(
+          producer.resolve("producer.json"),
+          "{\"name\":\"bigcorp_01\"}".getBytes(StandardCharsets.UTF_8));
 
       BatchCreateService.Result result = new BatchCreateService().create("bigcorp_01", "batch_001");
 
       String metadata =
-          new String(Files.readAllBytes(result.directory.resolve("batch.json")), StandardCharsets.UTF_8);
+          new String(
+              Files.readAllBytes(result.directory.resolve("batch.json")), StandardCharsets.UTF_8);
       String csv =
-          new String(Files.readAllBytes(result.directory.resolve("receipts.csv")), StandardCharsets.UTF_8);
+          new String(
+              Files.readAllBytes(result.directory.resolve("receipts.csv")), StandardCharsets.UTF_8);
       assertTrue(metadata.contains("\"stockScpKcv\""));
       assertTrue(metadata.contains("\"stockScpKeyVersion\": 1"));
       assertTrue(metadata.contains("\"receiptsCsv\""));
@@ -279,7 +284,9 @@ class OpenFIPS201UnifiedToolTest {
     assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("parent/child"));
     assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("parent\\child"));
     assertThrows(IllegalArgumentException.class, () -> ProducerPaths.producer("."));
-    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.batch("bigcorp_01", "../batch"));
-    assertThrows(IllegalArgumentException.class, () -> ProducerPaths.batch("bigcorp_01", "batch/001"));
+    assertThrows(
+        IllegalArgumentException.class, () -> ProducerPaths.batch("bigcorp_01", "../batch"));
+    assertThrows(
+        IllegalArgumentException.class, () -> ProducerPaths.batch("bigcorp_01", "batch/001"));
   }
 }

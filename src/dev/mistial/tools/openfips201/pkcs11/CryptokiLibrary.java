@@ -35,8 +35,7 @@ interface CryptokiLibrary extends Library {
 
   NativeLong C_Logout(NativeLong session);
 
-  NativeLong C_FindObjectsInit(
-      NativeLong session, Pointer template, NativeLong attributeCount);
+  NativeLong C_FindObjectsInit(NativeLong session, Pointer template, NativeLong attributeCount);
 
   NativeLong C_FindObjects(
       NativeLong session,
@@ -47,10 +46,7 @@ interface CryptokiLibrary extends Library {
   NativeLong C_FindObjectsFinal(NativeLong session);
 
   NativeLong C_GetAttributeValue(
-      NativeLong session,
-      NativeLong object,
-      Pointer template,
-      NativeLong attributeCount);
+      NativeLong session, NativeLong object, Pointer template, NativeLong attributeCount);
 
   NativeLong C_CreateObject(
       NativeLong session,
@@ -75,8 +71,7 @@ interface CryptokiLibrary extends Library {
       NativeLongByReference publicKey,
       NativeLongByReference privateKey);
 
-  NativeLong C_SignInit(
-      NativeLong session, Pkcs11Structs.Mechanism mechanism, NativeLong key);
+  NativeLong C_SignInit(NativeLong session, Pkcs11Structs.Mechanism mechanism, NativeLong key);
 
   NativeLong C_Sign(
       NativeLong session,

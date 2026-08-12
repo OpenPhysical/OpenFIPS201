@@ -57,7 +57,6 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.Test;
-import pro.javacard.gp.GPSecureChannelVersion;
 
 class OpenFIPS201HostAttestationToolTest {
   @Test
@@ -201,8 +200,7 @@ class OpenFIPS201HostAttestationToolTest {
 
     assertTrue(F9InstanceId.subjectsMatch(f9, leaf.getEncoded()));
     assertEquals(id, F9InstanceId.extractFromLeafIssuer(leaf.getEncoded()).get());
-    CardstockPreparationService.verifyProofMatchesF9Instance(
-        f9, id.toHex(), leaf.getEncoded());
+    CardstockPreparationService.verifyProofMatchesF9Instance(f9, id.toHex(), leaf.getEncoded());
   }
 
   @Test
@@ -253,7 +251,8 @@ class OpenFIPS201HostAttestationToolTest {
 
     assertThrows(
         IllegalStateException.class,
-        () -> CardstockPreparationService.verifyProofMatchesF9Instance(f9, id.toHex(), new byte[0]));
+        () ->
+            CardstockPreparationService.verifyProofMatchesF9Instance(f9, id.toHex(), new byte[0]));
   }
 
   @Test
@@ -383,8 +382,7 @@ class OpenFIPS201HostAttestationToolTest {
   @Test
   void emptyPassphraseIsRejected() {
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Passphrases.requireNonEmpty(new char[0], "test"));
+        IllegalArgumentException.class, () -> Passphrases.requireNonEmpty(new char[0], "test"));
   }
 
   @Test
@@ -729,8 +727,7 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   private static ResponseAPDU sw(int statusWord) {
-    return new ResponseAPDU(
-        new byte[] {(byte) (statusWord >>> 8), (byte) statusWord});
+    return new ResponseAPDU(new byte[] {(byte) (statusWord >>> 8), (byte) statusWord});
   }
 
   private static ResponseAPDU response(byte[] data, int statusWord) {

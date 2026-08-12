@@ -60,11 +60,7 @@ public final class Pkcs11SigningKey implements SigningKey {
     byte[] digest = MessageDigest.getInstance(digestName).digest(message);
     byte[] raw;
     try (Pkcs11Token token = Pkcs11Token.open(config)) {
-      raw =
-          token.sign(
-              Pkcs11Constants.CKM_ECDSA,
-              token.findPrivateKey(config),
-              digest);
+      raw = token.sign(Pkcs11Constants.CKM_ECDSA, token.findPrivateKey(config), digest);
     }
     return derEncodeEcdsa(raw, coordinateLength);
   }
@@ -77,7 +73,9 @@ public final class Pkcs11SigningKey implements SigningKey {
   static byte[] derEncodeEcdsa(byte[] raw, int coordinateLength) throws Exception {
     if (raw.length != coordinateLength * 2) {
       throw new IllegalArgumentException(
-          "ECDSA signature length " + raw.length + " does not match expected raw length "
+          "ECDSA signature length "
+              + raw.length
+              + " does not match expected raw length "
               + (coordinateLength * 2));
     }
     byte[] r = Arrays.copyOfRange(raw, 0, coordinateLength);

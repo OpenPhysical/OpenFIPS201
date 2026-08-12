@@ -18,14 +18,14 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
 /**
- * PD-side VCI trust-anchor chain validation against NIST SD33 fixtures in the local
- * {@code vci-trust-anchors} corpus.
+ * PD-side VCI trust-anchor chain validation against NIST SD33 fixtures in the local {@code
+ * vci-trust-anchors} corpus.
  *
  * <p>Covers both validation paths from OSDP/VCI PD logic:
  *
  * <ul>
- *   <li><b>Direct</b>: secure messaging CVC IIN matches the loaded anchor IIN and the CVC
- *       signature verifies with the anchor public key (EC P-256/P-384).
+ *   <li><b>Direct</b>: secure messaging CVC IIN matches the loaded anchor IIN and the CVC signature
+ *       verifies with the anchor public key (EC P-256/P-384).
  *   <li><b>Intermediate</b>: CVC is signed by an Intermediate CVC (role {@code 0x12}) carried in
  *       5FC122; the Intermediate CVC is signed by the RSA trust anchor.
  * </ul>
@@ -50,9 +50,8 @@ class OpenFIPS201VciTrustAnchorTest {
                       byte[] cvcBytes =
                           Files.readAllBytes(dir.resolve("secure-messaging-cvc-7f21.bin"));
                       Path smcsPath = dir.resolve("smcs-5fc122.bin");
-                      byte[] smcsBytes = Files.isRegularFile(smcsPath)
-                          ? Files.readAllBytes(smcsPath)
-                          : null;
+                      byte[] smcsBytes =
+                          Files.isRegularFile(smcsPath) ? Files.readAllBytes(smcsPath) : null;
 
                       VciCvcSupport.TrustAnchor anchor = VciCvcSupport.parseAnchor(anchorBytes);
                       VciCvcSupport.ParsedCvc cvc = VciCvcSupport.parseCvc(cvcBytes);
@@ -129,12 +128,14 @@ class OpenFIPS201VciTrustAnchorTest {
                           VciCvcSupport.parseAnchor(
                               Files.readAllBytes(dir.resolve("vci-trust-anchor-record.bin")));
                       VciCvcSupport.Smcs smcs =
-                          VciCvcSupport.parseSmcs(Files.readAllBytes(dir.resolve("smcs-5fc122.bin")));
+                          VciCvcSupport.parseSmcs(
+                              Files.readAllBytes(dir.resolve("smcs-5fc122.bin")));
                       assertNotNull(smcs.certificate, "5FC122 must carry content-signing cert");
                       byte[] certSpki = smcs.certificate.getPublicKey().getEncoded();
                       assertTrue(
                           java.util.Arrays.equals(certSpki, anchor.spki),
-                          "content-signing cert SPKI should match trust-anchor SPKI on direct cards");
+                          "content-signing cert SPKI should match trust-anchor SPKI on direct"
+                              + " cards");
                       // Certificate IIN convention: first 8 bytes of SKI when present.
                       byte[] ski = smcs.certificate.getExtensionValue("2.5.29.14");
                       // Presence is optional in this assertion; SPKI match is the hard check.

@@ -16,9 +16,7 @@ import dev.mistial.tools.openfips201.common.ScpConfig;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.EnumSet;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,9 +29,9 @@ import pro.javacard.gp.GPSession;
 import pro.javacard.gp.keys.PlaintextKeys;
 
 /**
- * End-to-end test of the ZeroMQ emulator bridge: a real SCP03 secure channel is established
- * through the socket against the GP-installed OpenFIPS201 applet, exactly as remote host
- * middleware (e.g. the OpenPhysical .NET stack) will do.
+ * End-to-end test of the ZeroMQ emulator bridge: a real SCP03 secure channel is established through
+ * the socket against the GP-installed OpenFIPS201 applet, exactly as remote host middleware (e.g.
+ * the OpenPhysical .NET stack) will do.
  */
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 class OpenFIPS201ZmqEmulatorServerTest {
@@ -42,37 +40,15 @@ class OpenFIPS201ZmqEmulatorServerTest {
     (byte) 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00
   };
 
-  private ZmqApduServer server;
-  private Thread serverThread;
+  private ZmqEmulatorFixture fixture;
   private ZContext clientContext;
   private ZMQ.Socket client;
   private String endpoint;
 
   @BeforeEach
   void startServer() throws Exception {
-    server = new ZmqApduServer(TEST_SCP03_KEY);
-    endpoint = server.bind("tcp://127.0.0.1:*");
-
-    CountDownLatch started = new CountDownLatch(1);
-    AtomicReference<Throwable> startupFailure = new AtomicReference<>();
-    serverThread =
-        new Thread(
-            () -> {
-              try {
-                server.start();
-                started.countDown();
-                server.serve();
-              } catch (Throwable t) {
-                startupFailure.set(t);
-                started.countDown();
-              }
-            },
-            "zmq-emulator-server");
-    serverThread.start();
-    assertTrue(started.await(20, TimeUnit.SECONDS), "Server did not start in time");
-    if (startupFailure.get() != null) {
-      throw new IllegalStateException("Server failed to start", startupFailure.get());
-    }
+    fixture = ZmqEmulatorFixture.start(TEST_SCP03_KEY);
+    endpoint = fixture.endpoint();
 
     clientContext = new ZContext();
     client = clientContext.createSocket(SocketType.REQ);
@@ -86,14 +62,8 @@ class OpenFIPS201ZmqEmulatorServerTest {
     if (clientContext != null) {
       clientContext.close();
     }
-    if (server != null) {
-      server.stop();
-    }
-    if (serverThread != null) {
-      serverThread.join(10_000);
-    }
-    if (server != null) {
-      server.close();
+    if (fixture != null) {
+      fixture.close();
     }
   }
 
@@ -171,7 +141,7 @@ class OpenFIPS201ZmqEmulatorServerTest {
 
   private void installOpenFips201Applet() throws Exception {
     AppletInstallRequest request = new AppletInstallRequest();
-    request.capPath = Paths.get("build/bin/OpenFIPS201-OP-0.1.cap");
+    request.capPath = Paths.get("build/bin/OpenFIPS201-v1_10_openphy-r1.cap");
     request.packageAid = "A00000030800001000";
     request.appletAid = "A000000308000010000100";
     request.instanceAid = "A000000308000010000100";

@@ -68,7 +68,7 @@ actually submitted.
 | Symmetric Card Authentication key | Possible | Deprecated in SP 800-78-5; Test Runner default config often disables it |
 | RSA-1024 (`0x06`) | Still in code | **Not** appropriate for current SP 800-78-5 listing cells |
 | RSA-2048 (`0x07`), ECC P-256 (`0x11`), P-384 (`0x14`) | Implemented | Preferred asymmetric set for present-day listing |
-| RSA-3072 (`0x05`) | **Not implemented** | Required for RSA claims in the affected PIV key types in 2031+; ECC P-256/P-384 remain allowed by SP 800-78-5 |
+| RSA-3072 (`0x05`) | **Implemented** | Advertised in the application property template and supported by the RSA key implementation |
 | 3TDEA admin / default | Still present | Deprecated through 2030; prefer AES for new listings |
 | AES-128/192/256 admin | Implemented | Preferred for management key |
 | OpenPhysical attestation (`INS F9`, key `F9`) | Extension | Outside base NPIVP PIV data model; document separately ([ATTESTATION.md](ATTESTATION.md)) |
@@ -179,8 +179,8 @@ Priority items for formal listing evidence:
    matrix cell claimed.
 8. Explicit listing of **Global PIN**, **Key History**, and **Intermediate CVC**
    as Yes/No with matching evidence — never silent defaults.
-9. Prefer **AES** management keys and **RSA-2048 / ECC** (or RSA-3072 when
-   implemented) in listing materials; do not claim RSA-1024. OCC is out of scope.
+9. Prefer **AES** management keys and **RSA-2048 / RSA-3072 / ECC** in listing
+   materials; do not claim RSA-1024. OCC is out of scope.
 
 ## Related documents
 

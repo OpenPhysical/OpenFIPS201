@@ -126,7 +126,7 @@ abstract class PIVKeyObject extends PIVObject {
   static final byte ORIGIN_IMPORTED = (byte) 0x01;
   static final byte ORIGIN_GENERATED = (byte) 0x02;
 
-  protected static final short LENGTH_EXTENDED_HEADERS = (short) 3;
+  protected static final short LENGTH_EXTENDED_HEADERS = (short) 4;
 
   protected PIVKeyObject(
       byte id,
@@ -151,7 +151,8 @@ abstract class PIVKeyObject extends PIVObject {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes)
+      byte attributes,
+      ECCurveRegistry curves)
       throws ISOException {
     switch (mechanism) {
       case PIV.ID_ALG_DEFAULT:
@@ -159,65 +160,21 @@ abstract class PIVKeyObject extends PIVObject {
       case PIV.ID_ALG_AES_128:
       case PIV.ID_ALG_AES_192:
       case PIV.ID_ALG_AES_256:
-        // TODO: Move all role / attr checks to inside the constructors and change from a new()
-        // call to a factory (i.e. PIVKeyObjectSYM.create())
-
-        // Role Check - The SIGN role is invalid
-        if ((role & ROLE_SIGN) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        // Role Check - The KEY_ESTABLISH role is invalid
-        if ((role & ROLE_KEY_ESTABLISH) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        if ((attributes & ATTR_IMPORTABLE) == (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        return new PIVKeyObjectSYM(
+        return PIVKeyObjectSYM.create(
             id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
 
       case PIV.ID_ALG_RSA_1024:
       case PIV.ID_ALG_RSA_2048:
       case PIV.ID_ALG_RSA_3072:
-        // Attribute Check - The INTERNAL attribute MUST NOT be set for asymmetric keys
-        if ((attributes & ATTR_PERMIT_INTERNAL) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        // Attribute Check - The EXTERNAL attribute MUST NOT be set for asymmetric keys
-        if ((attributes & ATTR_PERMIT_EXTERNAL) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        // Attribute Check - The MUTUAL attribute MUST NOT be set for asymmetric keys
-        if ((attributes & ATTR_PERMIT_MUTUAL) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        if ((role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
-            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        return new PIVKeyObjectRSA(
+        return PIVKeyObjectRSA.create(
             id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
 
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
       case PIV.ID_ALG_ECC_CS2:
       case PIV.ID_ALG_ECC_CS7:
-        if ((attributes & ATTR_PERMIT_INTERNAL) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        if ((attributes & ATTR_PERMIT_EXTERNAL) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        // Attribute Check - The MUTUAL attribute MUST NOT be set for asymmetric keys
-        if ((attributes & ATTR_PERMIT_MUTUAL) != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        if ((role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
-            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        return new PIVKeyObjectECC(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+        return PIVKeyObjectECC.create(
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
 
       default:
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);

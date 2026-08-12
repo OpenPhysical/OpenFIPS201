@@ -65,8 +65,7 @@ class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestS
               };
           assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, definition), "Create RSA key");
           collect(
-              transmit(0x84, 0x47, 0x00, slot & 0xFF, hex("AC03800106"), 256),
-              "Generate RSA key");
+              transmit(0x84, 0x47, 0x00, slot & 0xFF, hex("AC03800106"), 256), "Generate RSA key");
         });
   }
 

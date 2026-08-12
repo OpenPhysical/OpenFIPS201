@@ -37,7 +37,8 @@ public final class Pkcs11AdminService {
       token.generateEcP256KeyPair(label, id);
       PublicKey publicKey = token.publicKey(label, id);
       X509Certificate certificate =
-          createCaCertificate(new TokenSigningKey(config, label, id, publicKey), subjectName, publicKey);
+          createCaCertificate(
+              new TokenSigningKey(config, label, id, publicKey), subjectName, publicKey);
       X500Name subject = new X500Name(subjectName);
       BigInteger serial = certificate.getSerialNumber();
       token.createCertificate(
@@ -135,7 +136,11 @@ public final class Pkcs11AdminService {
       selected.keyId = null;
       byte[] raw;
       try (Pkcs11Token token = Pkcs11Token.open(selected)) {
-        raw = token.sign(Pkcs11Constants.CKM_ECDSA, token.findPrivateKey(selected), java.security.MessageDigest.getInstance("SHA-256").digest(message));
+        raw =
+            token.sign(
+                Pkcs11Constants.CKM_ECDSA,
+                token.findPrivateKey(selected),
+                java.security.MessageDigest.getInstance("SHA-256").digest(message));
       }
       return Pkcs11SigningKey.derEncodeEcdsa(raw, 32);
     }

@@ -92,13 +92,26 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
           assertSw(0x9000, selectApplet(), "SELECT before dual-role key rejection");
           byte[] definition =
               new byte[] {
-                (byte) 0x66, (byte) 0x12,
-                (byte) 0x8B, (byte) 0x01, SLOT_SIGNATURE,
-                (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
-                (byte) 0x8D, (byte) 0x01, (byte) 0x00,
-                (byte) 0x8E, (byte) 0x01, ALG_ECC_P256,
-                (byte) 0x8F, (byte) 0x01, (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH),
-                (byte) 0x90, (byte) 0x01, (byte) 0x10
+                (byte) 0x66,
+                (byte) 0x12,
+                (byte) 0x8B,
+                (byte) 0x01,
+                SLOT_SIGNATURE,
+                (byte) 0x8C,
+                (byte) 0x01,
+                (byte) 0x7F,
+                (byte) 0x8D,
+                (byte) 0x01,
+                (byte) 0x00,
+                (byte) 0x8E,
+                (byte) 0x01,
+                ALG_ECC_P256,
+                (byte) 0x8F,
+                (byte) 0x01,
+                (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH),
+                (byte) 0x90,
+                (byte) 0x01,
+                (byte) 0x10
               };
           assertSw(
               0x6A80,

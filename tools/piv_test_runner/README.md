@@ -84,8 +84,8 @@ OpenFIPS201-specific configuration and key material.
 The repo includes a small Java harness under
 `src/dev/mistial/tools/openfips201/nist/`. It uses NIST's installed test-vector
 classes directly and supplies the card through an adapter. The current adapter
-target is the in-process OpenFIPS201 JCardEngine emulator, exposed as a
-SmartcardIO terminal so NIST's PC/SC wrapper can use it unchanged.
+target is the in-process OpenFIPS201 jCard emulator (`tools/jcard-v26.07.13.jar`),
+exposed as a SmartcardIO terminal so NIST's PC/SC wrapper can use it unchanged.
 
 Install the NIST runner first, then list the vectors visible through a config:
 

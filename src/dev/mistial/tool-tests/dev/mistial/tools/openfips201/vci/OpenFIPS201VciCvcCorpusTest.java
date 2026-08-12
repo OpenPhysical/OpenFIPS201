@@ -18,12 +18,12 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
 /**
- * Structural known-answer tests for real-card secure messaging CVCs from the local
- * {@code vci-cvc-corpus} (NIST SD33 captures).
+ * Structural known-answer tests for real-card secure messaging CVCs from the local {@code
+ * vci-cvc-corpus} (NIST SD33 captures).
  *
  * <p>These fixtures preserve the exact {@code 7F21} bytes from OPACITY establishment. They are a
- * parsing/interoperability corpus: not every entry has the content-signing material needed for
- * full trust-anchor validation (see {@link OpenFIPS201VciTrustAnchorTest}).
+ * parsing/interoperability corpus: not every entry has the content-signing material needed for full
+ * trust-anchor validation (see {@link OpenFIPS201VciTrustAnchorTest}).
  *
  * <p>Aligned with NIST SP 800-73-5 Part 2 Section 4.1.5 (Secure Messaging CVC format).
  */
@@ -39,8 +39,7 @@ class OpenFIPS201VciCvcCorpusTest {
                 DynamicTest.dynamicTest(
                     dir.getFileName().toString(),
                     () -> {
-                      byte[] cvc =
-                          Files.readAllBytes(dir.resolve("secure-messaging-cvc-7f21.bin"));
+                      byte[] cvc = Files.readAllBytes(dir.resolve("secure-messaging-cvc-7f21.bin"));
                       JsonObject meta =
                           JsonParser.parseString(
                                   new String(
@@ -51,9 +50,7 @@ class OpenFIPS201VciCvcCorpusTest {
 
                       VciCvcSupport.ParsedCvc parsed = VciCvcSupport.parseCvc(cvc);
                       assertEquals(
-                          secure.get("length").getAsInt(),
-                          parsed.raw.length,
-                          "CVC length");
+                          secure.get("length").getAsInt(), parsed.raw.length, "CVC length");
                       assertEquals(
                           secure.get("iin").getAsString().toUpperCase(),
                           VciCvcSupport.toHex(parsed.iin),

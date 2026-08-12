@@ -161,6 +161,11 @@ ant -f build/build.xml test
 The test target resolves Maven dependencies through Ivy into `build/lib` and
 runs the JCardEngine-backed JUnit suite.
 
+Persistent object and key metadata is an internal CAP layout, not an upgrade-stable storage
+format. Installing a build that changes that layout requires deleting the previous applet instance,
+installing the new CAP, and personalising the card again from the issuer's authoritative profile.
+Do not upgrade an existing instance in place.
+
 The NIST SP 800-73-4 PIV Test Runner is supported as an external local tool.
 The encrypted NIST archive, extracted tool, archive password, generated logs,
 and runner output are not tracked. A headless harness can run selected NIST APDU
@@ -205,6 +210,9 @@ not force a particular common name. The PKCS#11 path uses the tool's own
 Cryptoki binding rather than SunPKCS11. A finished cardstock receipt records
 CPLC, KDD, proof-key deletion, and post-rotation SCP verification. See
 [docs/OPENFIPS201_TOOL.md](docs/OPENFIPS201_TOOL.md).
+
+The ZeroMQ client performs a bounded readiness handshake, never retries stateful APDUs, and reuses
+one thread-confined transport across each multi-step cardstock workflow.
 
 ## License
 

@@ -1,7 +1,8 @@
 package com.makina.security.openfips201;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
 
@@ -23,16 +24,24 @@ class ConfigDefaultsTest {
 
   @Test
   void rsa3072HasRequiredKeyLengthAndIsAdvertised() {
+    assertEquals(0x05, PIV.ID_ALG_RSA_3072 & 0xFF);
     assertEquals(3072, PIVKeyObjectRSA.keyLengthBitsForMechanism(PIV.ID_ALG_RSA_3072));
 
     boolean advertised = false;
+    boolean reservedIdentifierAdvertised = false;
     for (int i = 0; i + 2 < Config.TEMPLATE_APT.length; i++) {
       if (Config.TEMPLATE_APT[i] == (byte) 0x80
           && Config.TEMPLATE_APT[i + 1] == (byte) 0x01
           && Config.TEMPLATE_APT[i + 2] == PIV.ID_ALG_RSA_3072) {
         advertised = true;
       }
+      if (Config.TEMPLATE_APT[i] == (byte) 0x80
+          && Config.TEMPLATE_APT[i + 1] == (byte) 0x01
+          && Config.TEMPLATE_APT[i + 2] == (byte) 0x0E) {
+        reservedIdentifierAdvertised = true;
+      }
     }
     assertTrue(advertised, "The application property template must advertise RSA-3072");
+    assertFalse(reservedIdentifierAdvertised, "Reserved algorithm ID 0x0E must not appear");
   }
 }

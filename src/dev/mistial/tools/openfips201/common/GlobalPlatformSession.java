@@ -24,19 +24,40 @@ public final class GlobalPlatformSession implements CardSession {
   public static final byte[] PIV_AID = HexUtil.parse("A000000308000010000100");
   public static final byte[] ISD_AID = HexUtil.parse("A000000151000000");
 
-  private final BIBO bibo;
+  private final CardTransport transport;
   private final GPSession session;
   private final ScpConfig.Mode scpMode;
+  private final boolean ownsTransport;
+  private boolean closed;
 
-  private GlobalPlatformSession(BIBO bibo, GPSession session, ScpConfig.Mode scpMode) {
-    this.bibo = bibo;
+  private GlobalPlatformSession(
+      CardTransport transport, GPSession session, ScpConfig.Mode scpMode, boolean ownsTransport) {
+    this.transport = transport;
     this.session = session;
     this.scpMode = scpMode;
+    this.ownsTransport = ownsTransport;
   }
 
   public static GlobalPlatformSession open(CardTarget target, byte[] aid, ScpConfig config)
       throws Exception {
-    BIBO bibo = target.openBibo();
+    CardTransport transport = target.openTransport();
+    try {
+      return open(transport, aid, config, true);
+    } catch (Exception e) {
+      transport.close();
+      throw e;
+    }
+  }
+
+  static GlobalPlatformSession open(CardTransport transport, byte[] aid, ScpConfig config)
+      throws Exception {
+    return open(transport, aid, config, false);
+  }
+
+  private static GlobalPlatformSession open(
+      CardTransport transport, byte[] aid, ScpConfig config, boolean ownsTransport)
+      throws Exception {
+    BIBO bibo = transport.acquireSession();
     try {
       GPSession gp = GPSession.connect(bibo, new AID(aid));
       gp.openSecureChannel(
@@ -44,9 +65,10 @@ public final class GlobalPlatformSession implements CardSession {
           toSecureChannelVersion(config.mode),
           null,
           EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
-      return new GlobalPlatformSession(bibo, gp, fromSecureChannelVersion(gp.getSecureChannel()));
+      return new GlobalPlatformSession(
+          transport, gp, fromSecureChannelVersion(gp.getSecureChannel()), ownsTransport);
     } catch (Exception e) {
-      bibo.close();
+      transport.releaseSession();
       throw e;
     }
   }
@@ -66,7 +88,11 @@ public final class GlobalPlatformSession implements CardSession {
       GPCommands.load(session, cap, null, null, GPData.LFDBH.SHA256);
     }
     session.installAndMakeSelectable(
-        packageAid, appletAid, instanceAid, EnumSet.noneOf(GPRegistryEntry.Privilege.class), params);
+        packageAid,
+        appletAid,
+        instanceAid,
+        EnumSet.noneOf(GPRegistryEntry.Privilege.class),
+        params);
   }
 
   public void putKeys(GPCardKeys keys, boolean replace) throws Exception {
@@ -80,7 +106,14 @@ public final class GlobalPlatformSession implements CardSession {
 
   @Override
   public void close() {
-    bibo.close();
+    if (closed) {
+      return;
+    }
+    closed = true;
+    transport.releaseSession();
+    if (ownsTransport) {
+      transport.close();
+    }
   }
 
   private static GPSecureChannelVersion toSecureChannelVersion(ScpConfig.Mode mode) {

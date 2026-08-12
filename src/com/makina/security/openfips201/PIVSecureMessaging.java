@@ -34,10 +34,10 @@ import javacard.security.AESKey;
 /**
  * Tracks transient PIV secure messaging and VCI session state.
  *
- * <p>NIST SP 800-73-5 Part 2 Sections 4.2.1-4.2.7 define PIV secure messaging
- * data objects, command/response protection, and error handling. This class implements that
- * APDU wrapping for Cipher Suites 2 and 7 (Section 4.1.4 Table 18): AES-128 (CS2) or AES-256
- * (CS7) session keys with a 128-bit AES block for CMAC/CBC.
+ * <p>NIST SP 800-73-5 Part 2 Sections 4.2.1-4.2.7 define PIV secure messaging data objects,
+ * command/response protection, and error handling. This class implements that APDU wrapping for
+ * Cipher Suites 2 and 7 (Section 4.1.4 Table 18): AES-128 (CS2) or AES-256 (CS7) session keys with
+ * a 128-bit AES block for CMAC/CBC.
  */
 final class PIVSecureMessaging {
   private static final short OFFSET_SM_ESTABLISHED = (short) 0;
@@ -45,11 +45,11 @@ final class PIVSecureMessaging {
   private static final short OFFSET_LAST_CLA = (short) 2;
   private static final short OFFSET_LAST_INS = (short) 3;
   private static final short LENGTH_STATE = (short) 4;
-  //#if VCI_CS2
+  // #if VCI_CS2
   private static final short LENGTH_SESSION_KEY = (short) 16;
-  //#else
+  // #else
   private static final short LENGTH_SESSION_KEY = (short) 32;
-  //#endif
+  // #endif
   private static final short OFFSET_RESPONSE_PHASE = (short) 0;
   private static final short OFFSET_RESPONSE_PHASE_OFFSET = (short) 1;
   private static final short OFFSET_RESPONSE_PLAIN_REMAINING = (short) 2;
@@ -104,21 +104,22 @@ final class PIVSecureMessaging {
     commandMcv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseMcv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     encCounter = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
-    responseState = JCSystem.makeTransientShortArray(LENGTH_RESPONSE_STATE, JCSystem.CLEAR_ON_DESELECT);
+    responseState =
+        JCSystem.makeTransientShortArray(LENGTH_RESPONSE_STATE, JCSystem.CLEAR_ON_DESELECT);
     responseIv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseBlock = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseTail = JCSystem.makeTransientByteArray((short) 14, JCSystem.CLEAR_ON_DESELECT);
-    //#if VCI_CS2
+    // #if VCI_CS2
     skCfrm = PIVCrypto.buildTransientAes128Key();
     skMac = PIVCrypto.buildTransientAes128Key();
     skEnc = PIVCrypto.buildTransientAes128Key();
     skRmac = PIVCrypto.buildTransientAes128Key();
-    //#else
+    // #else
     skCfrm = PIVCrypto.buildTransientAes256Key();
     skMac = PIVCrypto.buildTransientAes256Key();
     skEnc = PIVCrypto.buildTransientAes256Key();
     skRmac = PIVCrypto.buildTransientAes256Key();
-    //#endif
+    // #endif
   }
 
   void clear() {
@@ -384,6 +385,22 @@ final class PIVSecureMessaging {
     return responseState[OFFSET_RESPONSE_PHASE] != RESPONSE_PHASE_NONE;
   }
 
+  /**
+   * Abandons an incomplete protected response without publishing its undelivered R-MAC.
+   *
+   * <p>The encryption counter belongs to the original logical command, so interruption advances it
+   * once under the same rule as normal completion. Session keys and the last delivered R-MCV are
+   * retained for the next protected command.
+   */
+  void abortResponseStream() {
+    if (!isResponseStreamActive()) return;
+    if (shouldIncrementCounter()) incrementCounter();
+    clearResponseState();
+    Util.arrayFillNonAtomic(responseIv, (short) 0, LENGTH_BLOCK, (byte) 0);
+    Util.arrayFillNonAtomic(responseBlock, (short) 0, LENGTH_BLOCK, (byte) 0);
+    Util.arrayFillNonAtomic(responseTail, (short) 0, (short) responseTail.length, (byte) 0);
+  }
+
   short getResponseStreamStatusWord() {
     if (isResponseStreamComplete()) return ISO7816.SW_NO_ERROR;
 
@@ -487,10 +504,13 @@ final class PIVSecureMessaging {
     responseTail[(short) 0] = TAG_STATUS;
     responseTail[(short) 1] = (byte) 2;
     Util.setShort(responseTail, (short) 2, responseState[OFFSET_RESPONSE_SW]);
-    PIVCrypto.doAesCmacFinal(responseTail, (short) 0, (short) 4, responseMcv, (short) 0);
+    // Keep the candidate R-MCV private until every response byte has been delivered. If response
+    // chaining is interrupted, the host never received this MAC and must continue from the prior
+    // delivered R-MCV.
+    PIVCrypto.doAesCmacFinal(responseTail, (short) 0, (short) 4, responseBlock, (short) 0);
     responseTail[(short) 4] = TAG_MAC;
     responseTail[(short) 5] = (byte) LENGTH_SHORT_MAC;
-    Util.arrayCopyNonAtomic(responseMcv, (short) 0, responseTail, (short) 6, LENGTH_SHORT_MAC);
+    Util.arrayCopyNonAtomic(responseBlock, (short) 0, responseTail, (short) 6, LENGTH_SHORT_MAC);
     responseState[OFFSET_RESPONSE_PHASE_OFFSET] = (short) 0;
     responseState[OFFSET_RESPONSE_PHASE] = RESPONSE_PHASE_FINAL;
   }
@@ -501,6 +521,7 @@ final class PIVSecureMessaging {
     }
 
     if (responseState[OFFSET_RESPONSE_PHASE_OFFSET] == (short) 14) {
+      Util.arrayCopyNonAtomic(responseBlock, (short) 0, responseMcv, (short) 0, LENGTH_BLOCK);
       responseState[OFFSET_RESPONSE_PHASE] = RESPONSE_PHASE_NONE;
       responseState[OFFSET_RESPONSE_PHASE_OFFSET] = (short) 0;
       if (shouldIncrementCounter()) incrementCounter();
@@ -549,8 +570,7 @@ final class PIVSecureMessaging {
   private void buildIv(boolean response, byte[] out, short outOffset) {
     Util.arrayCopyNonAtomic(encCounter, (short) 0, responseBlock, (short) 0, LENGTH_BLOCK);
     if (response) responseBlock[0] = (byte) (responseBlock[0] | (byte) 0x80);
-    PIVCrypto.doAesEcbEncrypt(
-        skEnc, responseBlock, (short) 0, LENGTH_BLOCK, out, outOffset);
+    PIVCrypto.doAesEcbEncrypt(skEnc, responseBlock, (short) 0, LENGTH_BLOCK, out, outOffset);
   }
 
   private short stripPadding(byte[] buffer, short offset, short length) {
@@ -573,9 +593,9 @@ final class PIVSecureMessaging {
   /**
    * Checks whether the encryption counter should be incremented.
    *
-   * <p>NIST SP 800-73-5 Part 2 Section 4.2.2 requires the encryption counter to be incremented
-   * once per completed logical secure-messaging command, except chained '1C' commands. Plaintext
-   * GET RESPONSE frames only transport the already-computed protected response stream.
+   * <p>NIST SP 800-73-5 Part 2 Section 4.2.2 requires the encryption counter to be incremented once
+   * per completed logical secure-messaging command, except chained '1C' commands. Plaintext GET
+   * RESPONSE frames only transport the already-computed protected response stream.
    */
   private boolean shouldIncrementCounter() {
     return state[OFFSET_LAST_CLA] != CLA_CHAINED_SECURE_MESSAGING;

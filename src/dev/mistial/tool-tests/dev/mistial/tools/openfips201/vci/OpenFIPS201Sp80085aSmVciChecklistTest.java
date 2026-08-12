@@ -23,7 +23,8 @@ import org.junit.jupiter.api.Test;
 class OpenFIPS201Sp80085aSmVciChecklistTest {
 
   /**
-   * AS01.17: pairing code shall be exactly 8 bytes; AS01.18A-R4: bytes are 0x30–0x39 (ASCII digits).
+   * AS01.17: pairing code shall be exactly 8 bytes; AS01.18A-R4: bytes are 0x30–0x39 (ASCII
+   * digits).
    *
    * <p>Enforced by provisioning and by the wire format of VERIFY (key ref 0x98).
    */
@@ -59,10 +60,10 @@ class OpenFIPS201Sp80085aSmVciChecklistTest {
   }
 
   /**
-   * AS04.03A-R4: session keys are zeroized on disconnect. Host-side {@link VciSupport.SmSession}
-   * is replaced rather than cleared in-place; this test documents the required behaviour by
-   * verifying a fresh session starts from the initial counter/MCV and that discarding a session
-   * object drops access to prior key material from the caller's perspective.
+   * AS04.03A-R4: session keys are zeroized on disconnect. Host-side {@link VciSupport.SmSession} is
+   * replaced rather than cleared in-place; this test documents the required behaviour by verifying
+   * a fresh session starts from the initial counter/MCV and that discarding a session object drops
+   * access to prior key material from the caller's perspective.
    */
   @Test
   void as04_03_sessionKeysAreSessionScopedAndResettable() {
@@ -95,8 +96,8 @@ class OpenFIPS201Sp80085aSmVciChecklistTest {
   }
 
   /**
-   * AS04.07 / SM command integrity: re-wrapping a known VERIFY produces a stable CLA 0x0C APDU
-   * with 8E MAC tag (Part 2 Section 4.2.3–4.2.4), independent of card presence.
+   * AS04.07 / SM command integrity: re-wrapping a known VERIFY produces a stable CLA 0x0C APDU with
+   * 8E MAC tag (Part 2 Section 4.2.3–4.2.4), independent of card presence.
    */
   @Test
   void as04_07_smCommandWrapProducesSecureMessagingClaAndMac() {
@@ -105,7 +106,12 @@ class OpenFIPS201Sp80085aSmVciChecklistTest {
         new VciSupport.SmSession(new VciSupport.SessionKeys(sk, sk, sk, sk));
     byte[] wrapped =
         VciSupport.wrapCommand(
-            session, (byte) 0x20, (byte) 0x00, (byte) 0x98, new byte[] {0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31}, false);
+            session,
+            (byte) 0x20,
+            (byte) 0x00,
+            (byte) 0x98,
+            new byte[] {0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31},
+            false);
     assertEquals(0x0C, wrapped[0] & 0xFF, "SM CLA");
     assertEquals(0x20, wrapped[1] & 0xFF, "INS VERIFY");
     assertEquals(0x98, wrapped[3] & 0xFF, "pairing key ref");
@@ -147,9 +153,7 @@ class OpenFIPS201Sp80085aSmVciChecklistTest {
     assertTrue((policyByte(noPairing) & 0x04) != 0, "no-pairing sets bit3");
   }
 
-  /**
-   * CS2 and CS7 KDF lengths match SP 800-73-5 Table 18 (len=512 bits CS2, 1024 bits CS7).
-   */
+  /** CS2 and CS7 KDF lengths match SP 800-73-5 Table 18 (len=512 bits CS2, 1024 bits CS7). */
   @Test
   void cipherSuiteKeyMaterialLengthsMatchSp800735Table18() {
     // CS2: Z=32, nIcc=16 → 64 bytes of key material
@@ -187,8 +191,7 @@ class OpenFIPS201Sp80085aSmVciChecklistTest {
 
   @Test
   void unsupportedCipherSuiteIsRejected() {
-    assertThrows(
-        IllegalArgumentException.class, () -> VciSupport.sessionKeyLength((byte) 0x00));
+    assertThrows(IllegalArgumentException.class, () -> VciSupport.sessionKeyLength((byte) 0x00));
   }
 
   @Test

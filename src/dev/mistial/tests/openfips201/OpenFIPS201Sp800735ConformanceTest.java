@@ -116,12 +116,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
       assertSw(0x9000, selectApplet(), "SELECT over contactless");
 
       ResponseAPDU response =
-          transmit(
-              0x00,
-              0x24,
-              0x00,
-              0x80,
-              hex("313233343536FFFFFF363534333231FFFFFF"));
+          transmit(0x00, 0x24, 0x00, 0x80, hex("313233343536FFFFFF363534333231FFFFFF"));
       assertSw(
           0x6982,
           response,
@@ -131,6 +126,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
   private ResponseAPDU updateConfigOverMockedScp(byte[] payload) {
     try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
 
       Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);

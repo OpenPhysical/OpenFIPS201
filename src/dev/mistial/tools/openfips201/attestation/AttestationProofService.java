@@ -9,8 +9,9 @@ package dev.mistial.tools.openfips201.attestation;
 
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
-import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.CardSession;
+import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import java.io.ByteArrayOutputStream;
 import java.security.cert.CertificateFactory;
@@ -85,7 +86,14 @@ public final class AttestationProofService {
   }
 
   public byte[] collectPlainProof(CardTarget target, byte[] appletAid, byte slot) throws Exception {
-    byte[] certificate = collectPlain(target, appletAid, slot);
+    try (CardTransport transport = target.openTransport()) {
+      return collectPlainProof(transport, appletAid, slot);
+    }
+  }
+
+  public byte[] collectPlainProof(CardTransport transport, byte[] appletAid, byte slot)
+      throws Exception {
+    byte[] certificate = collectPlain(transport, appletAid, slot);
     parseCertificate(certificate);
     return certificate;
   }
@@ -106,16 +114,15 @@ public final class AttestationProofService {
   }
 
   static byte[] proofKeyDefinition(byte slot) {
-    return
-        AttestationSupport.tlv(
-            0x66,
-            AttestationSupport.concat(
-                AttestationSupport.tlv(0x8B, new byte[] {slot}),
-                AttestationSupport.tlv(0x8C, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
-                AttestationSupport.tlv(0x8D, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
-                AttestationSupport.tlv(0x8E, new byte[] {AttestationSupport.ALG_ECC_P256}),
-                AttestationSupport.tlv(0x8F, new byte[] {AttestationSupport.ROLE_SIGN}),
-                AttestationSupport.tlv(0x90, new byte[] {0x00})));
+    return AttestationSupport.tlv(
+        0x66,
+        AttestationSupport.concat(
+            AttestationSupport.tlv(0x8B, new byte[] {slot}),
+            AttestationSupport.tlv(0x8C, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
+            AttestationSupport.tlv(0x8D, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
+            AttestationSupport.tlv(0x8E, new byte[] {AttestationSupport.ALG_ECC_P256}),
+            AttestationSupport.tlv(0x8F, new byte[] {AttestationSupport.ROLE_SIGN}),
+            AttestationSupport.tlv(0x90, new byte[] {0x00})));
   }
 
   private static boolean deleteProofKey(CardSession session, byte slot) {
@@ -143,17 +150,24 @@ public final class AttestationProofService {
         0x84);
   }
 
-  private static byte[] collectPlain(CardTarget target, byte[] appletAid, byte slot) throws Exception {
-    try (apdu4j.core.BIBO bibo = target.openBibo()) {
-      ResponseAPDU select = bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, appletAid, 256));
-      if (select.getSW() != 0x9000) {
-        throw new IllegalStateException("SELECT PIV failed SW=" + String.format("0x%04X", select.getSW()));
-      }
-      return collect(
-          command -> bibo.transmit(command),
-          bibo.transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0)),
-          0x00);
+  private static byte[] collectPlain(CardTarget target, byte[] appletAid, byte slot)
+      throws Exception {
+    try (CardTransport transport = target.openTransport()) {
+      return collectPlain(transport, appletAid, slot);
     }
+  }
+
+  private static byte[] collectPlain(CardTransport transport, byte[] appletAid, byte slot) {
+    apdu4j.core.BIBO bibo = transport.bibo();
+    ResponseAPDU select = bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, appletAid, 256));
+    if (select.getSW() != 0x9000) {
+      throw new IllegalStateException(
+          "SELECT PIV failed SW=" + String.format("0x%04X", select.getSW()));
+    }
+    return collect(
+        command -> bibo.transmit(command),
+        bibo.transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0)),
+        0x00);
   }
 
   private static byte[] collect(Transmitter transmitter, ResponseAPDU initial, int cla) {
@@ -165,7 +179,8 @@ public final class AttestationProofService {
       current = transmitter.transmit(new CommandAPDU(cla, 0xC0, 0x00, 0x00, le == 0 ? 256 : le));
     }
     if (current.getSW() != 0x9000) {
-      throw new IllegalStateException("attestation proof failed SW=" + String.format("0x%04X", current.getSW()));
+      throw new IllegalStateException(
+          "attestation proof failed SW=" + String.format("0x%04X", current.getSW()));
     }
     output.write(current.getData(), 0, current.getData().length);
     return output.toByteArray();
@@ -177,7 +192,8 @@ public final class AttestationProofService {
 
   private static ResponseAPDU expect(ResponseAPDU response, String label) {
     if (response.getSW() != 0x9000) {
-      throw new IllegalStateException(label + " failed SW=" + String.format("0x%04X", response.getSW()));
+      throw new IllegalStateException(
+          label + " failed SW=" + String.format("0x%04X", response.getSW()));
     }
     return response;
   }

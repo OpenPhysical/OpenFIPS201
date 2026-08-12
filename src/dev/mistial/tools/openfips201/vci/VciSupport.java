@@ -29,7 +29,6 @@ import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.Signature;
-import java.security.interfaces.ECPublicKey;
 import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -43,8 +42,8 @@ import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.sec.SECNamedCurves;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
-import org.bouncycastle.crypto.macs.CMac;
 import org.bouncycastle.crypto.engines.AESEngine;
+import org.bouncycastle.crypto.macs.CMac;
 import org.bouncycastle.crypto.params.KeyParameter;
 import org.bouncycastle.math.ec.ECPoint;
 
@@ -52,9 +51,9 @@ import org.bouncycastle.math.ec.ECPoint;
  * Host-side helpers for the PIV VCI (secure messaging, OPACITY ZKM) flow used by the VCI tool and
  * known-answer vector tests.
  *
- * <p>This deliberately mirrors the byte-level contract implemented by the applet
- * ({@code PIV.generalAuthenticateCase1A} / {@code PIVSecureMessaging}) and by the OpenPhysical .NET
- * stack ({@code PivSecureMessagingBootstrapper} / {@code PivSecureMessagingProvider}).
+ * <p>This deliberately mirrors the byte-level contract implemented by the applet ({@code
+ * PIV.generalAuthenticateCase1A} / {@code PIVSecureMessaging}) and by the OpenPhysical .NET stack
+ * ({@code PivSecureMessagingBootstrapper} / {@code PivSecureMessagingProvider}).
  *
  * <p>Cipher Suite 2 (ECC P-256, AES-128, SHA-256) and Cipher Suite 7 (ECC P-384, AES-256, SHA-384)
  * match the applet's OPACITY/SM implementation. Host tools may still default to CS2 for
@@ -69,8 +68,6 @@ final class VciSupport {
   static final byte ALG_CS2 = (byte) 0x27;
   static final byte ALG_CS7 = (byte) 0x2E;
   static final byte KEY_REF_SECURE_MESSAGING = (byte) 0x04;
-
-
 
   // CVC tags (SP 800-73-4-shaped).
   static final int TAG_CVC = 0x7F21;
@@ -91,9 +88,7 @@ final class VciSupport {
   private static final byte[] CURVE_OID_P256 = {
     0x2A, (byte) 0x86, 0x48, (byte) 0xCE, 0x3D, 0x03, 0x01, 0x07
   }; // prime256v1
-  private static final byte[] CURVE_OID_P384 = {
-    0x2B, (byte) 0x81, 0x04, 0x00, 0x22
-  }; // secp384r1
+  private static final byte[] CURVE_OID_P384 = {0x2B, (byte) 0x81, 0x04, 0x00, 0x22}; // secp384r1
 
   private static final byte[] KEY_CONFIRMATION_CONTEXT = {0x4B, 0x43, 0x5F, 0x31, 0x5F, 0x56};
   private static final int COORD_LENGTH_CS2 = 32;
@@ -117,7 +112,8 @@ final class VciSupport {
     if (isCs7(suite)) {
       return COORD_LENGTH_CS7;
     }
-    throw new IllegalArgumentException("Unsupported cipher suite 0x" + Integer.toHexString(suite & 0xFF));
+    throw new IllegalArgumentException(
+        "Unsupported cipher suite 0x" + Integer.toHexString(suite & 0xFF));
   }
 
   /** AES session-key length: field − 16 (16 for CS2, 32 for CS7). */
@@ -169,7 +165,9 @@ final class VciSupport {
 
       ASN1EncodableVector algorithmId = new ASN1EncodableVector();
       algorithmId.add(
-          isCs7(suite) ? X9ObjectIdentifiers.ecdsa_with_SHA384 : X9ObjectIdentifiers.ecdsa_with_SHA256);
+          isCs7(suite)
+              ? X9ObjectIdentifiers.ecdsa_with_SHA384
+              : X9ObjectIdentifiers.ecdsa_with_SHA256);
       ASN1EncodableVector signatureValue = new ASN1EncodableVector();
       signatureValue.add(new DERSequence(algorithmId));
       signatureValue.add(new DERBitString(ecdsaSigValueDer));
@@ -184,8 +182,8 @@ final class VciSupport {
   }
 
   /**
-   * Verifies a card CVC against the signer public key. Accepts ECDSA-SHA256 or ECDSA-SHA384
-   * (CS2 / CS7 production encodings).
+   * Verifies a card CVC against the signer public key. Accepts ECDSA-SHA256 or ECDSA-SHA384 (CS2 /
+   * CS7 production encodings).
    */
   static boolean verifyCvc(byte[] cvc, PublicKey signerPublicKey) {
     try {
@@ -229,8 +227,8 @@ final class VciSupport {
 
   /**
    * Returns the raw ECDSA-Sig-Value (DER {@code SEQUENCE&#123;r,s&#125;}) from a {@code 5F37}
-   * signature field that is either that raw value or a DER-wrapped X.509 SignatureValue
-   * ({@code SEQUENCE&#123;AlgorithmIdentifier, BIT STRING&#123;ECDSA-Sig-Value&#125;&#125;}).
+   * signature field that is either that raw value or a DER-wrapped X.509 SignatureValue ({@code
+   * SEQUENCE&#123;AlgorithmIdentifier, BIT STRING&#123;ECDSA-Sig-Value&#125;&#125;}).
    */
   private static byte[] unwrapCvcSignature(byte[] signatureField) {
     try {
@@ -628,8 +626,7 @@ final class VciSupport {
     }
     System.arraycopy(fullRmac, 0, session.responseMcv, 0, 16);
 
-    int statusSw =
-        ((body[statusOffset] & 0xFF) << 8) | (body[statusOffset + 1] & 0xFF);
+    int statusSw = ((body[statusOffset] & 0xFF) << 8) | (body[statusOffset + 1] & 0xFF);
 
     byte[] plaintext = new byte[0];
     if (encOffset >= 0) {

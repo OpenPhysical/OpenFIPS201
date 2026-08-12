@@ -172,7 +172,7 @@ private key material.
     "masterKeyEnv": "BIGCORP_STOCK_SCP03_KEY"
   },
   "applet": {
-    "capPath": "build/bin/OpenFIPS201-OP-0.1.cap",
+    "capPath": "build/bin/OpenFIPS201-v1_10_openphy-r1.cap",
     "packageAid": "A00000030800001000",
     "appletAid": "A000000308000010000100",
     "instanceAid": "A000000308000010000100",
@@ -357,3 +357,13 @@ preflight rejects any rotation where the current and target key versions are the
 same, before sending `PUT KEY`. Pass `--stock-scp-key-version` when the current
 factory key or rollback key lives at another version. Physical PC/SC keyroll
 targets require `--yes`; ZeroMQ emulator targets do not.
+
+### ZeroMQ transport behavior
+
+The client verifies the emulator protocol with a bounded readiness handshake before sending an
+APDU. A missing endpoint fails within two seconds. A protocol mismatch fails immediately.
+
+APDUs are never retried because card commands can change state even when a response is lost. An
+APDU timeout closes the transport and reports that card state is indeterminate. Multi-step issuer
+workflows reuse one thread-confined connection and allow only one active GlobalPlatform session at
+a time.

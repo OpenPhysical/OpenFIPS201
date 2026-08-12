@@ -18,8 +18,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     withMockedScp(
         () -> {
           createKey(0x06, 0x04);
-          ResponseAPDU response =
-              transmit(0x84, 0x47, 0x00, KEY_REFERENCE, hex("AC03800106"), 0);
+          ResponseAPDU response = transmit(0x84, 0x47, 0x00, KEY_REFERENCE, hex("AC03800106"), 0);
           assertSw(0x9000, response, "RSA key generation");
           byte[] data = response.getData();
           assertEquals((byte) 0x7F, data[0]);
@@ -32,8 +31,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     withMockedScp(
         () -> {
           createKey(0x11, 0x04);
-          ResponseAPDU response =
-              transmit(0x84, 0x47, 0x00, KEY_REFERENCE, hex("AC03800111"), 0);
+          ResponseAPDU response = transmit(0x84, 0x47, 0x00, KEY_REFERENCE, hex("AC03800111"), 0);
           assertSw(0x9000, response, "P-256 key generation");
           byte[] data = response.getData();
           assertEquals((byte) 0x7F, data[0]);
@@ -116,18 +114,32 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
 
   private static byte[] createKeyRequest(int mechanism, int role) {
     return new byte[] {
-      0x66, 0x12,
-      (byte) 0x8B, 0x01, (byte) KEY_REFERENCE,
-      (byte) 0x8C, 0x01, 0x7F,
-      (byte) 0x8D, 0x01, 0x00,
-      (byte) 0x8E, 0x01, (byte) mechanism,
-      (byte) 0x8F, 0x01, (byte) role,
-      (byte) 0x90, 0x01, 0x00
+      0x66,
+      0x12,
+      (byte) 0x8B,
+      0x01,
+      (byte) KEY_REFERENCE,
+      (byte) 0x8C,
+      0x01,
+      0x7F,
+      (byte) 0x8D,
+      0x01,
+      0x00,
+      (byte) 0x8E,
+      0x01,
+      (byte) mechanism,
+      (byte) 0x8F,
+      0x01,
+      (byte) role,
+      (byte) 0x90,
+      0x01,
+      0x00
     };
   }
 
   protected void withMockedScp(Runnable action) {
     try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
           .thenReturn(

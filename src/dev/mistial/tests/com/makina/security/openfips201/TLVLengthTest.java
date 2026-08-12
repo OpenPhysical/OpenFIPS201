@@ -31,8 +31,7 @@ class TLVLengthTest {
   @Test
   void rejectsUnsupportedOrTruncatedLengths() {
     assertIsoReason(
-        ISO7816.SW_WRONG_LENGTH,
-        () -> TLV.writeLength(new byte[4], (short) 0, (short) -1));
+        ISO7816.SW_WRONG_LENGTH, () -> TLV.writeLength(new byte[4], (short) 0, (short) -1));
     assertIsoReason(
         ISO7816.SW_WRONG_DATA,
         () -> TLV.readLength(new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2, true));
@@ -64,9 +63,7 @@ class TLVLengthTest {
   void computesObjectEndWithBoundsChecks() {
     byte[] object = new byte[] {0x30, 0x03, 0x01, 0x02, 0x03};
     assertEquals((short) 5, TLV.objectEnd(object, (short) 0, (short) object.length, true));
-    assertIsoReason(
-        ISO7816.SW_WRONG_DATA,
-        () -> TLV.objectEnd(object, (short) 0, (short) 4, true));
+    assertIsoReason(ISO7816.SW_WRONG_DATA, () -> TLV.objectEnd(object, (short) 0, (short) 4, true));
   }
 
   private static byte[] slice(byte[] buffer, int offset, int length) {

@@ -75,13 +75,11 @@ abstract class PIVObject {
   protected static final short HEADER_MODE_CONTACTLESS = (short) 2;
   protected static final short HEADER_ADMIN_KEY = (short) 3;
 
-  // We allocate some spare header space for derived attributes
-  // TODO: Could improve this header creation by defining length in derived classes.
-  protected static final short LENGTH_HEADER = (short) 8;
+  // The common persistent header contains exactly the four fields above. Derived classes request
+  // their own additional bytes explicitly so layout changes remain reviewable.
+  protected static final short LENGTH_HEADER = (short) 4;
 
-  // Linked list element
-  // TODO: This needs to be abstracted out of the public eye
-  PIVObject nextObject;
+  private PIVObject nextObject;
   protected final byte[] header;
 
   // Data objects are addressed by 1-3 byte PIV object identifiers.  Key objects still use
@@ -201,6 +199,14 @@ abstract class PIVObject {
 
   byte getAdminKey() {
     return header[HEADER_ADMIN_KEY];
+  }
+
+  final PIVObject getNext() {
+    return nextObject;
+  }
+
+  final void setNext(PIVObject next) {
+    nextObject = next;
   }
 
   /** Requests object deletion if supported by the card. */

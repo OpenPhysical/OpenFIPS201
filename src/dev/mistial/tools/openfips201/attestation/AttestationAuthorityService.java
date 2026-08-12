@@ -65,8 +65,7 @@ public final class AttestationAuthorityService {
             issuerSigner, f9, rootSubject, subject, instanceId.toSerialNumber(), validityDays);
     F9Profile profile = AttestationSupport.profileFromIssuer(f9.getPrivate(), certificate);
     provisionAuthority(session, profile, AttestationSupport.der(certificate), issuerObjectId);
-    return new Result(
-        certificate, f9.getPrivate(), instanceId.toHex(), spkiSha256(certificate));
+    return new Result(certificate, f9.getPrivate(), instanceId.toHex(), spkiSha256(certificate));
   }
 
   public static final class Result {
@@ -96,8 +95,7 @@ public final class AttestationAuthorityService {
   }
 
   public static String certificateSha256(X509Certificate certificate) throws Exception {
-    return HexUtil.format(
-        MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded()));
+    return HexUtil.format(MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded()));
   }
 
   /** Hex of the F9 cert serial, zero-padded to the 16-byte durable instance id form. */
@@ -179,7 +177,11 @@ public final class AttestationAuthorityService {
       transmitExpect(
           session,
           new apdu4j.core.CommandAPDU(
-              0x84, 0xDB, 0x3F, 0x00, AttestationSupport.createDataObjectDefinition(issuerObjectId)),
+              0x84,
+              0xDB,
+              0x3F,
+              0x00,
+              AttestationSupport.createDataObjectDefinition(issuerObjectId)),
           true);
       sendChainedPutData(
           session,
@@ -214,16 +216,21 @@ public final class AttestationAuthorityService {
     }
   }
 
-  static void transmitExpect(CardSession session, apdu4j.core.CommandAPDU command, boolean existsOk) {
+  static void transmitExpect(
+      CardSession session, apdu4j.core.CommandAPDU command, boolean existsOk) {
     apdu4j.core.ResponseAPDU response = session.transmit(command);
     if (response.getSW() == SW_NO_ERROR
         || (existsOk && response.getSW() == SW_PUT_DATA_OBJECT_EXISTS)) {
       return;
     }
     throw new IllegalStateException(
-        "APDU failed SW=" + String.format("0x%04X", response.getSW())
-            + " (" + statusMeaning(response.getSW()) + ")"
-            + " command=" + command.toLogString());
+        "APDU failed SW="
+            + String.format("0x%04X", response.getSW())
+            + " ("
+            + statusMeaning(response.getSW())
+            + ")"
+            + " command="
+            + command.toLogString());
   }
 
   private static String statusMeaning(int sw) {

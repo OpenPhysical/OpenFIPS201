@@ -40,8 +40,7 @@ public final class BatchCreateService {
     metadata.stockScpKcv = kcv(stockKey);
     metadata.receiptsCsv = "receipts.csv";
     Files.write(
-        directory.resolve("batch.json"),
-        GSON.toJson(metadata).getBytes(StandardCharsets.UTF_8));
+        directory.resolve("batch.json"), GSON.toJson(metadata).getBytes(StandardCharsets.UTF_8));
     ensureCsvHeader(directory.resolve(metadata.receiptsCsv));
     return new Result(HexUtil.format(stockKey), metadata.stockScpKcv, directory);
   }

@@ -29,8 +29,8 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.security.CryptoException;
 import javacard.security.AESKey;
+import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
 import javacard.security.KeyAgreement;
@@ -76,9 +76,9 @@ final class PIVCrypto {
   private static Cipher cspAESCBC;
 
   private static MessageDigest cspSHA256;
-  //#if VCI_CS7
+  // #if VCI_CS7
   private static MessageDigest cspSHA384;
-  //#endif
+  // #endif
 
   private static KeyAgreement cspECDH;
 
@@ -99,9 +99,9 @@ final class PIVCrypto {
     cspECCSHA384 = null;
     cspAESCMAC = null;
     cspSHA256 = null;
-    //#if VCI_CS7
+    // #if VCI_CS7
     cspSHA384 = null;
-    //#endif
+    // #endif
 
     JCSystem.requestObjectDeletion();
   }
@@ -185,7 +185,7 @@ final class PIVCrypto {
       }
     }
 
-    //#if VCI_CS7
+    // #if VCI_CS7
     if (cspSHA384 == null) {
       try {
         cspSHA384 = MessageDigest.getInstance(MessageDigest.ALG_SHA_384, false);
@@ -193,7 +193,7 @@ final class PIVCrypto {
         cspSHA384 = null;
       }
     }
-    //#endif
+    // #endif
   }
 
   static boolean supportsMechanism(byte mechanism) {
@@ -220,27 +220,27 @@ final class PIVCrypto {
         return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
-        //#if VCI_CS2
+        // #if VCI_CS2
         // OPACITY needs ECDH, AES (ECB/CBC/CMAC), and the suite hash (SHA-256 or SHA-384).
         return (cspECDH != null
             && cspAES != null
             && cspAESCBC != null
             && cspAESCMAC != null
             && cspSHA256 != null);
-        //#else
+        // #else
         return false;
-        //#endif
+        // #endif
 
       case PIV.ID_ALG_ECC_CS7:
-        //#if VCI_CS7
+        // #if VCI_CS7
         return (cspECDH != null
             && cspAES != null
             && cspAESCBC != null
             && cspAESCMAC != null
             && cspSHA384 != null);
-        //#else
+        // #else
         return false;
-        //#endif
+        // #endif
 
       default:
         return false;
@@ -390,12 +390,12 @@ final class PIVCrypto {
     return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  //#if VCI_CS7
+  // #if VCI_CS7
   static short doSha384(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspSHA384.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
-  //#endif
+  // #endif
 
   /**
    * Suite hash for OPACITY KDF: SHA-256 when {@code fieldLen == 32} (CS2), SHA-384 when {@code
@@ -408,18 +408,23 @@ final class PIVCrypto {
       short inLength,
       byte[] outBuffer,
       short outOffset) {
-    //#if VCI_CS2
+    // #if VCI_CS2
     return doSha256(inBuffer, inOffset, inLength, outBuffer, outOffset);
-    //#else
+    // #else
     if (fieldLen == (short) 32) {
       return doSha256(inBuffer, inOffset, inLength, outBuffer, outOffset);
     }
     return doSha384(inBuffer, inOffset, inLength, outBuffer, outOffset);
-    //#endif
+    // #endif
   }
 
   static short doAesCmac(
-      SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+      SecretKey key,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
     requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     cspAESCMAC.init(key, Signature.MODE_SIGN);
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
@@ -447,7 +452,12 @@ final class PIVCrypto {
   }
 
   static short doAesEcbEncrypt(
-      SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+      SecretKey key,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
     cspAES.init(key, Cipher.MODE_ENCRYPT);
     return cspAES.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
@@ -592,12 +602,12 @@ final class PIVCrypto {
       short inLength,
       byte[] outBuffer,
       short outOffset,
-      ECPointValidator validator) {
+      ECPointValidator validator,
+      ECParams params) {
 
     // Uncompressed ECC public keys are marshaled as the concatenation of:
     // CONST_POINT_UNCOMPRESSED | X | Y
-    // TODO: If there is something that specifies the JCVM/JCRE must check the length then we
-    // can ditch these checks
+    // Reject malformed points before invoking providers whose length handling varies by platform.
     if (((theKey.getSize() == KeyBuilder.LENGTH_EC_FP_256) && (inLength != LENGTH_PUBLIC_EC_256))
         || ((theKey.getSize() == KeyBuilder.LENGTH_EC_FP_384)
             && (inLength != LENGTH_PUBLIC_EC_384))) {
@@ -605,10 +615,6 @@ final class PIVCrypto {
       return (short) 0; // Keep compiler happy
     }
 
-    ECParams params =
-        theKey.getSize() == KeyBuilder.LENGTH_EC_FP_256
-            ? ECParamsP256.getInstance()
-            : ECParamsP384.getInstance();
     if (!validator.isValid(inBuffer, inOffset, inLength, params)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
@@ -637,8 +643,7 @@ final class PIVCrypto {
       byte[] outBuffer,
       short outOffset) {
     short comparisonLength = (short) (theKey.getSize() >> (short) 3); // divide by 8
-    // TODO: If there is something that specifies the JCVM/JCRE must check the length
-    // then we can ditch these checks.
+    // Reject malformed blocks before invoking providers whose length handling varies by platform.
     if (inLength != comparisonLength) {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       return (short) 0; // Keep compiler happy

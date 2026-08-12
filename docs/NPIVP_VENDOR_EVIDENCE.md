@@ -37,7 +37,7 @@ Related: [CONFORMANCE_AND_NPIVP.md](CONFORMANCE_AND_NPIVP.md).
 | ID | Requirement (summary) | Status | Vendor statement (draft) |
 | -- | --------------------- | ------ | ------------------------ |
 | VE02.03.01 | List all data objects present and BER-TLV tags | Draft | Objects are **not** fixed at install. After personalisation, list every created object with its card-command tag (e.g. CCC `5FC107`, CHUID `5FC102`, Discovery `7E`, cert containers per SP 800-73 Part 1). Attach the pre-personalisation profile used for the NPIVP card. |
-| VE03.01.01 | List algorithm identifiers supported | Draft | Supported mechanism IDs in the applet include: `00`/`03` 3TDEA-ECB (deprecated), `06` RSA-1024 (legacy; not for current 78-5 listing), `07` RSA-2048, `08`/`0A`/`0C` AES-128/192/256-ECB, `11` ECC P-256, `14` ECC P-384, `27` CS2 SM, `2E` CS7 SM. A given CAP is built for **one** SM suite (CS2 or CS7). RSA-3072 (`05`) is **not** implemented. Publish only algorithms claimed on the Test Summary matrix. |
+| VE03.01.01 | List algorithm identifiers supported | Draft | Supported mechanism IDs in the applet include: `00`/`03` 3TDEA-ECB (deprecated), `05` RSA-3072, `06` RSA-1024 (legacy; not for current 78-5 listing), `07` RSA-2048, `08`/`0A`/`0C` AES-128/192/256-ECB, `11` ECC P-256, `14` ECC P-384, `27` CS2 SM, `2E` CS7 SM. A given CAP is built for **one** SM suite (CS2 or CS7). Publish only algorithms claimed on the Test Summary matrix. |
 | VE03.09-R4.01 | Export of biometric reference data not allowed | N/A | OCC is out of scope. This fork does not implement or claim OCC and does not enroll biometric reference templates for on-card comparison. |
 
 ## SELECT and application identity

@@ -24,24 +24,30 @@ public final class IssuerCardKeyService {
   }
 
   public DerivedScpKeys deriveCardKeys(IssuerProfile profile, byte[] kdd) throws Exception {
-    if (!"pkcs11".equals(profile.cardKeys.deriver)
-        || !"scp03-kdf3".equals(profile.cardKeys.kdf)) {
+    if (!"pkcs11".equals(profile.cardKeys.deriver) || !"scp03-kdf3".equals(profile.cardKeys.kdf)) {
       throw new IllegalArgumentException("cardKeys must use deriver=pkcs11 and kdf=scp03-kdf3");
     }
     return new Scp03Kdf3DerivationService()
-        .derive(cardMasterKey(profile), kdd, profile.cardKeys.newKeyVersion, profile.cardKeys.keyLengthBytes);
+        .derive(
+            cardMasterKey(profile),
+            kdd,
+            profile.cardKeys.newKeyVersion,
+            profile.cardKeys.keyLengthBytes);
   }
 
   public Pkcs11Config cardMasterKey(IssuerProfile profile) {
     Pkcs11Config base =
-        profile.cardKeys.pkcs11 == null ? profile.pkcs11.copy() : merge(profile.pkcs11, profile.cardKeys.pkcs11);
+        profile.cardKeys.pkcs11 == null
+            ? profile.pkcs11.copy()
+            : merge(profile.pkcs11, profile.cardKeys.pkcs11);
     if (profile.cardKeys.masterKeyAlias != null) {
       base.keyAlias = profile.cardKeys.masterKeyAlias;
     }
     if (profile.cardKeys.masterKeyId != null) {
       base.keyId = profile.cardKeys.masterKeyId;
     }
-    if ((base.keyAlias == null || base.keyAlias.isEmpty()) && (base.keyId == null || base.keyId.isEmpty())) {
+    if ((base.keyAlias == null || base.keyAlias.isEmpty())
+        && (base.keyId == null || base.keyId.isEmpty())) {
       throw new IllegalArgumentException("cardKeys must set masterKeyAlias or masterKeyId");
     }
     return base;
@@ -86,7 +92,8 @@ public final class IssuerCardKeyService {
 
   private static byte[] secret(String env) {
     if (env == null || env.isEmpty()) {
-      throw new IllegalArgumentException("profile must name an environment variable for secret material");
+      throw new IllegalArgumentException(
+          "profile must name an environment variable for secret material");
     }
     String value = System.getenv(env);
     if (value == null) {

@@ -32,14 +32,10 @@ package com.makina.security.openfips201;
  */
 final class ECParamsP384 extends ECParams {
 
-  private ECParamsP384() {}
-
-  static ECParams getInstance() {
-    return new ECParamsP384();
-  }
+  ECParamsP384() {}
 
   // Curve polynomial element a
-  protected static final byte[] a = {
+  private final byte[] a = {
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
@@ -55,7 +51,7 @@ final class ECParamsP384 extends ECParams {
   };
 
   // Curve polynomial element b
-  protected static final byte[] b = {
+  private final byte[] b = {
     (byte) 0xB3, (byte) 0x31, (byte) 0x2F, (byte) 0xA7,
     (byte) 0xE2, (byte) 0x3E, (byte) 0xE7, (byte) 0xE4,
     (byte) 0x98, (byte) 0x8E, (byte) 0x05, (byte) 0x6B,
@@ -71,7 +67,7 @@ final class ECParamsP384 extends ECParams {
   };
 
   // Base point
-  protected static final byte[] G = {
+  private final byte[] G = {
     (byte) 0x04, (byte) 0xAA, (byte) 0x87, (byte) 0xCA,
     (byte) 0x22, (byte) 0xBE, (byte) 0x8B, (byte) 0x05,
     (byte) 0x37, (byte) 0x8E, (byte) 0xB1, (byte) 0xC7,
@@ -100,7 +96,7 @@ final class ECParamsP384 extends ECParams {
   };
 
   // Field Definition
-  protected static final byte[] p = {
+  private final byte[] p = {
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
@@ -116,7 +112,7 @@ final class ECParamsP384 extends ECParams {
   };
 
   // Order of G
-  protected static final byte[] n = {
+  private final byte[] n = {
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,
     (byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF,

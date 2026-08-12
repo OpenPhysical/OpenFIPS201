@@ -38,6 +38,8 @@ import javacard.framework.Util;
  */
 final class PIVSecurityProvider {
 
+  private final ECCurveRegistry curves;
+
   /** Compares the entire requested range without returning early on a mismatch. */
   static boolean arrayEqualsConstantTime(
       byte[] first, short firstOffset, byte[] second, short secondOffset, short length) {
@@ -101,7 +103,8 @@ final class PIVSecurityProvider {
   private static final byte FLAG_FALSE = (byte) 0;
   private static final byte FLAG_TRUE = (byte) 0xFF;
 
-  PIVSecurityProvider() {
+  PIVSecurityProvider(ECCurveRegistry curves) {
+    this.curves = curves;
 
     // Initialise our PIV crypto provider
     PIVCrypto.init();
@@ -153,9 +156,18 @@ final class PIVSecurityProvider {
         && (cardPIN.isValidated() || globalPIN.isValidated()));
   }
 
-  void setPINAlways(boolean value) {
-    // TODO: Get rid of this and make PIN verification abstracted
-    transientState[STATE_PIN_ALWAYS] = value ? FLAG_TRUE : FLAG_FALSE;
+  void markPINAlways() {
+    transientState[STATE_PIN_ALWAYS] = FLAG_TRUE;
+  }
+
+  void clearPINAlways() {
+    transientState[STATE_PIN_ALWAYS] = FLAG_FALSE;
+  }
+
+  private boolean consumePINAlways() {
+    boolean active = getIsPINAlways();
+    clearPINAlways();
+    return active;
   }
 
   boolean getIsPINVerified() {
@@ -218,7 +230,7 @@ final class PIVSecurityProvider {
     // Traverse the linked list
     while (key != null) {
       if (key.match(id)) return key;
-      key = (PIVKeyObject) key.nextObject;
+      key = (PIVKeyObject) key.getNext();
     }
 
     return null;
@@ -260,7 +272,7 @@ final class PIVSecurityProvider {
     // Create our new key
     PIVKeyObject key =
         PIVKeyObject.create(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
 
     // Add it to our linked list
     // NOTE: If this is the first key added, just set our firstKey. Otherwise add it to the head
@@ -270,7 +282,7 @@ final class PIVSecurityProvider {
       firstKey = key;
     } else {
       // Insert at the head of the list
-      key.nextObject = firstKey;
+      key.setNext(firstKey);
       firstKey = key;
     }
   }
@@ -285,7 +297,7 @@ final class PIVSecurityProvider {
     PIVKeyObject key = firstKey;
     while (key != null && !key.match(id, mechanism)) {
       previous = key;
-      key = (PIVKeyObject) key.nextObject;
+      key = (PIVKeyObject) key.getNext();
     }
     if (key == null) {
       ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
@@ -298,11 +310,11 @@ final class PIVSecurityProvider {
 
     JCSystem.beginTransaction();
     if (previous == null) {
-      firstKey = (PIVKeyObject) key.nextObject;
+      firstKey = (PIVKeyObject) key.getNext();
     } else {
-      previous.nextObject = key.nextObject;
+      previous.setNext(key.getNext());
     }
-    key.nextObject = null;
+    key.setNext(null);
     JCSystem.commitTransaction();
 
     key.clear();
@@ -315,7 +327,7 @@ final class PIVSecurityProvider {
     PIVKeyObject key = firstKey;
 
     while (key != null) {
-      PIVKeyObject next = (PIVKeyObject) key.nextObject;
+      PIVKeyObject next = (PIVKeyObject) key.getNext();
       if (key.match(id)) {
         if (transientState[STATE_AUTH_KEY] == id) {
           clearAuthenticatedKey();
@@ -324,9 +336,9 @@ final class PIVSecurityProvider {
         if (previous == null) {
           firstKey = next;
         } else {
-          previous.nextObject = next;
+          previous.setNext(next);
         }
-        key.nextObject = null;
+        key.setNext(null);
         JCSystem.commitTransaction();
         key.clear();
         key.runGc();
@@ -345,7 +357,7 @@ final class PIVSecurityProvider {
       if (key.getId() != retainedId) {
         key.clear();
       }
-      key = (PIVKeyObject) key.nextObject;
+      key = (PIVKeyObject) key.getNext();
     }
     // Keep linked-list definitions in place; only sensitive material and authenticated key state
     // are cleared so provisioning profiles do not need to recreate object metadata.
@@ -403,7 +415,7 @@ final class PIVSecurityProvider {
 
     // Now that we have performed a security check, clear the pinAlways flag
     // NOTE: This incidentally always runs with access condition 3 above.
-    setPINAlways(false);
+    clearPINAlways();
 
     // Done
     return result;
@@ -424,6 +436,7 @@ final class PIVSecurityProvider {
   boolean checkAccessModeObject(PIVObject object, boolean vciEstablished) {
 
     boolean valid = false;
+    boolean pinAlways = consumePINAlways();
 
     // Select the appropriate access mode to check
     final boolean contactless = (transientState[STATE_IS_CONTACTLESS] == FLAG_TRUE);
@@ -460,14 +473,11 @@ final class PIVSecurityProvider {
 
         // Check for PIN_ALWAYS
         if (((mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS)
-            && transientState[STATE_PIN_ALWAYS] != FLAG_TRUE) {
+            && !pinAlways) {
           valid = false;
         }
       }
     }
-
-    // Now that we have performed a security check, clear the pinAlways flag
-    transientState[STATE_PIN_ALWAYS] = FLAG_FALSE;
 
     // Done
     return valid;
@@ -579,5 +589,4 @@ final class PIVSecurityProvider {
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0xFF);
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0x00);
   }
-
 }

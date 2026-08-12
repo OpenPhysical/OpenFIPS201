@@ -32,8 +32,6 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.security.interfaces.ECPublicKey;
-import java.security.interfaces.RSAPublicKey;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -318,7 +316,8 @@ final class VciCvcSupport {
       if (resolvedCert != null) {
         try {
           CertificateFactory cf = CertificateFactory.getInstance("X.509");
-          certificate = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(resolvedCert));
+          certificate =
+              (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(resolvedCert));
         } catch (Exception e) {
           throw new IllegalArgumentException("unable to parse 5FC122 certificate", e);
         }
@@ -326,8 +325,7 @@ final class VciCvcSupport {
         throw new IllegalArgumentException("unable to parse 5FC122 certificate");
       }
     }
-    ParsedCvc intermediate =
-        intermediateRaw == null ? null : parseCvc(intermediateRaw);
+    ParsedCvc intermediate = intermediateRaw == null ? null : parseCvc(intermediateRaw);
     return new Smcs(certificate, resolvedCert, intermediate, intermediateRaw);
   }
 
@@ -344,13 +342,17 @@ final class VciCvcSupport {
       passed.add("secure_cvc_iin_matches_anchor_iin");
       boolean ok =
           verifySignature(
-              anchor.publicKey, secureCvc.signatureAlgorithmOid, secureCvc.signature, secureCvc.tbs);
+              anchor.publicKey,
+              secureCvc.signatureAlgorithmOid,
+              secureCvc.signature,
+              secureCvc.tbs);
       if (ok) {
         passed.add("secure_cvc_signature_with_anchor");
         return new PdValidationResult(true, "direct", null, passed, failed);
       }
       failed.add("secure_cvc_signature_with_anchor");
-      return new PdValidationResult(false, "direct", "signature verification failed", passed, failed);
+      return new PdValidationResult(
+          false, "direct", "signature verification failed", passed, failed);
     }
     failed.add("secure_cvc_iin_matches_anchor_iin");
 
@@ -473,7 +475,8 @@ final class VciCvcSupport {
     } catch (Exception e) {
       // fall through
     }
-    throw new IllegalArgumentException("CVC signature must be DigitalSignature AlgorithmIdentifier wrapper");
+    throw new IllegalArgumentException(
+        "CVC signature must be DigitalSignature AlgorithmIdentifier wrapper");
   }
 
   private static PublicKey ecPublicKeyFromPoint(String curveOid, byte[] point) {

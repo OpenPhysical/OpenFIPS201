@@ -16,8 +16,7 @@ public final class HexUtil {
     if (value == null) {
       throw new IllegalArgumentException("hex value is required");
     }
-    String normalized =
-        value.replace(" ", "").replace(":", "").replace("\n", "").replace("\t", "");
+    String normalized = value.replace(" ", "").replace(":", "").replace("\n", "").replace("\t", "");
     if ((normalized.length() & 1) != 0) {
       throw new IllegalArgumentException("hex value has an odd number of digits");
     }

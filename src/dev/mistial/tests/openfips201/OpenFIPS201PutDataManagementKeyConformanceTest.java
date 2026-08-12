@@ -2,6 +2,7 @@ package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeUnit;
 import javacard.framework.ISO7816;
@@ -38,6 +39,60 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   private static final byte DATA_ID_NORMAL = (byte) 0x5A;
   private static final byte DATA_ID_BIOMETRIC_GROUP = (byte) 0x61;
   private static final byte DATA_ID_DISCOVERY = (byte) 0x7E;
+
+  @Test
+  void personalizeAppletTransitionIsOneWayAndBlocksStructuralChanges() {
+    withMockedScp(
+        () -> {
+          byte[] state = new byte[] {GPSystem.APPLICATION_SELECTABLE};
+          Mockito.when(GPSystem.getCardContentState()).thenAnswer(invocation -> state[0]);
+          Mockito.when(GPSystem.setCardContentState((byte) 0x0F))
+              .thenAnswer(
+                  invocation -> {
+                    state[0] = (byte) 0x0F;
+                    return true;
+                  });
+
+          assertSw(0x9000, selectApplet(), "SELECT before lifecycle transition");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              "SCP may perform the one-way personalization transition");
+          assertSw(
+              ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              "The personalization transition cannot be repeated");
+
+          byte[] create = {
+            (byte) 0x64,
+            0x0E,
+            (byte) 0x8B,
+            0x03,
+            (byte) 0x5F,
+            (byte) 0xC1,
+            DATA_ID_NORMAL,
+            (byte) 0x8C,
+            0x01,
+            0x7F,
+            (byte) 0x8D,
+            0x01,
+            0x00,
+            (byte) 0x91,
+            0x01,
+            KEY_REF_CARD_MANAGEMENT
+          };
+          assertSw(
+              ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+              transmit(0x84, 0xDB, 0x3F, 0x00, create),
+              "Personalized applets reject new object definitions");
+
+          ResponseAPDU status = transmit(0x00, 0xCB, 0x3F, 0x00, hex("5C032F4753"));
+          assertSw(0x9000, status, "GET STATUS after lifecycle transition");
+          assertTrue(
+              contains(status.getData(), hex("80010F")),
+              "GET STATUS must report the raw GP application state");
+        });
+  }
 
   @Test
   void administrativeDeleteObjectUnlinksRecord() {
@@ -126,20 +181,13 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     byte[] previousValue = hex("5303A1A2A3");
     assertSw(
         0x9000,
-        transmit(
-            0x00,
-            0xDB,
-            0x3F,
-            0xFF,
-            concat(normalTagList(DATA_ID_NORMAL), previousValue)),
+        transmit(0x00, 0xDB, 0x3F, 0xFF, concat(normalTagList(DATA_ID_NORMAL), previousValue)),
         "Initial object value");
 
     byte[] partialValue = new byte[200];
     for (int i = 0; i < partialValue.length; i++) partialValue[i] = (byte) i;
     byte[] declaredReplacement =
-        concat(
-            normalTagList(DATA_ID_NORMAL),
-            concat(hex("5382012C"), partialValue));
+        concat(normalTagList(DATA_ID_NORMAL), concat(hex("5382012C"), partialValue));
     assertSw(
         0x9000,
         transmit(0x10, 0xDB, 0x3F, 0xFF, declaredReplacement),
@@ -220,15 +268,13 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A5300")),
         "PUT DATA with zero-length object should clear object content");
 
-    // For an uninitialized object, this implementation returns FILE_NOT_FOUND by default.
-    assertSw(
-        ISO7816.SW_FILE_NOT_FOUND,
-        getDataNormal(DATA_ID_NORMAL),
-        "Cleared object should become uninitialized");
+    ResponseAPDU cleared = getDataNormal(DATA_ID_NORMAL);
+    assertSw(0x9000, cleared, "Cleared object should remain a readable empty container");
+    assertArrayEquals(hex("5300"), cleared.getData());
   }
 
   @Test
-  void uninitializedObjectCanReturnEmptyPlaintextResponseWhenConfigured() {
+  void legacyEmptyObjectConfigurationIsRejected() {
     byte[] managementKey = keyMaterialAes128((byte) 0x42);
 
     provisionManagementKeyOverScp(managementKey);
@@ -237,14 +283,14 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         () -> {
           assertSw(0x9000, selectApplet(), "SELECT before empty-object option update");
           assertSw(
-              0x9000,
+              PIV_SW_PUT_DATA_CONFIG_INVALID_VALUE,
               transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A403850101")),
-              "Enable empty-object reads");
+              "The retired empty-object option must not change conformant behavior");
         });
 
     ResponseAPDU response = getDataNormal(DATA_ID_NORMAL);
-    assertSw(0x9000, response, "Uninitialized object should return empty success when configured");
-    assertEquals(0, response.getData().length, "Empty object response should not include data");
+    assertSw(0x9000, response, "Uninitialized object should return its empty container");
+    assertArrayEquals(hex("5300"), response.getData());
   }
 
   @Test
@@ -772,6 +818,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
   protected void withMockedScp(Runnable action) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
           .thenReturn(
@@ -793,6 +840,21 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     return output;
   }
 
+  private static boolean contains(byte[] value, byte[] expected) {
+    for (int offset = 0; offset <= value.length - expected.length; offset++) {
+      boolean match = true;
+      for (int index = 0; index < expected.length; index++) {
+        if (value[offset + index] != expected[index]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return true;
+    }
+    return false;
+  }
+
   // Local copy of PIV.SW_REFERENCE_NOT_FOUND (package-private in production code).
   private static final int PIV_SW_REFERENCE_NOT_FOUND = 0x6A88;
+  private static final int PIV_SW_PUT_DATA_CONFIG_INVALID_VALUE = 0x6E26;
 }

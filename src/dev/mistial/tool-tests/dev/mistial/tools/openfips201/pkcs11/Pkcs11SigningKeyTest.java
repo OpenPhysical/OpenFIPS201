@@ -37,8 +37,7 @@ class Pkcs11SigningKeyTest {
   @Test
   void rejectsUnexpectedRawEcdsaLength() {
     assertThrows(
-        IllegalArgumentException.class,
-        () -> Pkcs11SigningKey.derEncodeEcdsa(new byte[63], 32));
+        IllegalArgumentException.class, () -> Pkcs11SigningKey.derEncodeEcdsa(new byte[63], 32));
   }
 
   private static byte[] fixed(byte[] value, int length) {

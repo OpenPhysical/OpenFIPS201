@@ -177,7 +177,9 @@
     </jpp>
   </target>
 
-  <target name="compile" depends="clean,preprocess-applet">
+  <target name="compile" depends="clean,compile-cap"/>
+
+  <target name="compile-cap" depends="preprocess-applet">
     <mkdir dir="${build.outputpath}" />
     <taskdef name="javacard" classname="pro.javacard.ant.JavaCard" classpath="tools/ant-javacard.jar"/>
     <javacard>
@@ -278,7 +280,7 @@
     </antcall>
   </target>
 
-  <target name="test-suite" depends="test-compile">
+  <target name="test-suite" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
 
     <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow">
@@ -320,7 +322,7 @@
     </antcall>
   </target>
 
-  <target name="test-all-suite" depends="test-compile">
+  <target name="test-all-suite" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
 
     <junitlauncher printSummary="true" haltOnFailure="true">
@@ -339,7 +341,7 @@
     </junitlauncher>
   </target>
 
-  <target name="coverage" depends="test-compile">
+  <target name="coverage" depends="compile,test-compile">
     <mkdir dir="${test.reportpath}" />
     <mkdir dir="${coverage.outputpath}" />
 

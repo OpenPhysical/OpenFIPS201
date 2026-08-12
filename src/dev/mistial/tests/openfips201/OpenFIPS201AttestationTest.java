@@ -1,5 +1,6 @@
 package dev.mistial.tests.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,11 +43,11 @@ import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.Assumptions;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
@@ -185,10 +186,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     Authority authority = Authority.create(new X500Name("CN=Provisioning Reset,O=Example"));
     setAuthorityOverScp(authority);
 
-    assertSw(
-        0x6A82,
-        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A")),
-        "Authority commit should clear existing data object contents");
+    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
+    assertSw(0x9000, cleared, "Authority commit should clear existing data object contents");
+    assertArrayEquals(hex("5300"), cleared.getData());
     generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
   }
 
@@ -206,10 +206,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         "Partial F9 key rotation must not clear existing data");
 
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x87, rotated.privateScalar);
-    assertSw(
-        0x6A82,
-        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A")),
-        "Complete F9 key rotation should clear existing data");
+    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
+    assertSw(0x9000, cleared, "Complete F9 key rotation should clear existing data");
+    assertArrayEquals(hex("5300"), cleared.getData());
   }
 
   @Test
@@ -237,10 +236,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     Authority updated = Authority.create(new X500Name("CN=Updated Metadata,O=Example"));
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, updated.subjectDer);
 
+    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
     assertSw(
-        0x6A82,
-        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A")),
-        "F9 metadata re-import should recommit the authority and clear existing data");
+        0x9000, cleared, "F9 metadata re-import should recommit and clear existing data");
+    assertArrayEquals(hex("5300"), cleared.getData());
   }
 
   @Test

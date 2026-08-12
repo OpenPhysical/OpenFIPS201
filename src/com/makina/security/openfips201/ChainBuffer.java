@@ -80,9 +80,14 @@ final class ChainBuffer {
   // minimum allocation size is 32 bytes anyway
   private static final short CONTEXT_APDU_CLASS = (short) 8;
   private static final short CONTEXT_APDU_P1P2 = (short) 9;
+  private static final short CONTEXT_PROTECTION = (short) 10;
 
   // Total length of the context transient object
-  private static final short LENGTH_CONTEXT = (short) 10;
+  private static final short LENGTH_CONTEXT = (short) 11;
+
+  static final byte PROTECTION_PLAIN = (byte) 0;
+  static final byte PROTECTION_PIV_SM = (byte) 1;
+  static final byte PROTECTION_SCP = (byte) 2;
 
   // APDU constants
   private static final byte CLA_CHAINING = (byte) 0x10;
@@ -163,6 +168,7 @@ final class ChainBuffer {
     context[CONTEXT_SECURE_OUTGOING] = (short) 0;
     context[CONTEXT_APDU_CLASS] = (short) 0;
     context[CONTEXT_APDU_P1P2] = (short) 0;
+    context[CONTEXT_PROTECTION] = (short) PROTECTION_PLAIN;
     context[CONTEXT_TRANSACTION] = (short) 0;
   }
 
@@ -209,6 +215,13 @@ final class ChainBuffer {
 
   boolean isSecureOutgoingActive() {
     return isOutgoingActive() && context[CONTEXT_SECURE_OUTGOING] != (short) 0;
+  }
+
+  /** Abandons only an outgoing response, leaving incoming command chains untouched. */
+  void abortOutgoing() {
+    if (context[CONTEXT_STATE] == STATE_OUTGOING) {
+      reset();
+    }
   }
 
   /**
@@ -419,8 +432,10 @@ final class ChainBuffer {
    * @param buffer The incoming APDU buffer
    * @param offset The starting offset to read from
    * @param length The length of the data to read
+   * @param protection The transport protection used for this frame
    */
-  void processIncomingObject(byte[] buffer, short offset, short length) throws ISOException {
+  void processIncomingObject(byte[] buffer, short offset, short length, byte protection)
+      throws ISOException {
 
     // Check if we have anything to do
     if (context[CONTEXT_STATE] != STATE_INCOMING_OBJECT) return;
@@ -428,16 +443,24 @@ final class ChainBuffer {
     // This method presumes that setIncomingAndReceive() was previously called if required
     final short CLA_MASK = ~(short) 0x1000;
 
-    // If we have not written anything, this must be the first command so set the APDU header
-    if (context[CONTEXT_LENGTH] == context[CONTEXT_REMAINING]) {
+    boolean firstFrame = context[CONTEXT_LENGTH] == context[CONTEXT_REMAINING];
+
+    // If we have not written anything, this must be the first command so set the APDU header and
+    // bind the logical write to its transport protection.
+    if (firstFrame) {
       context[CONTEXT_APDU_CLASS] = (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK);
       context[CONTEXT_APDU_P1P2] = Util.getShort(buffer, ISO7816.OFFSET_P1);
+      context[CONTEXT_PROTECTION] = (short) protection;
+    } else if (context[CONTEXT_PROTECTION] != (short) protection) {
+      resetAbort();
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // Validate that we are chaining for the correct command
-    else if (context[CONTEXT_APDU_CLASS]
+    if (!firstFrame
+        && (context[CONTEXT_APDU_CLASS]
             != (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK)
-        || context[CONTEXT_APDU_P1P2] != Util.getShort(buffer, ISO7816.OFFSET_P1)) {
+            || context[CONTEXT_APDU_P1P2] != Util.getShort(buffer, ISO7816.OFFSET_P1))) {
 
       // Abort the data object write
       resetAbort();
@@ -557,8 +580,8 @@ final class ChainBuffer {
     ISOException.throwIt(outgoingStatusWord());
   }
 
-  void processOutgoingSecure(
-      APDU apdu, PIVSecureMessaging secureMessaging, byte[] buffer, short sw) throws ISOException {
+  void processOutgoingSecure(APDU apdu, PIVSecureMessaging secureMessaging, byte[] buffer, short sw)
+      throws ISOException {
 
     byte[] apduBuffer = apdu.getBuffer();
     short plaintextOffset = (short) 0;
@@ -641,9 +664,7 @@ final class ChainBuffer {
       return ISO7816.SW_NO_ERROR;
     }
     short sw2 =
-        (context[CONTEXT_REMAINING] > (short) 0x00FF)
-            ? (short) 0x00FF
-            : context[CONTEXT_REMAINING];
+        (context[CONTEXT_REMAINING] > (short) 0x00FF) ? (short) 0x00FF : context[CONTEXT_REMAINING];
     return (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
   }
 }

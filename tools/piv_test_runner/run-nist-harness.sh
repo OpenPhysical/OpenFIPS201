@@ -6,26 +6,43 @@ INSTALL_DIR="$ROOT/tools/piv_test_runner/local/install"
 NIST_JARS="$INSTALL_DIR/TestRunnerFiles/jars"
 HARNESS_SRC="$ROOT/src/dev/mistial/tools/openfips201/nist"
 HARNESS_CLASSES="$ROOT/tools/piv_test_runner/local/harness/classes"
+JCARD_JAR="$ROOT/tools/jcard-v26.07.13.jar"
+JC_API_JAR="$ROOT/tools/sdk/jc310/lib/api_classic-3.0.5.jar"
 
 if [[ ! -d "$NIST_JARS" ]]; then
   echo "NIST Test Runner is not installed. Run tools/piv_test_runner/setup-nist-tester.sh first." >&2
   exit 1
 fi
 
+if [[ ! -f "$JCARD_JAR" ]]; then
+  echo "jCard engine jar not found: $JCARD_JAR" >&2
+  exit 1
+fi
+
+# Compile the applet (preprocessed) and shared test classes into build/test-bin.
 sh "$ROOT/tools/ant/bin/ant" -f "$ROOT/build/build.xml" test-compile >/dev/null
 
 mkdir -p "$HARNESS_CLASSES"
 
+# Runtime classpath mirrors build.xml test.runtime.classpath:
+# - preprocessed applet + test support classes
+# - tool-bin host utilities (if present)
+# - jcard-v fat jar (JavaCardEngine, apdu4j, capfile, GP runtime)
+# - Ivy test deps
+# - NIST Test Runner jars
+#
+# Do NOT put the GP export stub jar (tools/sdk/gp211/*.jar) on the runtime
+# classpath; it shadows jCard's functional org.globalplatform implementation.
 CP="$ROOT/build/test-bin"
-CP="$CP:$ROOT/tools/sdk/gp211/gp211.jar"
-CP="$CP:$ROOT/tools/jcardengine-26.06.04.jar"
-CP="$CP:$ROOT/tools/globalplatformpro-26.06.04.jar"
-CP="$CP:$ROOT/tools/apdu4j-core-26.06.04.jar"
-CP="$CP:$ROOT/tools/capfile-26.05.15.jar"
-CP="$CP:$ROOT/tools/tlv-26.06.04.jar"
+if [[ -d "$ROOT/build/tool-bin" ]]; then
+  CP="$CP:$ROOT/build/tool-bin"
+fi
+CP="$CP:$JCARD_JAR"
 CP="$CP:$ROOT/build/lib/*"
 CP="$CP:$NIST_JARS/*"
-COMPILE_CP="$CP:$ROOT/tools/sdk/jc310/lib/api_classic-3.0.5.jar"
+
+# Compile-time only: classic JC API for harness sources that reference AID, etc.
+COMPILE_CP="$CP:$JC_API_JAR"
 
 javac -source 8 -target 8 -Xlint:-options -encoding UTF-8 -cp "$COMPILE_CP" -d "$HARNESS_CLASSES" \
   $(find "$HARNESS_SRC" -name '*.java' | sort)

@@ -9,9 +9,9 @@ import org.mockito.Mockito;
 /**
  * Verifies that the Virtual Contact Interface (VCI) is enforced as a contactless access condition.
  *
- * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as a contactless condition satisfied
- * by secure messaging plus Discovery Object policy. Part 1 Table 2 applies that condition to
- * contactless data-object reads.
+ * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as a contactless condition satisfied by secure
+ * messaging plus Discovery Object policy. Part 1 Table 2 applies that condition to contactless
+ * data-object reads.
  */
 class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
 
@@ -26,7 +26,9 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   /** Contactless "VCI and PIN" per SP 800-73-5 Part 1 Table 2 (e.g. facial image, printed info). */
   private static final byte ACCESS_MODE_VCI_AND_PIN = (byte) (ACCESS_MODE_VCI | ACCESS_MODE_PIN);
 
-  /** Creates and populates a test data object with contact ALWAYS and the given contactless mode. */
+  /**
+   * Creates and populates a test data object with contact ALWAYS and the given contactless mode.
+   */
   private void createObject(final byte contactlessMode) {
     withMockedScp(
         new Runnable() {
@@ -55,8 +57,8 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that contactless read of a VCI-gated object is denied without VCI.
    *
-   * <p>NIST SP 800-73-5 Part 1 Section 5.5: VCI requires a command submitted over secure
-   * messaging; without VCI, the contactless access condition is not satisfied.
+   * <p>NIST SP 800-73-5 Part 1 Section 5.5: VCI requires a command submitted over secure messaging;
+   * without VCI, the contactless access condition is not satisfied.
    */
   @Test
   void contactlessReadOfVciObjectIsDeniedWithoutVci() {
@@ -87,15 +89,13 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
 
     assertSw(0x9000, selectApplet(), "SELECT over contact");
     ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
-    assertSw(
-        0x9000, response, "The VCI condition has no effect on the contact interface");
+    assertSw(0x9000, response, "The VCI condition has no effect on the contact interface");
   }
 
   /**
    * Verifies that contactless read of an ALWAYS-gated object succeeds without VCI.
    *
-   * <p>NIST SP 800-73-5 Part 1 Table 2 allows ALWAYS contactless reads without a VCI
-   * condition.
+   * <p>NIST SP 800-73-5 Part 1 Table 2 allows ALWAYS contactless reads without a VCI condition.
    */
   @Test
   void contactlessReadOfAlwaysObjectStillSucceeds() {
@@ -117,9 +117,9 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   /**
    * Verifies that contactless "VCI and PIN" objects are denied without VCI (even before PIN).
    *
-   * <p>NIST SP 800-73-5 Part 1 Table 2: Printed Information and Cardholder Facial Image require
-   * VCI and PIN over contactless. SD33 contactless vectors encapsulate {@code 6982} for these
-   * objects when PIN has not been verified over the secure channel.
+   * <p>NIST SP 800-73-5 Part 1 Table 2: Printed Information and Cardholder Facial Image require VCI
+   * and PIN over contactless. SD33 contactless vectors encapsulate {@code 6982} for these objects
+   * when PIN has not been verified over the secure channel.
    */
   @Test
   void contactlessReadOfVciAndPinObjectIsDeniedWithoutVci() {

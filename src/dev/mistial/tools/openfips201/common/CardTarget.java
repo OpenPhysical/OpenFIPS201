@@ -14,7 +14,7 @@ import javax.smartcardio.CardTerminal;
 import javax.smartcardio.TerminalFactory;
 
 public final class CardTarget {
-  private static final int DEFAULT_TIMEOUT_MS = 10000;
+  private static final int DEFAULT_TIMEOUT_MS = 10_000;
 
   private final String scheme;
   private final String value;
@@ -52,6 +52,10 @@ public final class CardTarget {
     return new SmartCardBibo(card);
   }
 
+  public CardTransport openTransport() throws Exception {
+    return new CardTransport(openBibo());
+  }
+
   public boolean isZmq() {
     return "zmq".equals(scheme);
   }
@@ -80,13 +84,17 @@ public final class CardTarget {
         }
       }
       throw new IllegalArgumentException(
-          "No PC/SC reader matched: " + readerFilter + "; available readers: " + terminalNames(terminals));
+          "No PC/SC reader matched: "
+              + readerFilter
+              + "; available readers: "
+              + terminalNames(terminals));
     }
     if (terminals.size() == 1) {
       return terminals.get(0);
     }
     throw new IllegalArgumentException(
-        "Use --target pcsc:<reader> when zero or multiple PC/SC readers are present; available readers: "
+        "Use --target pcsc:<reader> when zero or multiple PC/SC readers are present; available"
+            + " readers: "
             + terminalNames(terminals));
   }
 

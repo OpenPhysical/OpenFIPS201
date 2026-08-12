@@ -30,15 +30,15 @@ import org.junit.jupiter.api.TestFactory;
  *
  * <p>Vectors are independent captures from NIST Special Database 33 cards covering OPACITY Cipher
  * Suite 2 (P-256 / AES-128 / SHA-256) and Cipher Suite 7 (P-384 / AES-256 / SHA-384). The applet
- * covers CS2 and CS7 host-side OPACITY/SM wire format against
- * real cards; live CS7 E2E is covered by OpenFIPS201VciEndToEndTest.
+ * covers CS2 and CS7 host-side OPACITY/SM wire format against real cards; live CS7 E2E is covered
+ * by OpenFIPS201VciEndToEndTest.
  *
  * <p>The applet's card-side establishment cannot be replayed directly because the vectors do not
  * expose the card's SM private key, but {@link VciSupport} implements the exact same byte-level
- * OPACITY KDF and SM wire format as the applet ({@code PIV.deriveCs2SessionKeys} /
- * {@code PIVSecureMessaging}). Validating VciSupport against real-card vectors here, together with
- * {@link OpenFIPS201VciEndToEndTest} proving the live applet interoperates with VciSupport,
- * transitively validates the applet against the vectors for CS2.
+ * OPACITY KDF and SM wire format as the applet ({@code PIV.deriveCs2SessionKeys} / {@code
+ * PIVSecureMessaging}). Validating VciSupport against real-card vectors here, together with {@link
+ * OpenFIPS201VciEndToEndTest} proving the live applet interoperates with VciSupport, transitively
+ * validates the applet against the vectors for CS2.
  *
  * <p>Checks per vector (aligned with OpenPhysical.Net {@code verify_vectors.py}):
  *
@@ -62,8 +62,8 @@ class OpenFIPS201VciVectorTest {
   /**
    * Verifies OPACITY session-key derivation against card-reported values.
    *
-   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.1.6 (Key Derivation) and Section 4.1.7
-   * (Key Confirmation).
+   * <p>Aligned with NIST SP 800-73-5 Part 2, Section 4.1.6 (Key Derivation) and Section 4.1.7 (Key
+   * Confirmation).
    */
   @TestFactory
   Stream<DynamicTest> opacityKdfMatchesCardReportedKeys() throws Exception {
@@ -76,7 +76,10 @@ class OpenFIPS201VciVectorTest {
           byte[] nIcc = hex(o, "n_ICC");
           byte[] cvcRaw = hex(o, "cvc_raw");
           byte[] hostPoint =
-              concat(new byte[] {0x04}, hex(o, "ephemeral_public_key_x"), hex(o, "ephemeral_public_key_y"));
+              concat(
+                  new byte[] {0x04},
+                  hex(o, "ephemeral_public_key_x"),
+                  hex(o, "ephemeral_public_key_y"));
 
           assertArrayEquals(hex(o, "id_sICC"), VciSupport.computeIdSicc(cvcRaw), name + ": idSicc");
           byte[] idSicc = hex(o, "id_sICC");
@@ -111,8 +114,7 @@ class OpenFIPS201VciVectorTest {
           assertArrayEquals(hex(o, "sk_enc"), keys.skEnc, name + ": SK_ENC");
           assertArrayEquals(hex(o, "sk_rmac"), keys.skRmac, name + ": SK_RMAC");
 
-          byte[] cryptogram =
-              VciSupport.computeAuthCryptogram(keys.skCfrm, idSicc, idH, hostPoint);
+          byte[] cryptogram = VciSupport.computeAuthCryptogram(keys.skCfrm, idSicc, idH, hostPoint);
           assertArrayEquals(
               hex(o, "auth_cryptogram"),
               Arrays.copyOf(cryptogram, 16),
@@ -145,8 +147,10 @@ class OpenFIPS201VciVectorTest {
 
           for (Exchange ex : sm) {
             int cla = ex.command[0] & 0xFF;
-            // Intermediate transport chunks (CLA 1C) are already merged; any leftover 1C is an error.
-            assertEquals(0x0C, cla, name + " [" + ex.description + "]: expected CLA 0x0C after merge");
+            // Intermediate transport chunks (CLA 1C) are already merged; any leftover 1C is an
+            // error.
+            assertEquals(
+                0x0C, cla, name + " [" + ex.description + "]: expected CLA 0x0C after merge");
 
             if (ex.plainCommand != null && ex.plainCommand.length >= 4) {
               Object[] parsed = VciSupport.parsePlainCommand(ex.plainCommand);
@@ -200,9 +204,11 @@ class OpenFIPS201VciVectorTest {
             }
           }
 
-          assertTrue(wrapped >= 2, name + ": expected to re-wrap at least 2 SM commands, did " + wrapped);
           assertTrue(
-              unwrapped >= 2, name + ": expected to unwrap at least 2 SM responses, did " + unwrapped);
+              wrapped >= 2, name + ": expected to re-wrap at least 2 SM commands, did " + wrapped);
+          assertTrue(
+              unwrapped >= 2,
+              name + ": expected to unwrap at least 2 SM responses, did " + unwrapped);
         });
   }
 
@@ -222,7 +228,8 @@ class OpenFIPS201VciVectorTest {
           boolean sawPairing = false;
           boolean sawPin = false;
           boolean hasPairingCheckpoint =
-              s.has("verify_pairing_state_after") && s.get("verify_pairing_state_after").isJsonObject();
+              s.has("verify_pairing_state_after")
+                  && s.get("verify_pairing_state_after").isJsonObject();
           boolean hasPinCheckpoint =
               s.has("verify_pin_state_after") && s.get("verify_pin_state_after").isJsonObject();
 
@@ -259,7 +266,9 @@ class OpenFIPS201VciVectorTest {
             } else if (ex.description.contains("PIN") && (ex.command[1] & 0xFF) == 0x20) {
               if (hasPinCheckpoint) {
                 assertResponseState(
-                    name + " after PIN verify", session, s.getAsJsonObject("verify_pin_state_after"));
+                    name + " after PIN verify",
+                    session,
+                    s.getAsJsonObject("verify_pin_state_after"));
               }
               sawPin = true;
             }
@@ -316,7 +325,12 @@ class OpenFIPS201VciVectorTest {
             } else if (s.has("pairing_code_hex")) {
               wrapped =
                   VciSupport.wrapCommand(
-                      session, (byte) 0x20, (byte) 0x00, (byte) 0x98, hex(s, "pairing_code_hex"), false);
+                      session,
+                      (byte) 0x20,
+                      (byte) 0x00,
+                      (byte) 0x98,
+                      hex(s, "pairing_code_hex"),
+                      false);
             } else {
               wrapped = null;
             }
@@ -358,7 +372,8 @@ class OpenFIPS201VciVectorTest {
               byte pinRef =
                   (byte) Integer.parseInt(stripHexPrefix(s.get("pin_key_ref").getAsString()), 16);
               wrappedPin =
-                  VciSupport.wrapCommand(pinSession, (byte) 0x20, (byte) 0x00, pinRef, pinData, false);
+                  VciSupport.wrapCommand(
+                      pinSession, (byte) 0x20, (byte) 0x00, pinRef, pinData, false);
             } else {
               wrappedPin = null;
             }
@@ -406,10 +421,11 @@ class OpenFIPS201VciVectorTest {
     Path dir = vectorDir();
     try (Stream<Path> files = Files.list(dir)) {
       return files
-          .filter(p -> {
-            String name = p.getFileName().toString();
-            return name.startsWith("vci_") && name.endsWith(".json");
-          })
+          .filter(
+              p -> {
+                String name = p.getFileName().toString();
+                return name.startsWith("vci_") && name.endsWith(".json");
+              })
           .sorted()
           .collect(Collectors.toList());
     }
@@ -475,13 +491,12 @@ class OpenFIPS201VciVectorTest {
   private static Exchange exchangeFromJson(JsonObject e) {
     byte[] command = hex(e, "command");
     byte[] response =
-        e.has("response") && !e.get("response").isJsonNull() && e.get("response").getAsString().length() > 0
+        e.has("response")
+                && !e.get("response").isJsonNull()
+                && e.get("response").getAsString().length() > 0
             ? hex(e, "response")
             : new byte[0];
-    int sw =
-        e.has("sw")
-            ? Integer.parseInt(stripHexPrefix(e.get("sw").getAsString()), 16)
-            : 0x9000;
+    int sw = e.has("sw") ? Integer.parseInt(stripHexPrefix(e.get("sw").getAsString()), 16) : 0x9000;
     byte[] plainCommand =
         e.has("plain_command")
                 && !e.get("plain_command").isJsonNull()
@@ -499,8 +514,8 @@ class OpenFIPS201VciVectorTest {
   }
 
   /**
-   * Merges CLA {@code 1C} transport intermediates with the following CLA {@code 0C} final chunk into
-   * a single logical SM command (mirrors {@code verify_vectors._merge_transport_chains}).
+   * Merges CLA {@code 1C} transport intermediates with the following CLA {@code 0C} final chunk
+   * into a single logical SM command (mirrors {@code verify_vectors._merge_transport_chains}).
    */
   private static List<Exchange> mergeTransportChains(List<Exchange> exchanges) {
     List<Exchange> merged = new ArrayList<>();
@@ -555,8 +570,7 @@ class OpenFIPS201VciVectorTest {
         } else {
           // Prefer the trailing Le from the final chunk when it is already extended (2 bytes);
           // otherwise use Le=0x0100 (256), matching VciSupport.wrapCommand.
-          byte[] le =
-              trailingLe.length >= 2 ? trailingLe : new byte[] {0x01, 0x00};
+          byte[] le = trailingLe.length >= 2 ? trailingLe : new byte[] {0x01, 0x00};
           reassembled =
               concat(
                   new byte[] {

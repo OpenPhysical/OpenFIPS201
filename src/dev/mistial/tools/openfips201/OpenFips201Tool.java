@@ -7,9 +7,9 @@
 
 package dev.mistial.tools.openfips201;
 
+import com.google.gson.Gson;
 import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
 import dev.mistial.tools.openfips201.applet.AppletInstallService;
-import com.google.gson.Gson;
 import dev.mistial.tools.openfips201.cardstock.CardstockPreparationService;
 import dev.mistial.tools.openfips201.cardstock.CardstockReceipt;
 import dev.mistial.tools.openfips201.cardstock.CardstockReceiptPrinter;
@@ -17,14 +17,13 @@ import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
-import dev.mistial.tools.openfips201.crypto.PemFiles;
 import dev.mistial.tools.openfips201.crypto.PemSigningKey;
 import dev.mistial.tools.openfips201.crypto.SigningKey;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
 import dev.mistial.tools.openfips201.gp.CardDiversificationDataService;
 import dev.mistial.tools.openfips201.gp.CardKeyPreflightService;
-import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.CardKeyRollService;
+import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
 import dev.mistial.tools.openfips201.gp.IssuerCardKeyService;
 import dev.mistial.tools.openfips201.gp.Scp03Kdf3DerivationService;
@@ -97,7 +96,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "list", mixinStandardHelpOptions = true, description = "List PC/SC reader names.")
+    @Command(
+        name = "list",
+        mixinStandardHelpOptions = true,
+        description = "List PC/SC reader names.")
     static final class ListReaders implements Callable<Integer> {
       @Override
       public Integer call() throws Exception {
@@ -115,7 +117,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "serve", mixinStandardHelpOptions = true, description = "Serve an OpenFIPS201 emulator over ZeroMQ.")
+    @Command(
+        name = "serve",
+        mixinStandardHelpOptions = true,
+        description = "Serve an OpenFIPS201 emulator over ZeroMQ.")
     static final class Serve implements Callable<Integer> {
       @Option(names = "--endpoint", defaultValue = ZmqApduServer.DEFAULT_ENDPOINT)
       String endpoint;
@@ -127,11 +132,12 @@ public final class OpenFips201Tool implements Callable<Integer> {
       public Integer call() {
         byte[] key = scp03Key == null ? PlaintextKeys.DEFAULT_KEY() : HexUtil.parse(scp03Key);
         try (ZmqApduServer server = new ZmqApduServer(key)) {
-          String bound = server.bind(endpoint);
-          server.start();
-          System.out.println("OpenFIPS201 emulator serving on " + bound);
-          Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
-          server.serve();
+          server.run(
+              endpoint,
+              bound -> {
+                System.out.println("OpenFIPS201 emulator serving on " + bound);
+                Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
+              });
         }
         return 0;
       }
@@ -146,7 +152,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "install", mixinStandardHelpOptions = true, description = "Load and install the OpenFIPS201 CAP.")
+    @Command(
+        name = "install",
+        mixinStandardHelpOptions = true,
+        description = "Load and install the OpenFIPS201 CAP.")
     static final class Install extends ScpOptions implements Callable<Integer> {
       @Option(names = "--cap", required = true)
       Path cap;
@@ -178,7 +187,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
         request.loadCap = !skipLoad;
         request.deleteExisting = deleteExisting;
         try (GlobalPlatformSession session =
-            GlobalPlatformSession.open(CardTarget.parse(target), GlobalPlatformSession.ISD_AID, scp())) {
+            GlobalPlatformSession.open(
+                CardTarget.parse(target), GlobalPlatformSession.ISD_AID, scp())) {
           new AppletInstallService().install(session, request);
         }
         System.out.println("Applet installed.");
@@ -203,7 +213,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
         return 2;
       }
 
-      @Command(name = "list", mixinStandardHelpOptions = true, description = "Validate a PKCS#11 token/key selection.")
+      @Command(
+          name = "list",
+          mixinStandardHelpOptions = true,
+          description = "Validate a PKCS#11 token/key selection.")
       static final class List extends Pkcs11Options implements Callable<Integer> {
         @Override
         public Integer call() throws Exception {
@@ -216,7 +229,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "gp", mixinStandardHelpOptions = true, subcommands = {Gp.Card.class, Gp.Keys.class})
+  @Command(
+      name = "gp",
+      mixinStandardHelpOptions = true,
+      subcommands = {Gp.Card.class, Gp.Keys.class})
   static final class Gp implements Callable<Integer> {
     @Override
     public Integer call() {
@@ -240,10 +256,14 @@ public final class OpenFips201Tool implements Callable<Integer> {
         @Option(names = "--target", required = true)
         String target;
 
-        @Option(names = "--host-challenge", description = "8-byte host challenge hex; random by default.")
+        @Option(
+            names = "--host-challenge",
+            description = "8-byte host challenge hex; random by default.")
         String hostChallenge;
 
-        @Option(names = "--raw", description = "Also print the raw INITIALIZE UPDATE response data.")
+        @Option(
+            names = "--raw",
+            description = "Also print the raw INITIALIZE UPDATE response data.")
         boolean raw;
 
         @Override
@@ -280,9 +300,15 @@ public final class OpenFips201Tool implements Callable<Integer> {
         return 2;
       }
 
-      @Command(name = "derive", mixinStandardHelpOptions = true, description = "Derive SCP03 KDF3 keys through PKCS#11 and print KCVs.")
+      @Command(
+          name = "derive",
+          mixinStandardHelpOptions = true,
+          description = "Derive SCP03 KDF3 keys through PKCS#11 and print KCVs.")
       static final class Derive extends Pkcs11Options implements Callable<Integer> {
-        @Option(names = "--kdd", required = true, description = "10-byte card key diversification data hex.")
+        @Option(
+            names = "--kdd",
+            required = true,
+            description = "10-byte card key diversification data hex.")
         String kdd;
 
         @Option(names = "--key-version", defaultValue = "1")
@@ -302,12 +328,15 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Command(
           name = "derive-card",
           mixinStandardHelpOptions = true,
-          description = "Read KDD from a card, derive SCP03 KDF3 keys through PKCS#11, and print KCVs.")
+          description =
+              "Read KDD from a card, derive SCP03 KDF3 keys through PKCS#11, and print KCVs.")
       static final class DeriveCard extends Pkcs11Options implements Callable<Integer> {
         @Option(names = "--target", required = true)
         String target;
 
-        @Option(names = "--host-challenge", description = "8-byte host challenge hex; random by default.")
+        @Option(
+            names = "--host-challenge",
+            description = "8-byte host challenge hex; random by default.")
         String hostChallenge;
 
         @Option(names = "--key-version", defaultValue = "1")
@@ -330,12 +359,17 @@ public final class OpenFips201Tool implements Callable<Integer> {
         }
       }
 
-      @Command(name = "rotate", mixinStandardHelpOptions = true, description = "Rotate card SCP keys and verify the new keyset.")
+      @Command(
+          name = "rotate",
+          mixinStandardHelpOptions = true,
+          description = "Rotate card SCP keys and verify the new keyset.")
       static final class Rotate extends ScpOptions implements Callable<Integer> {
-        @Mixin
-        Pkcs11Options pkcs11 = new Pkcs11Options();
+        @Mixin Pkcs11Options pkcs11 = new Pkcs11Options();
 
-        @Option(names = "--kdd", required = true, description = "10-byte card key diversification data hex.")
+        @Option(
+            names = "--kdd",
+            required = true,
+            description = "10-byte card key diversification data hex.")
         String kdd;
 
         @Option(names = "--new-key-version", defaultValue = "1")
@@ -347,13 +381,21 @@ public final class OpenFips201Tool implements Callable<Integer> {
               new Scp03Kdf3DerivationService()
                   .derive(pkcs11.pkcs11(), HexUtil.parse(kdd), newKeyVersion);
           new CardKeyRotationService().rotate(CardTarget.parse(target), scp(), keys);
-          System.out.println("SCP keys rotated. ENC/MAC/DEK KCVs: "
-              + keys.encKcv + " " + keys.macKcv + " " + keys.dekKcv);
+          System.out.println(
+              "SCP keys rotated. ENC/MAC/DEK KCVs: "
+                  + keys.encKcv
+                  + " "
+                  + keys.macKcv
+                  + " "
+                  + keys.dekKcv);
           return 0;
         }
       }
 
-      @Command(name = "preflight", mixinStandardHelpOptions = true, description = "Validate an issuer GP key rotation without mutating the card.")
+      @Command(
+          name = "preflight",
+          mixinStandardHelpOptions = true,
+          description = "Validate an issuer GP key rotation without mutating the card.")
       static final class Preflight implements Callable<Integer> {
         @Option(names = "--profile", required = true)
         String profile;
@@ -364,7 +406,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
         @Option(names = "--direction", required = true, description = "forward or backward")
         String direction;
 
-        @Option(names = "--kdd", description = "10-byte card key diversification data hex; read from card by default.")
+        @Option(
+            names = "--kdd",
+            description = "10-byte card key diversification data hex; read from card by default.")
         String kdd;
 
         @Option(names = "--stock-scp", defaultValue = "scp03")
@@ -373,7 +417,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
         @Option(names = "--stock-scp-key-version", defaultValue = "1")
         int stockScpKeyVersion;
 
-        @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
+        @Option(
+            names = "--stock-scp-key",
+            description = "Override the profile stock SCP master key.")
         String stockScpKey;
 
         @Override
@@ -385,7 +431,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
               stockScpKey == null
                   ? issuerKeys.stockScp(loaded)
                   : ScpConfig.fromMaster(
-                      ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
+                      ScpConfig.parseMode(stockScp),
+                      stockScpKeyVersion,
+                      HexUtil.parse(stockScpKey));
           DerivedScpKeys profileKeys =
               parsedKdd == null ? null : issuerKeys.deriveCardKeys(loaded, parsedKdd);
 
@@ -441,7 +489,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
           @Option(names = "--target", required = true)
           String target;
 
-          @Option(names = "--kdd", description = "10-byte card key diversification data hex; read from card by default.")
+          @Option(
+              names = "--kdd",
+              description = "10-byte card key diversification data hex; read from card by default.")
           String kdd;
 
           @Option(names = "--yes", description = "Confirm physical-card mutations.")
@@ -453,10 +503,13 @@ public final class OpenFips201Tool implements Callable<Integer> {
           @Option(names = "--stock-scp-key-version", defaultValue = "1")
           int stockScpKeyVersion;
 
-          @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
+          @Option(
+              names = "--stock-scp-key",
+              description = "Override the profile stock SCP master key.")
           String stockScpKey;
 
-          CardKeyRollService.Request request(CardKeyRollService.Direction direction) throws Exception {
+          CardKeyRollService.Request request(CardKeyRollService.Direction direction)
+              throws Exception {
             CardKeyRollService.Request request = new CardKeyRollService.Request();
             request.target = CardTarget.parse(target);
             request.profile = ProfileLoader.load(profile);
@@ -467,7 +520,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
                 stockScpKey == null
                     ? null
                     : ScpConfig.fromMaster(
-                        ScpConfig.parseMode(stockScp), stockScpKeyVersion, HexUtil.parse(stockScpKey));
+                        ScpConfig.parseMode(stockScp),
+                        stockScpKeyVersion,
+                        HexUtil.parse(stockScpKey));
             return request;
           }
 
@@ -482,7 +537,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
           }
         }
 
-        @Command(name = "forward", mixinStandardHelpOptions = true, description = "Roll stock/batch keys to profile-derived issuer keys.")
+        @Command(
+            name = "forward",
+            mixinStandardHelpOptions = true,
+            description = "Roll stock/batch keys to profile-derived issuer keys.")
         static final class Forward extends Options implements Callable<Integer> {
           @Override
           public Integer call() throws Exception {
@@ -491,7 +549,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
           }
         }
 
-        @Command(name = "backward", mixinStandardHelpOptions = true, description = "Roll profile-derived issuer keys back to stock/batch keys.")
+        @Command(
+            name = "backward",
+            mixinStandardHelpOptions = true,
+            description = "Roll profile-derived issuer keys back to stock/batch keys.")
         static final class Backward extends Options implements Callable<Integer> {
           @Override
           public Integer call() throws Exception {
@@ -503,7 +564,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "cardstock", mixinStandardHelpOptions = true, subcommands = Cardstock.Prepare.class)
+  @Command(
+      name = "cardstock",
+      mixinStandardHelpOptions = true,
+      subcommands = Cardstock.Prepare.class)
   static final class Cardstock implements Callable<Integer> {
     @Override
     public Integer call() {
@@ -511,7 +575,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "prepare", mixinStandardHelpOptions = true, description = "Load, attest, rotate keys, and receipt issuer cardstock.")
+    @Command(
+        name = "prepare",
+        mixinStandardHelpOptions = true,
+        description = "Load, attest, rotate keys, and receipt issuer cardstock.")
     static final class Prepare implements Callable<Integer> {
       @Option(names = "--profile", required = true)
       String profile;
@@ -522,7 +589,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Option(names = "--yes", description = "Confirm physical-card mutations.")
       boolean yes;
 
-      @Option(names = "--signer", defaultValue = "profile", description = "profile, pkcs11, softhsm, pem, or ephemeral.")
+      @Option(
+          names = "--signer",
+          defaultValue = "profile",
+          description = "profile, pkcs11, softhsm, pem, or ephemeral.")
       String signerType;
 
       @Option(names = "--signer-key")
@@ -543,13 +613,13 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Option(names = "--stock-scp-key", description = "Override the profile stock SCP master key.")
       String stockScpKey;
 
-      @Mixin
-      Pkcs11Options pkcs11 = new Pkcs11Options();
+      @Mixin Pkcs11Options pkcs11 = new Pkcs11Options();
 
       @Override
       public Integer call() throws Exception {
         IssuerProfile loaded = ProfileLoader.load(profile);
-        SigningKey signingKey = signer(loaded, signerType, signerKey, signerCert, signerKeyPassEnv, pkcs11);
+        SigningKey signingKey =
+            signer(loaded, signerType, signerKey, signerCert, signerKeyPassEnv, pkcs11);
         ScpConfig stockOverride =
             stockScpKey == null
                 ? null
@@ -581,7 +651,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "setup", mixinStandardHelpOptions = true, description = "Create an issuer producer profile and default SoftHSM keys.")
+    @Command(
+        name = "setup",
+        mixinStandardHelpOptions = true,
+        description = "Create an issuer producer profile and default SoftHSM keys.")
     static final class Setup implements Callable<Integer> {
       @Option(names = "--name", required = true)
       String name;
@@ -598,7 +671,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
       @Option(
           names = "--f9-subject",
           description =
-              "F9 subject template without serialNumber; a per-card serialNumber RDN is appended at produce time.")
+              "F9 subject template without serialNumber; a per-card serialNumber RDN is appended at"
+                  + " produce time.")
       String f9Subject;
 
       @Option(names = "--force")
@@ -640,7 +714,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "create", mixinStandardHelpOptions = true, description = "Create an issuer batch and print its stock GP key.")
+    @Command(
+        name = "create",
+        mixinStandardHelpOptions = true,
+        description = "Create an issuer batch and print its stock GP key.")
     static final class Create implements Callable<Integer> {
       @Option(names = "--producer", required = true)
       String producer;
@@ -667,7 +744,10 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "produce", mixinStandardHelpOptions = true, description = "Produce one card into issuer cardstock.")
+    @Command(
+        name = "produce",
+        mixinStandardHelpOptions = true,
+        description = "Produce one card into issuer cardstock.")
     static final class Produce implements Callable<Integer> {
       @Option(names = "--producer", required = true)
       String producer;
@@ -711,9 +791,14 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "interactive", mixinStandardHelpOptions = true, description = "Run a guided cardstock workflow.")
+  @Command(
+      name = "interactive",
+      mixinStandardHelpOptions = true,
+      description = "Run a guided cardstock workflow.")
   static final class Interactive implements Callable<Integer> {
-    @Option(names = "--dry-run", description = "Print the equivalent cardstock command without touching a card.")
+    @Option(
+        names = "--dry-run",
+        description = "Print the equivalent cardstock command without touching a card.")
     boolean dryRun;
 
     @Override
@@ -731,7 +816,12 @@ public final class OpenFips201Tool implements Callable<Integer> {
 
       String target = promptTarget(in, out);
       String signerType =
-          promptChoice(in, out, "Signer", new String[] {"profile", "pkcs11", "softhsm", "pem", "ephemeral"}, "profile");
+          promptChoice(
+              in,
+              out,
+              "Signer",
+              new String[] {"profile", "pkcs11", "softhsm", "pem", "ephemeral"},
+              "profile");
       Path signerKey = null;
       Path signerCert = null;
       String signerPassEnv = null;
@@ -741,10 +831,14 @@ public final class OpenFips201Tool implements Callable<Integer> {
         signerCert = Paths.get(promptRequired(in, out, "PEM certificate path"));
         signerPassEnv = promptOptional(in, out, "PEM passphrase env var", null);
       } else if ("pkcs11".equals(signerType) || "softhsm".equals(signerType)) {
-        pkcs11Options.module = promptOptional(in, out, "PKCS#11 module path", profile.pkcs11.module);
-        pkcs11Options.tokenLabel = promptOptional(in, out, "PKCS#11 token label", profile.pkcs11.tokenLabel);
-        pkcs11Options.keyAlias = promptOptional(in, out, "PKCS#11 key alias", profile.pkcs11.keyAlias);
-        pkcs11Options.pinEnv = promptOptional(in, out, "PKCS#11 PIN env var", profile.pkcs11.pinEnv);
+        pkcs11Options.module =
+            promptOptional(in, out, "PKCS#11 module path", profile.pkcs11.module);
+        pkcs11Options.tokenLabel =
+            promptOptional(in, out, "PKCS#11 token label", profile.pkcs11.tokenLabel);
+        pkcs11Options.keyAlias =
+            promptOptional(in, out, "PKCS#11 key alias", profile.pkcs11.keyAlias);
+        pkcs11Options.pinEnv =
+            promptOptional(in, out, "PKCS#11 PIN env var", profile.pkcs11.pinEnv);
       }
 
       boolean physical = !target.startsWith("zmq:");
@@ -758,14 +852,24 @@ public final class OpenFips201Tool implements Callable<Integer> {
       }
 
       if (dryRunMode) {
-        out.println(renderCardstockCommand(
-            profilePath, target, signerType, signerKey, signerCert, signerPassEnv, pkcs11Options, physical));
+        out.println(
+            renderCardstockCommand(
+                profilePath,
+                target,
+                signerType,
+                signerKey,
+                signerCert,
+                signerPassEnv,
+                pkcs11Options,
+                physical));
         return 0;
       }
 
-      SigningKey signingKey = signer(profile, signerType, signerKey, signerCert, signerPassEnv, pkcs11Options);
+      SigningKey signingKey =
+          signer(profile, signerType, signerKey, signerCert, signerPassEnv, pkcs11Options);
       Path receiptPath =
-          new CardstockPreparationService().prepare(CardTarget.parse(target), profile, signingKey, yes);
+          new CardstockPreparationService()
+              .prepare(CardTarget.parse(target), profile, signingKey, yes);
       printCardstockReceipt(out, "Cardstock prepared.", receiptPath);
       return 0;
     }
@@ -868,7 +972,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
     if ("pem".equals(type)) {
       if (signerKey == null || signerCert == null) {
-        throw new IllegalArgumentException("--signer-key and --signer-cert are required for PEM signing");
+        throw new IllegalArgumentException(
+            "--signer-key and --signer-cert are required for PEM signing");
       }
       return new PemSigningKey(signerKey, signerCert, optionalSecretChars(passEnv));
     }
@@ -878,7 +983,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
       KeyPair keyPair = generator.generateKeyPair();
       return new PemSigningKey(keyPair.getPrivate(), keyPair.getPublic(), "ephemeral");
     }
-    throw new IllegalArgumentException("--signer must be profile, pkcs11, softhsm, pem, or ephemeral");
+    throw new IllegalArgumentException(
+        "--signer must be profile, pkcs11, softhsm, pem, or ephemeral");
   }
 
   private static final class LazyPkcs11SigningKey implements SigningKey {
@@ -1025,7 +1131,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
     return promptOptional(in, out, label, defaultValue);
   }
 
-  private static boolean confirm(BufferedReader in, PrintStream out, String label) throws Exception {
+  private static boolean confirm(BufferedReader in, PrintStream out, String label)
+      throws Exception {
     out.print(label + " [yes/no]: ");
     String value = in.readLine();
     return value != null && "yes".equals(value.trim());

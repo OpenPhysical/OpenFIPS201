@@ -21,7 +21,8 @@ public final class CardKeyPreflightService {
     this(new CardDiversificationDataService(), new IssuerCardKeyService());
   }
 
-  CardKeyPreflightService(CardDiversificationDataService kddService, IssuerCardKeyService issuerKeys) {
+  CardKeyPreflightService(
+      CardDiversificationDataService kddService, IssuerCardKeyService issuerKeys) {
     this.kddService = kddService;
     this.issuerKeys = issuerKeys;
   }
@@ -37,8 +38,7 @@ public final class CardKeyPreflightService {
       throw new IllegalArgumentException(
           "Refusing same-version GP key rotation; choose a different target key version");
     }
-    byte[] kdd =
-        request.kdd == null ? kddService.readKdd(request.target).kdd : request.kdd.clone();
+    byte[] kdd = request.kdd == null ? kddService.readKdd(request.target).kdd : request.kdd.clone();
     DerivedScpKeys target = request.targetKeys;
     if (target == null) {
       if (request.profile == null) {
@@ -51,7 +51,8 @@ public final class CardKeyPreflightService {
           "Refusing same-version GP key rotation; choose a different target key version");
     }
     try (GlobalPlatformSession ignored =
-        GlobalPlatformSession.open(request.target, GlobalPlatformSession.ISD_AID, request.current)) {
+        GlobalPlatformSession.open(
+            request.target, GlobalPlatformSession.ISD_AID, request.current)) {
       // Opening SCP with the current keys is the non-mutating readiness check.
     }
     return new Result(kdd, request.current, target, rollbackCommand(request, kdd));

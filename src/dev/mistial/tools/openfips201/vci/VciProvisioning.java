@@ -209,7 +209,8 @@ final class VciProvisioning {
       String pairingCode,
       String scp03KeyHex)
       throws Exception {
-    provision(bibo, caCertPath, caKeyPath, caOutPrefix, pairingCode, scp03KeyHex, VciSupport.ALG_CS2);
+    provision(
+        bibo, caCertPath, caKeyPath, caOutPrefix, pairingCode, scp03KeyHex, VciSupport.ALG_CS2);
   }
 
   /**
@@ -326,14 +327,12 @@ final class VciProvisioning {
     // card identity deterministic across provisioning runs.
     byte[] subjectId = StandardCardProfile.CVC_SUBJECT;
     byte[] cvc =
-        signCvcAtLeast(cardPublicPoint, issuerId, subjectId, ca.privateKey, suite, minimumCvcLength);
+        signCvcAtLeast(
+            cardPublicPoint, issuerId, subjectId, ca.privateKey, suite, minimumCvcLength);
     int maxCvcLength = maxAppletCvcLength(suite);
     if (cvc.length > maxCvcLength) {
       throw new IllegalStateException(
-          "CVC exceeds the applet's "
-              + maxCvcLength
-              + "-byte SM CVC limit: "
-              + cvc.length);
+          "CVC exceeds the applet's " + maxCvcLength + "-byte SM CVC limit: " + cvc.length);
     }
     if (!VciSupport.verifyCvc(cvc, ca.certificate.getPublicKey())) {
       throw new IllegalStateException("Freshly signed CVC failed self-verification");
@@ -530,7 +529,8 @@ final class VciProvisioning {
       }
     }
 
-    VciSupport.SmResponse signerResponse = readProtectedDataObject(bibo, session, SM_SIGNER_OBJECT_ID);
+    VciSupport.SmResponse signerResponse =
+        readProtectedDataObject(bibo, session, SM_SIGNER_OBJECT_ID);
     if (signerResponse.statusWord != 0x9000 || signerResponse.data.length == 0) {
       System.out.println(
           String.format(
@@ -567,7 +567,8 @@ final class VciProvisioning {
    *
    * @return established session, or null on failure
    */
-  static EstablishedSession establishSecureMessaging(BIBO bibo, String caCertPath) throws Exception {
+  static EstablishedSession establishSecureMessaging(BIBO bibo, String caCertPath)
+      throws Exception {
     ensureProvider();
     X509Certificate caCertificate = readCertificate(Paths.get(caCertPath));
 
@@ -615,8 +616,7 @@ final class VciProvisioning {
     // Use raw transport: CS7 CVC responses often continue with GET RESPONSE (61 XX).
     byte[] gaFirst =
         bibo.transceive(
-            new CommandAPDU(
-                    0x00, 0x87, suite, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256)
+            new CommandAPDU(0x00, 0x87, suite, VciSupport.KEY_REF_SECURE_MESSAGING, template, 256)
                 .getBytes());
     byte[] gaData = reassembleGaResponse(bibo, new ResponseAPDU(gaFirst));
 
@@ -774,12 +774,7 @@ final class VciProvisioning {
       BIBO bibo, VciSupport.SmSession session, byte[] objectId) {
     byte[] wrappedGetData =
         VciSupport.wrapCommand(
-            session,
-            (byte) 0xCB,
-            (byte) 0x3F,
-            (byte) 0xFF,
-            VciSupport.tlv(0x5C, objectId),
-            true);
+            session, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, VciSupport.tlv(0x5C, objectId), true);
     return VciSupport.unwrapResponse(session, transceiveWithPhysicalChaining(bibo, wrappedGetData));
   }
 
@@ -791,7 +786,8 @@ final class VciProvisioning {
         throw new IllegalStateException("Card returned a malformed response APDU");
       }
 
-      int sw = ((response[response.length - 2] & 0xFF) << 8) | (response[response.length - 1] & 0xFF);
+      int sw =
+          ((response[response.length - 2] & 0xFF) << 8) | (response[response.length - 1] & 0xFF);
       logical.write(response, 0, response.length - 2);
       if ((sw & 0xFF00) != 0x6100) {
         logical.write((sw >> 8) & 0xFF);

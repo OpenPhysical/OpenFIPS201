@@ -67,10 +67,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
   private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
   private static final byte INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR = (byte) 0x47;
-  //#if ATTESTATION_ENABLED
+  // #if ATTESTATION_ENABLED
   // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key.
   private static final byte INS_PIV_ATTEST = (byte) 0xF9;
-  //#endif
+  // #endif
   // Helper constants
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
@@ -195,8 +195,16 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     final byte[] buffer = apdu.getBuffer();
 
     if (selectingApplet()) {
+      piv.abortOutgoingResponse();
       processPIV_SELECT(apdu);
       return;
+    }
+
+    // ISO/IEC 7816-4 response chaining is abandoned by any intervening command. Do this before
+    // unwrapping a new protected command, because unwrapping replaces the secure-messaging command
+    // context needed to finish the abandoned logical exchange correctly.
+    if (buffer[ISO7816.OFFSET_INS] != INS_GP_GET_RESPONSE) {
+      piv.abortOutgoingResponse();
     }
 
     validateCommandClass(apdu, buffer);
@@ -221,13 +229,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       piv.processOutgoing(apdu);
       return;
     }
-    // TODO: Decide if this should go back to being called every time
-    // The implication is that if a caller does this:
-    // - GET DATA (big object)
-    // - SOME OTHER COMMAND
-    // - GET RESPONSE
-    // ... in some cases it will continue the original GET DATA.
-
     //
     // We can now safely call setIncomingAndReceive because all other expected commands are
     // either CASE 2 or 4 (command data present).
@@ -277,14 +278,16 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // Process any outstanding chain requests
       //
       // NOTES:
-      // - If there is an outstanding chain request to process, this method will throw an ISOException
+      // - If there is an outstanding chain request to process, this method will throw an
+      // ISOException
       //   (including SW_NO_ERROR) and no further processing will occur.
-      // - It is important that this command is handled before any GP SCP authentication is called to
+      // - It is important that this command is handled before any GP SCP authentication is called
+      // to
       //   prevent a downgrade attack where the attacker waits for a sensitive large-command to be
       //   executed and then intercepts the session and cancels the secure channel (thus removing
       //   session encryption).
-      // - TODO: Make sure that if we are supposed to be receiving this data under SCP, that it is
-      //   definitely still set.
+      // - ChainBuffer binds all frames to the protection used by the first frame, so an SCP or PIV
+      //   secure-messaging write cannot be completed after a channel downgrade.
       //
       // We pass the byte array, offset and length here because the previous call to unwrap() may
       // have altered the length.
@@ -339,11 +342,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
           break;
 
-        //#if ATTESTATION_ENABLED
+          // #if ATTESTATION_ENABLED
         case INS_PIV_ATTEST:
           processPIV_ATTEST(apdu, length);
           break;
-        //#endif
+          // #endif
 
         default:
           ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
@@ -804,7 +807,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.processOutgoing(apdu);
   }
 
-  //#if ATTESTATION_ENABLED
+  // #if ATTESTATION_ENABLED
   private void processPIV_ATTEST(APDU apdu, short length) {
     byte[] buffer = apdu.getBuffer();
 
@@ -821,5 +824,5 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     piv.attest(buffer[ISO7816.OFFSET_P1]);
     piv.processOutgoing(apdu);
   }
-  //#endif
+  // #endif
 }

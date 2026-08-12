@@ -8,7 +8,8 @@ PutDataRequest ::= CHOICE {
 	deleteObjectRequest	[APPLICATION 5] PutDataDeleteObjectRequest,
 	createKeyRequest 	[APPLICATION 6] PutDataCreateKeyRequest,
 	deleteKeyRequest 	[APPLICATION 7] PutDataDeleteKeyRequest,
-	configRequest		[APPLICATION 8] PutDataUpdateConfigRequest
+	configRequest		[APPLICATION 8] PutDataUpdateConfigRequest,
+	personalizeAppletRequest	[APPLICATION 9] PutDataPersonalizeAppletRequest
 }
 
 PutDataBulkRequest ::= [APPLICATION 10] SEQUENCE OF PutDataRequest
@@ -61,6 +62,10 @@ PutDataUpdateConfigRequest ::= SEQUENCE {
 	occPolicy 			[3] OccPolicyParameter OPTIONAL,
 	options				[4] OptionsParameter OPTIONAL
 }
+
+-- Proprietary OpenFIPS201 operation. Empty, SCP-only, and one-way. It transitions
+-- the GP application from SELECTABLE to OpenFIPS201 application-specific state 0x0F.
+PutDataPersonalizeAppletRequest ::= SEQUENCE {}
 
 LegacyOperation ::= ENUMERATED {
 	undefined	(0),		

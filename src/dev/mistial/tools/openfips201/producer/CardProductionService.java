@@ -23,7 +23,8 @@ import java.nio.file.Path;
 public final class CardProductionService {
   private static final Gson GSON = new Gson();
 
-  public Path produce(String producer, String batch, CardTarget target, String stockScpKey, boolean yes)
+  public Path produce(
+      String producer, String batch, CardTarget target, String stockScpKey, boolean yes)
       throws Exception {
     Path profilePath = ProducerPaths.producerProfile(producer);
     Path batchPath = ProducerPaths.batch(producer, batch).resolve("batch.json");
@@ -35,7 +36,8 @@ public final class CardProductionService {
     }
     IssuerProfile profile = ProfileLoader.load(profilePath.toString());
     BatchMetadata metadata =
-        GSON.fromJson(new String(Files.readAllBytes(batchPath), StandardCharsets.UTF_8), BatchMetadata.class);
+        GSON.fromJson(
+            new String(Files.readAllBytes(batchPath), StandardCharsets.UTF_8), BatchMetadata.class);
     ScpConfig stockScp =
         ScpConfig.fromMaster(
             ScpConfig.Mode.SCP03, metadata.stockScpKeyVersion, HexUtil.parse(stockScpKey));
@@ -59,7 +61,9 @@ public final class CardProductionService {
   private static void appendCsv(Path csv, Path receiptPath) throws Exception {
     BatchCreateService.ensureCsvHeader(csv);
     CardstockReceipt receipt =
-        GSON.fromJson(new String(Files.readAllBytes(receiptPath), StandardCharsets.UTF_8), CardstockReceipt.class);
+        GSON.fromJson(
+            new String(Files.readAllBytes(receiptPath), StandardCharsets.UTF_8),
+            CardstockReceipt.class);
     String line =
         csv(receipt.timestamp)
             + ","
@@ -101,7 +105,8 @@ public final class CardProductionService {
             + ","
             + receipt.f9ProofIssuerMatched
             + "\n";
-    Files.write(csv, line.getBytes(StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.APPEND);
+    Files.write(
+        csv, line.getBytes(StandardCharsets.UTF_8), java.nio.file.StandardOpenOption.APPEND);
   }
 
   private static String csv(String value) {
