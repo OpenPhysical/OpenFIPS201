@@ -578,12 +578,14 @@ final class Config {
       }
 
       // Retries Contact
+      byte retriesContact = config[CONFIG_PIN_RETRIES_CONTACT];
+      byte retriesContactless = config[CONFIG_PIN_RETRIES_CONTACTLESS];
       if (reader.match(TAG_PIN_RETRIES_CONTACT)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PIN_MAX_RETRIES) {
           ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
-        config[CONFIG_PIN_RETRIES_CONTACT] = value;
+        retriesContact = value;
         reader.moveNext();
       }
 
@@ -595,12 +597,12 @@ final class Config {
           ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
         // Pre-condition - Cannot be greater than RETRIES_CONTACT
-        if (value > config[CONFIG_PIN_RETRIES_CONTACT]) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-        config[CONFIG_PIN_RETRIES_CONTACTLESS] = value;
+        retriesContactless = value;
         reader.moveNext();
       }
+      if (retriesContactless > retriesContact) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      config[CONFIG_PIN_RETRIES_CONTACT] = retriesContact;
+      config[CONFIG_PIN_RETRIES_CONTACTLESS] = retriesContactless;
 
       // Charset
       if (reader.match(TAG_PIN_CHARSET)) {
@@ -681,12 +683,14 @@ final class Config {
       }
 
       // Retries Contact
+      byte retriesContact = config[CONFIG_PUK_RETRIES_CONTACT];
+      byte retriesContactless = config[CONFIG_PUK_RETRIES_CONTACTLESS];
       if (reader.match(TAG_PUK_RETRIES_CONTACT)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PUK_MAX_RETRIES) {
           ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
-        config[CONFIG_PUK_RETRIES_CONTACT] = value;
+        retriesContact = value;
         reader.moveNext();
       }
 
@@ -698,12 +702,12 @@ final class Config {
           ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
         // Pre-condition - Must not be more than PUK_RETRIES_CONTACT
-        if (value > config[CONFIG_PUK_RETRIES_CONTACT]) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-        config[CONFIG_PUK_RETRIES_CONTACTLESS] = value;
+        retriesContactless = value;
         reader.moveNext();
       }
+      if (retriesContactless > retriesContact) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      config[CONFIG_PUK_RETRIES_CONTACT] = retriesContact;
+      config[CONFIG_PUK_RETRIES_CONTACTLESS] = retriesContactless;
 
       // Updateable
       if (reader.match(TAG_PUK_RESTRICT_UPDATE)) {

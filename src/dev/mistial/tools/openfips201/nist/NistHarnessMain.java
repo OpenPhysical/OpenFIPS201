@@ -12,7 +12,15 @@ import com.tvec.testrunner.gui.displays.testmanager.testdata.TestVectors;
 import com.tvec.utility.Context;
 import com.tvec.utility.configuration.Configuration;
 import com.tvec.utility.configuration.ConfigurationEntry;
+import dev.mistial.tools.openfips201.common.ScpConfig;
+import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
+import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
+import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.Security;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,13 +62,40 @@ public final class NistHarnessMain {
       throw new IllegalArgumentException("No NIST test vectors matched the requested selection");
     }
 
-    try (NistCardTransport contact = new JCardEngineNistCardTransport("T=1");
-        NistCardTransport contactless = new JCardEngineNistCardTransport("T=CL")) {
-      installProvider(contact, contactless);
-      int failures = runTests(configuration, selected);
-      if (failures != 0) {
-        throw new IllegalStateException(failures + " NIST test vector(s) failed");
+    ConformancePackage profile =
+        options.icam == null ? null : IcamCardFolder.load(Paths.get(options.icam));
+    List<HarnessResult> results = new ArrayList<HarnessResult>();
+    int failures = 0;
+    if (profile != null && selected.size() > 1 && !options.sharedCard) {
+      for (TestVector vector : selected) {
+        failures +=
+            runOnCard(
+                configuration, java.util.Collections.singletonList(vector), profile, results);
       }
+    } else {
+      failures = runOnCard(configuration, selected, profile, results);
+    }
+    writeJUnitSummary(Paths.get(options.out, "nist-results.xml"), results);
+    if (failures != 0) {
+      throw new IllegalStateException(failures + " NIST test vector(s) failed");
+    }
+  }
+
+  private static int runOnCard(
+      Configuration configuration,
+      List<TestVector> selected,
+      ConformancePackage profile,
+      List<HarnessResult> results)
+      throws Exception {
+    try (JCardEngineNistCardTransport.SharedCard card = JCardEngineNistCardTransport.createCard();
+        NistCardTransport contact = new JCardEngineNistCardTransport(card, "T=1");
+        NistCardTransport contactless = new JCardEngineNistCardTransport(card, "T=CL")) {
+      if (profile != null) {
+        ConformanceProvisioner.provision(
+            card.openBibo("T=1"), ScpConfig.defaultTestScp03(), profile, System.out);
+      }
+      installProvider(contact, contactless);
+      return runTests(configuration, selected, results);
     }
   }
 
@@ -147,13 +182,19 @@ public final class NistHarnessMain {
     if ("contactless".equals(suite)) {
       return CONTACTLESS.equalsIgnoreCase(testInterface);
     }
+    if (suite.startsWith("card-")) {
+      String requestedInterface = suite.substring("card-".length());
+      return !vector.getSubsystemName().startsWith("piv")
+          && requestedInterface.equalsIgnoreCase(testInterface);
+    }
     if (suite.equalsIgnoreCase(testInterface)) {
       return true;
     }
     return vector.getSubsystemName().equalsIgnoreCase(suite);
   }
 
-  private static int runTests(Configuration configuration, List<TestVector> selected) {
+  private static int runTests(
+      Configuration configuration, List<TestVector> selected, List<HarnessResult> results) {
     int failures = 0;
     TestClassFactory factory = new TestClassFactory();
     for (int index = 0; index < selected.size(); index++) {
@@ -165,6 +206,8 @@ public final class NistHarnessMain {
       TestRunner runner = new TestRunner(null, specification);
       TestImpl test = factory.getTestClass(runner, vector, new Context());
       TestResult result = null;
+      boolean passed = false;
+      String failure = null;
       try {
         System.out.println("RUN " + (index + 1) + "/" + selected.size() + " " + name);
         OpenFips201TerminalFactorySpi.reset(testInterface(vector));
@@ -172,27 +215,80 @@ public final class NistHarnessMain {
         result = test.runTest();
         String resultText = result == null ? "error" : result.getResultCodeText();
         if (isPassingResult(resultText)) {
+          passed = true;
           System.out.println(resultText.toUpperCase() + " " + name);
         } else {
-          failures++;
+          failure = resultText;
           System.out.println("FAIL " + name + " " + resultText);
           printResultDetails(result);
         }
       } catch (Exception e) {
-        failures++;
+        failure = e.toString();
         System.out.println("ERROR " + name + " " + e.getMessage());
         e.printStackTrace(System.out);
       } finally {
         try {
           test.cleanupTest();
         } catch (Exception e) {
-          failures++;
+          passed = false;
+          failure = "cleanup failed: " + e;
           System.out.println("ERROR " + name + " cleanup failed: " + e.getMessage());
           e.printStackTrace(System.out);
         }
       }
+      if (!passed) {
+        failures++;
+      }
+      results.add(new HarnessResult(name, passed, failure));
     }
     return failures;
+  }
+
+  private static void writeJUnitSummary(Path output, List<HarnessResult> results) throws Exception {
+    int failures = 0;
+    StringBuilder xml = new StringBuilder();
+    for (HarnessResult result : results) {
+      if (!result.passed) failures++;
+    }
+    xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    xml.append("<testsuite name=\"OpenFIPS201 NIST\" tests=\"")
+        .append(results.size())
+        .append("\" failures=\"")
+        .append(failures)
+        .append("\">\n");
+    for (HarnessResult result : results) {
+      xml.append("  <testcase classname=\"nist.card\" name=\"")
+          .append(xmlEscape(result.name))
+          .append("\">");
+      if (!result.passed) {
+        xml.append("<failure message=\"")
+            .append(xmlEscape(result.failure == null ? "failed" : result.failure))
+            .append("\"/>");
+      }
+      xml.append("</testcase>\n");
+    }
+    xml.append("</testsuite>\n");
+    Files.write(output, xml.toString().getBytes(StandardCharsets.UTF_8));
+    System.out.println("WROTE " + output);
+  }
+
+  private static String xmlEscape(String value) {
+    return value.replace("&", "&amp;")
+        .replace("\"", "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;");
+  }
+
+  private static final class HarnessResult {
+    final String name;
+    final boolean passed;
+    final String failure;
+
+    HarnessResult(String name, boolean passed, String failure) {
+      this.name = name;
+      this.passed = passed;
+      this.failure = failure;
+    }
   }
 
   private static void printResultDetails(TestResult result) {
@@ -235,8 +331,11 @@ public final class NistHarnessMain {
     String out = "tools/piv_test_runner/piv_tests/harness";
     String suite;
     String test;
+    String icam;
     int limit;
     boolean listTests;
+    boolean fips;
+    boolean sharedCard;
     boolean help;
 
     static Options parse(String[] args) {
@@ -247,6 +346,10 @@ public final class NistHarnessMain {
           options.help = true;
         } else if ("--list-tests".equals(arg)) {
           options.listTests = true;
+        } else if ("--fips".equals(arg)) {
+          options.fips = true;
+        } else if ("--shared-card".equals(arg)) {
+          options.sharedCard = true;
         } else if ("--target".equals(arg)) {
           options.target = requireValue(args, ++i, arg);
         } else if ("--config".equals(arg)) {
@@ -257,6 +360,8 @@ public final class NistHarnessMain {
           options.suite = requireValue(args, ++i, arg);
         } else if ("--test".equals(arg)) {
           options.test = requireValue(args, ++i, arg);
+        } else if ("--icam".equals(arg)) {
+          options.icam = requireValue(args, ++i, arg);
         } else if ("--limit".equals(arg)) {
           options.limit = Integer.parseInt(requireValue(args, ++i, arg));
         } else {
@@ -282,10 +387,13 @@ public final class NistHarnessMain {
           "  --target emulator        Use the in-process OpenFIPS201 JCardEngine target");
       System.out.println("  --config FILE            NIST Test Runner configuration XML");
       System.out.println("  --out DIR                Local output directory");
+      System.out.println("  --fips                   Compile and test the FIPS_MODE applet profile");
       System.out.println("  --list-tests             List available NIST vectors");
       System.out.println(
-          "  --suite contact          Run contact, contactless, all, or a subsystem name");
+          "  --suite contact          Run an interface, card-<interface>, all, or subsystem");
       System.out.println("  --test Subsystem:Id      Run one vector, for example SelectCommand:1");
+      System.out.println("  --icam DIR               Provision a GSA ICAM card folder before testing");
+      System.out.println("  --shared-card            Preserve one ICAM image across multiple vectors");
       System.out.println("  --limit N                Stop after N selected vectors");
     }
   }

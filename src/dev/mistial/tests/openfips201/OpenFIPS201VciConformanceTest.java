@@ -83,7 +83,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
    * bit 3 selects pairing-required (0) or no-pairing (1) VCI.
    */
   @Test
-  void discoveryObjectAdvertisesVciAndPairingPolicy() {
+  void discoveryObjectRequiresIssuerPolicyBeforeAdvertisingVci() {
     withMockedScp(
         new Runnable() {
           @Override
@@ -116,9 +116,27 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     createPairingCodeReferenceData();
 
     pairingRequired = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"));
-    assertSw(0x9000, pairingRequired, "Read Discovery Object with VCI pairing-required ready");
+    assertSw(0x9000, pairingRequired, "Read unstored Discovery fallback after VCI setup");
     pairingPolicy = policyBytes(pairingRequired.getData());
-    assertTrue((pairingPolicy[0] & 0x08) != 0, "Discovery Object must set VCI implemented bit");
+    assertFalse(
+        (pairingPolicy[0] & 0x08) != 0,
+        "Unstored Discovery must not advertise an issuer policy protected by the Security Object");
+
+    withMockedScp(
+        () ->
+            assertSw(
+                0x9000,
+                transmit(
+                    0x84,
+                    0xDB,
+                    0x3F,
+                    0xFF,
+                    hex("7E124F0BA0000003080000100001005F2F024800")),
+                "Store pairing-required Discovery policy"));
+
+    pairingRequired = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"));
+    pairingPolicy = policyBytes(pairingRequired.getData());
+    assertTrue((pairingPolicy[0] & 0x08) != 0, "Stored Discovery must set VCI implemented bit");
     assertFalse((pairingPolicy[0] & 0x04) != 0, "Pairing-required VCI must clear no-pairing bit");
 
     withMockedScp(
@@ -129,6 +147,15 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A2 03 80 01 01")),
                 "Enable VCI without pairing code");
+            assertSw(
+                0x9000,
+                transmit(
+                    0x84,
+                    0xDB,
+                    0x3F,
+                    0xFF,
+                    hex("7E124F0BA0000003080000100001005F2F024C00")),
+                "Store no-pairing Discovery policy");
           }
         });
 

@@ -141,7 +141,7 @@ final class PIVDataObject extends PIVObject {
   }
 
   void abortUpdate() {
-    if (pendingContent == null) return;
+    if (pendingContent == null || pendingLength == (short) 0) return;
     PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
     pendingLength = (short) 0;
     if (!fixedCapacity) {

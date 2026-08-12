@@ -170,6 +170,15 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void generateAsymmetricKeypairRejectsMissingCommandData() {
+    assertSw(0x9000, selectApplet(), "SELECT before empty GENERATE check");
+    assertSw(
+        0x6A80,
+        transmit(0x00, 0x47, 0x00, 0x9A, new byte[0]),
+        "A complete zero-length GENERATE command is not an incomplete chain");
+  }
+
+  @Test
   void standardGenerateAsymmetricKeypairRejectsRetiredKeyReference() {
     assertSw(0x9000, selectApplet(), "SELECT before GENERATE ASYMMETRIC KEYPAIR checks");
 

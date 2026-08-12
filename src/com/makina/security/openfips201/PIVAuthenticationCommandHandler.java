@@ -1212,6 +1212,14 @@ final class PIVAuthenticationCommandHandler {
 
     byte keyReference = buffer[ISO7816.OFFSET_P2];
 
+    // Zero is also the chain buffer's "more frames expected" sentinel. Reject an actually empty
+    // single-frame command before entering the chaining API so it cannot return a false success.
+    if (length == ZERO
+        && (buffer[ISO7816.OFFSET_CLA] & ChainBuffer.CLA_CHAINING) == ZERO
+        && !chainBuffer.isIncomingApduActive()) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
     // SP 800-73-5 Part 2 Table 2 requires this command to support command chaining.
     length = chainBuffer.processIncomingAPDU(buffer, offset, length, scratch, ZERO);
     if (length == ZERO) return ZERO;

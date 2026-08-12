@@ -379,8 +379,9 @@ platform.id=${build.platform.id}
     </sequential>
   </macrodef>
 
-  <target name="test-sp80085b-corpus">
+  <target name="test-sp80085b-corpus" depends="test-compile">
     <delete dir="build/sp800-85b-personalization"/>
+    <mkdir dir="${test.reportpath}"/>
     <exec executable="sh" failonerror="true">
       <arg value="tools/export-sp80085b-corpus.sh"/>
       <arg value="build/sp800-85b-personalization"/>
@@ -390,6 +391,22 @@ platform.id=${build.platform.id}
       <arg value="test-vectors/sp800-85b-personalization/expected"/>
       <arg value="build/sp800-85b-personalization"/>
     </exec>
+    <!-- The corpus is issuer input, so also execute the product-facing schema/capacity preflight.
+         This prevents the release gate from passing on file-copy integrity alone. -->
+    <junitlauncher printSummary="true" haltOnFailure="true">
+      <classpath>
+        <pathelement path="${test.outputpath}"/>
+        <pathelement path="${tool.outputpath}"/>
+        <path refid="test.runtime.classpath"/>
+      </classpath>
+      <testclasses outputdir="${test.reportpath}">
+        <fileset dir="${test.outputpath}">
+          <include name="**/CertificationProfileValidatorTest.class"/>
+          <include name="**/IcamCardFolderTest.class"/>
+        </fileset>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
   </target>
 
   <target name="test-all-matrix" depends="resolve-test-deps,test-sp80085b-corpus">

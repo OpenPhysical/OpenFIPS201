@@ -2,6 +2,7 @@ package com.makina.security.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import javacard.framework.JCSystem;
@@ -114,6 +115,27 @@ class ConfigDefaultsTest {
     assertTrue(config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL));
     assertTrue(config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_ADMIN));
     assertFalse(config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL));
+  }
+
+  @Test
+  void retryPoliciesRejectContactBelowTheStoredContactlessLimit() {
+    Config config = new Config();
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            update(
+                config,
+                new byte[] {
+                  (byte) 0xA0, 0x03, (byte) 0x86, 0x01, 0x03
+                }));
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            update(
+                config,
+                new byte[] {
+                  (byte) 0xA1, 0x03, (byte) 0x83, 0x01, 0x03
+                }));
   }
 
   private static void update(Config config, byte[] encoded) {

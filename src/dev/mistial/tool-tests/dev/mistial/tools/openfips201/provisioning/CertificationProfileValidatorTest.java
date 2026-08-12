@@ -8,6 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class CertificationProfileValidatorTest {
@@ -52,6 +56,112 @@ class CertificationProfileValidatorTest {
   }
 
   @Test
+  void rejectsInvalidFixedValuesTypesAndMandatoryElements() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CertificationProfileValidator.validateContainer(
+                "5FC107", hex("F000F100F200F300F400F50111F600F700FA00FB00FC00FD00FE00")),
+        "CCC data model number must be 0x10");
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.validateContainer("5FC106", hex("BA03013000BB0101")),
+        "Security Object requires the Appendix A error-detection element");
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.validateContainer("5FC10C", hex("C10115C20100FE00")),
+        "Key History cannot name more than 20 retired keys");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CertificationProfileValidator.validateContainer(
+                "5FC109",
+                hex(
+                    "0101410201420409323032363031313031050143060F414141414141414141414141414141FE00")),
+        "Printed Information expiration must use YYYYMMMDD");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CertificationProfileValidator.validateContainer(
+                "5FC109",
+                hex(
+                    "0101FF0201420409323032364A414E3031050143060F414141414141414141414141414141FE00")),
+        "Printed Information text must be ASCII");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CertificationProfileValidator.validateContainer(
+                "5FC102",
+                hex(
+                    "3019"
+                        + "00000000000000000000000000000000000000000000000000"
+                        + "341000000000000000000000000000000000"
+                        + "35083939393939393939"
+                        + "3E0101FE00")),
+        "CHUID expiration must be a calendar date");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CertificationProfileValidator.validateContainer(
+                "5FC109",
+                hex(
+                    "0101410201420409323032364645423330050143060F414141414141414141414141414141FE00")),
+        "Printed Information expiration must be a calendar date");
+  }
+
+  @Test
+  void securityObjectCoverageIncludesEverySuppliedUnsignedContainer() {
+    Map<String, ConformancePackage.DataObject> objects =
+        new HashMap<String, ConformancePackage.DataObject>();
+    ConformancePackage.DataObject ccc = object(hex("5FC107"), hex("F500"));
+    ConformancePackage.DataObject printed = object(hex("5FC109"), hex("FE00"));
+    ConformancePackage.DataObject certificate = object(hex("5FC105"), hex("700101710100FE00"));
+    objects.put("5FC107", ccc);
+    objects.put("5FC109", printed);
+    objects.put("5FC105", certificate);
+
+    Map<Integer, ConformancePackage.DataObject> mapped =
+        new HashMap<Integer, ConformancePackage.DataObject>();
+    mapped.put(1, ccc);
+    IllegalArgumentException missing =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CertificationProfileValidator.validateRequiredSecurityObjectCoverage(
+                    objects, mapped));
+    assertTrue(missing.getMessage().contains("5FC109"));
+
+    mapped.put(2, printed);
+    assertDoesNotThrow(
+        () -> CertificationProfileValidator.validateRequiredSecurityObjectCoverage(objects, mapped),
+        "PIV certificates are excluded from required Security Object coverage");
+  }
+
+  @Test
+  void securityObjectMappingsUseUniqueDataGroupsAndContainers() {
+    ConformancePackage.DataObject first = object(hex("5FC107"), hex("F500"));
+    ConformancePackage.DataObject second = object(hex("5FC109"), hex("FE00"));
+    Map<Integer, ConformancePackage.DataObject> mappings =
+        new HashMap<Integer, ConformancePackage.DataObject>();
+    Set<ConformancePackage.DataObject> objects = new HashSet<ConformancePackage.DataObject>();
+
+    CertificationProfileValidator.addSecurityObjectMapping(mappings, objects, 1, first);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.addSecurityObjectMapping(mappings, objects, 0, second));
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            CertificationProfileValidator.addSecurityObjectMapping(mappings, objects, 17, second));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.addSecurityObjectMapping(mappings, objects, 1, second));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.addSecurityObjectMapping(mappings, objects, 2, first));
+  }
+
+  @Test
   void capacitiesCoverEveryPart1Table8ContainerFamily() {
     assertEquals(245, CertificationProfileValidator.requiredCapacity(hex("5FC109"), 1));
     assertEquals(128, CertificationProfileValidator.requiredCapacity(hex("5FC10C"), 1));
@@ -61,7 +171,8 @@ class CertificationProfileValidatorTest {
     assertEquals(65, CertificationProfileValidator.requiredCapacity(hex("7F61"), 1));
     assertEquals(2471, CertificationProfileValidator.requiredCapacity(hex("5FC122"), 1));
     assertEquals(12, CertificationProfileValidator.requiredCapacity(hex("5FC123"), 1));
-    assertEquals(3000, CertificationProfileValidator.requiredCapacity(hex("5FC122"), 3000));
+    assertEquals(14, CertificationProfileValidator.requiredCapacity(hex("5FC123"), 12));
+    assertEquals(3004, CertificationProfileValidator.requiredCapacity(hex("5FC122"), 3000));
   }
 
   @Test

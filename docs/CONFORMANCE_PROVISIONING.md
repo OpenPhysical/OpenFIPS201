@@ -139,3 +139,4 @@ intermediate from the ICAM AIA URL or from
 - Negative ICAM cards (tampered CHUID, expired certs, etc.) load as-is — useful for host-side negative tests once the positive path is green.
 - Emulator reset clears personalisation; re-run `provision` after restart.
 - The applet is left in the administrative (pre-personalise) lifecycle state so re-provisioning remains possible under SCP.
+- **FIPS_MODE CAP:** the loader maps ICAM objects and keys to the Part 1 contact/contactless ACRs enforced by `FipsPolicy`. GSA card 46 provisions successfully; VCI/SM remains a separate profile extension.

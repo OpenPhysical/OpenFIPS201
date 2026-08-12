@@ -19,8 +19,19 @@ if [[ ! -f "$JCARD_JAR" ]]; then
   exit 1
 fi
 
-# Compile the applet (preprocessed) and shared test classes into build/test-bin.
-sh "$ROOT/tools/ant/bin/ant" -f "$ROOT/build/build.xml" test-compile >/dev/null
+# Compile the requested applet profile and shared test classes into build/test-bin.
+fips_mode=false
+for argument in "$@"; do
+  if [ "$argument" = "--fips" ]; then
+    fips_mode=true
+  fi
+done
+if [ "$fips_mode" = true ]; then
+  sh "$ROOT/tools/ant/bin/ant" -f "$ROOT/build/build.xml" \
+    -Dfips.mode=true -Dfips.platform=test-jcard test-compile >/dev/null
+else
+  sh "$ROOT/tools/ant/bin/ant" -f "$ROOT/build/build.xml" test-compile >/dev/null
+fi
 
 mkdir -p "$HARNESS_CLASSES"
 

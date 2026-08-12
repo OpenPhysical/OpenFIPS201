@@ -462,7 +462,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   private static boolean isAdministrativeInstruction(byte ins) {
-    return ins == INS_PIV_GET_DATA
+    return ins == INS_GP_GET_RESPONSE
+        || ins == INS_PIV_GET_DATA
         || ins == INS_PIV_PUT_DATA
         || ins == INS_PIV_CHANGE_REFERENCE_DATA
         || ins == INS_ADMIN_UPDATE_KEY

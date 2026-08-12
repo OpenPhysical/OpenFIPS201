@@ -256,6 +256,24 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @Test
+  void putDataRejectsBiometricTagWithoutLengthHeader() {
+    byte[] managementKey = keyMaterialAes128((byte) 0x22);
+
+    provisionManagementKeyOverScp(managementKey);
+    createDataObjectOverScp(DATA_ID_BIOMETRIC_GROUP, KEY_REF_CARD_MANAGEMENT);
+    authenticateManagementKey(managementKey);
+
+    assertSw(
+        ISO7816.SW_WRONG_DATA,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("7F61")),
+        "A two-byte BER tag without its length header must be rejected");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("7F6103010203")),
+        "A rejected header must not leave an incoming object chain active");
+  }
+
+  @Test
   void putDataDiscoveryObjectUpdateSucceedsAfterManagementAuthentication() {
     byte[] managementKey = keyMaterialAes128((byte) 0x31);
 

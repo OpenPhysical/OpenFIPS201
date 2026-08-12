@@ -226,8 +226,12 @@ final class PIVDataCommandHandler {
 
   /** Bounds the BER length header before TLVReader examines the APDU backing array. */
   private static void requireCompleteLengthHeader(byte[] buffer, short offset, short end) {
-    if ((short) (offset + 1) >= end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    short first = (short) (buffer[(short) (offset + 1)] & 0xFF);
+    short tagLength = buffer[offset] == (byte) 0x7F ? (short) 2 : (short) 1;
+    short lengthOffset = (short) (offset + tagLength);
+    if (lengthOffset < offset || lengthOffset >= end) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    short first = (short) (buffer[lengthOffset] & 0xFF);
     short lengthBytes;
     if (first < (short) 0x80) {
       lengthBytes = (short) 0;
@@ -239,7 +243,7 @@ final class PIVDataCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return;
     }
-    if ((short) (offset + (short) 1 + lengthBytes) >= end) {
+    if ((short) (lengthOffset + lengthBytes) >= end) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
   }

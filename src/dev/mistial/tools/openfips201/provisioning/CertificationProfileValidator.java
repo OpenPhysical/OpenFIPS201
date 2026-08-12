@@ -63,7 +63,19 @@ public final class CertificationProfileValidator {
     else if (id.equals("7E")) minimum = 19;
     else if (id.equals("5FC123")) minimum = 12;
     else minimum = payloadLength;
-    return Math.max(minimum, payloadLength);
+    int storedLength =
+        isRawPutObject(id) ? payloadLength : payloadLength + berHeaderLength(payloadLength);
+    return Math.max(minimum, storedLength);
+  }
+
+  private static boolean isRawPutObject(String id) {
+    return id.equals("7E") || id.equals("7F61");
+  }
+
+  private static int berHeaderLength(int payloadLength) {
+    if (payloadLength < 0x80) return 2; // tag 53 + one-byte length
+    if (payloadLength <= 0xFF) return 3; // tag 53 + 81 LL
+    return 4; // tag 53 + 82 LL LL
   }
 
   /**
@@ -87,7 +99,7 @@ public final class CertificationProfileValidator {
     for (Map.Entry<String, ConformancePackage.DataObject> entry : objects.entrySet()) {
       validateContainer(entry.getKey(), entry.getValue().payload);
     }
-    validateSecurityObject(objects);
+    validateSecurityObject(objects, true);
   }
 
   private static Map<String, ConformancePackage.DataObject> index(ConformancePackage pkg) {
@@ -171,7 +183,10 @@ public final class CertificationProfileValidator {
     offset = fixedOrEmpty(payload, offset, 0xF2, 1, id).end;
     offset = element(payload, offset, 0xF3, 0, 128, id).end;
     offset = fixedOrEmpty(payload, offset, 0xF4, 1, id).end;
-    offset = element(payload, offset, 0xF5, 1, 1, id).end;
+    Tlv dataModel = element(payload, offset, 0xF5, 1, 1, id);
+    // SP 800-73-5 Part 1 Section 3.1.1 assigns data model number 0x10.
+    if ((payload[dataModel.value] & 0xFF) != 0x10) invalid(id);
+    offset = dataModel.end;
     offset = fixedOrEmpty(payload, offset, 0xF6, 17, id).end;
     for (int tag : new int[] {0xF7, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE}) {
       offset = element(payload, offset, tag, 0, 0, id).end;
@@ -184,6 +199,7 @@ public final class CertificationProfileValidator {
     offset = element(payload, offset, 0x34, 16, 16, id).end;
     Tlv expiration = element(payload, offset, 0x35, 8, 8, id);
     requireAsciiDigits(payload, expiration, id);
+    requireCalendarDate(payload, expiration, false, id);
     offset = expiration.end;
     if (hasTag(payload, offset, 0x36)) offset = element(payload, offset, 0x36, 16, 16, id).end;
     offset = element(payload, offset, 0x3E, 1, 2816, id).end;
@@ -212,18 +228,32 @@ public final class CertificationProfileValidator {
   private static void validateSecurityObjectEnvelope(String id, byte[] payload) {
     int offset = element(payload, 0, 0xBA, 3, Integer.MAX_VALUE, id).end;
     offset = element(payload, offset, 0xBB, 1, Integer.MAX_VALUE, id).end;
-    if (hasTag(payload, offset, 0xFE)) offset = element(payload, offset, 0xFE, 0, 0, id).end;
+    offset = element(payload, offset, 0xFE, 0, 0, id).end;
     requireEnd(payload, offset, id);
   }
 
   private static void validatePrintedInformation(String id, byte[] payload) {
-    int offset = element(payload, 0, 0x01, 1, 125, id).end;
-    offset = element(payload, offset, 0x02, 1, 20, id).end;
-    offset = element(payload, offset, 0x04, 9, 9, id).end;
-    offset = element(payload, offset, 0x05, 1, 20, id).end;
-    offset = element(payload, offset, 0x06, 15, 15, id).end;
-    if (hasTag(payload, offset, 0x07)) offset = element(payload, offset, 0x07, 1, 20, id).end;
-    if (hasTag(payload, offset, 0x08)) offset = element(payload, offset, 0x08, 1, 20, id).end;
+    Tlv name = element(payload, 0, 0x01, 1, 125, id);
+    requireAscii(payload, name, id);
+    Tlv affiliation = element(payload, name.end, 0x02, 1, 20, id);
+    requireAscii(payload, affiliation, id);
+    Tlv expiration = element(payload, affiliation.end, 0x04, 9, 9, id);
+    requirePrintedDate(payload, expiration, id);
+    Tlv serial = element(payload, expiration.end, 0x05, 1, 20, id);
+    requireAscii(payload, serial, id);
+    Tlv issuer = element(payload, serial.end, 0x06, 15, 15, id);
+    requireAscii(payload, issuer, id);
+    int offset = issuer.end;
+    if (hasTag(payload, offset, 0x07)) {
+      Tlv line = element(payload, offset, 0x07, 1, 20, id);
+      requireAscii(payload, line, id);
+      offset = line.end;
+    }
+    if (hasTag(payload, offset, 0x08)) {
+      Tlv line = element(payload, offset, 0x08, 1, 20, id);
+      requireAscii(payload, line, id);
+      offset = line.end;
+    }
     offset = element(payload, offset, 0xFE, 0, 0, id).end;
     requireEnd(payload, offset, id);
   }
@@ -234,8 +264,11 @@ public final class CertificationProfileValidator {
     int offset = offCard.end;
     boolean hasUrl = hasTag(payload, offset, 0xF3);
     if (hasUrl) offset = element(payload, offset, 0xF3, 1, 118, id).end;
-    if ((payload[offCard.value] & 0xFF) > 0 && !hasUrl) invalid(id);
-    if ((payload[onCard.value] & 0xFF) == 0 && (payload[offCard.value] & 0xFF) == 0 && hasUrl) {
+    int onCardCount = payload[onCard.value] & 0xFF;
+    int offCardCount = payload[offCard.value] & 0xFF;
+    if (onCardCount > 20 || offCardCount > 20 || onCardCount + offCardCount > 20) invalid(id);
+    if (offCardCount > 0 && !hasUrl) invalid(id);
+    if (onCardCount == 0 && offCardCount == 0 && hasUrl) {
       invalid(id);
     }
     offset = element(payload, offset, 0xFE, 0, 0, id).end;
@@ -317,6 +350,68 @@ public final class CertificationProfileValidator {
     }
   }
 
+  private static void requireAscii(byte[] payload, Tlv value, String id) {
+    for (int offset = value.value; offset < value.end; offset++) {
+      int character = payload[offset] & 0xFF;
+      if (character < 0x20 || character > 0x7E) invalid(id);
+    }
+  }
+
+  private static void requirePrintedDate(byte[] payload, Tlv value, String id) {
+    for (int index = 0; index < value.length; index++) {
+      int character = payload[value.value + index] & 0xFF;
+      boolean month = index >= 4 && index <= 6;
+      if (month ? character < 'A' || character > 'Z' : character < '0' || character > '9') {
+        invalid(id);
+      }
+    }
+    requireCalendarDate(payload, value, true, id);
+  }
+
+  private static void requireCalendarDate(
+      byte[] payload, Tlv value, boolean abbreviatedMonth, String id) {
+    int year = decimal(payload, value.value, 4);
+    int month;
+    int dayOffset;
+    if (abbreviatedMonth) {
+      String[] months = {
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"
+      };
+      month = 0;
+      for (int candidate = 0; candidate < months.length; candidate++) {
+        String name = months[candidate];
+        if (payload[value.value + 4] == (byte) name.charAt(0)
+            && payload[value.value + 5] == (byte) name.charAt(1)
+            && payload[value.value + 6] == (byte) name.charAt(2)) {
+          month = candidate + 1;
+          break;
+        }
+      }
+      dayOffset = value.value + 7;
+    } else {
+      month = decimal(payload, value.value + 4, 2);
+      dayOffset = value.value + 6;
+    }
+    int day = decimal(payload, dayOffset, 2);
+    int[] monthLengths = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    boolean leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    if (month == 0
+        || month > 12
+        || day == 0
+        || day > monthLengths[month - 1] + (month == 2 && leap ? 1 : 0)) {
+      invalid(id);
+    }
+  }
+
+  private static int decimal(byte[] payload, int offset, int length) {
+    int value = 0;
+    for (int index = 0; index < length; index++) {
+      value = value * 10 + (payload[offset + index] - '0');
+    }
+    return value;
+  }
+
   private static void requireEnd(byte[] payload, int offset, String id) {
     if (offset != payload.length) invalid(id);
   }
@@ -328,36 +423,46 @@ public final class CertificationProfileValidator {
 
   static void validateSecurityObject(Map<String, ConformancePackage.DataObject> objects)
       throws Exception {
+    validateSecurityObject(objects, false);
+  }
+
+  private static void validateSecurityObject(
+      Map<String, ConformancePackage.DataObject> objects, boolean requireProfileCoverage)
+      throws Exception {
     byte[] payload = objects.get("5FC106").payload;
     Tlv mapping = read(payload, 0);
     Tlv signed = read(payload, mapping.end);
-    Tlv error = signed.end < payload.length ? read(payload, signed.end) : null;
+    Tlv error = read(payload, signed.end);
     if (mapping.tag != 0xBA
         || mapping.length == 0
         || mapping.length % 3 != 0
         || signed.tag != 0xBB
-        || (error != null
-            && (error.tag != 0xFE || error.length != 0 || error.end != payload.length))
-        || (error == null && signed.end != payload.length)) {
+        || error.tag != 0xFE
+        || error.length != 0
+        || error.end != payload.length) {
       throw new IllegalArgumentException("Security Object must contain BA mapping and BB CMS data");
     }
     Map<Integer, ConformancePackage.DataObject> byDg =
         new HashMap<Integer, ConformancePackage.DataObject>();
+    Set<ConformancePackage.DataObject> mappedObjects = new HashSet<ConformancePackage.DataObject>();
     for (int offset = mapping.value; offset < mapping.end; offset += 3) {
       int dg = payload[offset] & 0xFF;
       String container =
           String.format("%04X", ((payload[offset + 1] & 0xFF) << 8) | (payload[offset + 2] & 0xFF));
       ConformancePackage.DataObject object = objectForContainer(objects, container);
-      if (object == null || byDg.put(dg, object) != null) {
-        throw new IllegalArgumentException(
-            "Security Object BA contains an unknown or duplicate mapping");
-      }
+      addSecurityObjectMapping(byDg, mappedObjects, dg, object);
     }
+    if (requireProfileCoverage) validateRequiredSecurityObjectCoverage(objects, byDg);
 
     byte[] cmsBytes = Arrays.copyOfRange(payload, signed.value, signed.end);
     CMSSignedData cms = new CMSSignedData(cmsBytes);
     if (cms.getSignedContent() == null || cms.getSignerInfos().size() == 0) {
       throw new IllegalArgumentException("Security Object BB lacks signed LDS content");
+    }
+    // SP 800-73-5 Part 1 Section 3.1.7 requires the BB signature to omit the issuer
+    // content-signing certificate because that certificate is carried by the CHUID.
+    if (!cms.getCertificates().getMatches(null).isEmpty()) {
+      throw new IllegalArgumentException("Security Object BB must omit signer certificates");
     }
     byte[] ldsBytes = (byte[]) cms.getSignedContent().getContent();
     LDSSecurityObject lds = LDSSecurityObject.getInstance(ASN1Primitive.fromByteArray(ldsBytes));
@@ -378,6 +483,45 @@ public final class CertificationProfileValidator {
     if (seen.size() != byDg.size()) {
       throw new IllegalArgumentException("Security Object BA and LDS hash sets differ");
     }
+  }
+
+  static void addSecurityObjectMapping(
+      Map<Integer, ConformancePackage.DataObject> byDg,
+      Set<ConformancePackage.DataObject> mappedObjects,
+      int dg,
+      ConformancePackage.DataObject object) {
+    if (dg < 1
+        || dg > 16
+        || object == null
+        || byDg.containsKey(dg)
+        || mappedObjects.contains(object)) {
+      throw new IllegalArgumentException(
+          "Security Object BA contains an invalid or duplicate mapping");
+    }
+    byDg.put(dg, object);
+    mappedObjects.add(object);
+  }
+
+  static void validateRequiredSecurityObjectCoverage(
+      Map<String, ConformancePackage.DataObject> objects,
+      Map<Integer, ConformancePackage.DataObject> mapped) {
+    for (Map.Entry<String, ConformancePackage.DataObject> entry : objects.entrySet()) {
+      if (requiresSecurityObjectCoverage(entry.getKey())
+          && !mapped.containsValue(entry.getValue())) {
+        throw new IllegalArgumentException(
+            "Security Object omits required unsigned container " + entry.getKey());
+      }
+    }
+  }
+
+  static boolean requiresSecurityObjectCoverage(String id) {
+    // SP 800-73-5 Part 1 Sections 3.1.1, 3.1.7, 3.3.2, 3.3.3, 3.3.6, and 3.3.8.
+    return id.equals("5FC107")
+        || id.equals("5FC109")
+        || id.equals("7E")
+        || id.equals("5FC10C")
+        || id.equals("7F61")
+        || id.equals("5FC123");
   }
 
   private static ConformancePackage.DataObject objectForContainer(

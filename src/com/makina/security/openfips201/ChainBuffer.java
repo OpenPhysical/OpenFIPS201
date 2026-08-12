@@ -90,7 +90,7 @@ final class ChainBuffer {
   static final byte PROTECTION_SCP = (byte) 2;
 
   // APDU constants
-  private static final byte CLA_CHAINING = (byte) 0x10;
+  static final byte CLA_CHAINING = (byte) 0x10;
   private static final byte INS_GET_RESPONSE = (byte) 0xC0;
 
   // A pointer to our read/write data buffer
@@ -214,6 +214,10 @@ final class ChainBuffer {
 
   boolean isSecureOutgoingActive() {
     return isOutgoingActive() && context[CONTEXT_SECURE_OUTGOING] != (short) 0;
+  }
+
+  boolean isIncomingApduActive() {
+    return context[CONTEXT_STATE] == STATE_INCOMING_APDU;
   }
 
   /** Abandons only an outgoing response, leaving incoming command chains untouched. */

@@ -575,19 +575,6 @@ final class PIV {
     return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
   }
 
-  private boolean isVciDiscoveryAdvertised() {
-    if (!isSecureMessagingAdvertised()) {
-      return false;
-    }
-    if (config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_PAIRING_CODE) {
-      return true;
-    }
-    PIVDataObject pairing =
-        dataStore.find(
-            ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) ID_DATA_PAIRING_CODE_REFERENCE.length);
-    return pairing != null && pairing.isInitialised();
-  }
-
   boolean isVciSatisfied() {
     short policy = dataCommands.getDiscoveryPolicy();
     return policy >= (short) 0
@@ -715,8 +702,9 @@ final class PIV {
    * @param length The length of the CDATA section
    */
   short getData(byte[] buffer, short offset, short length) throws ISOException {
-    return dataCommands.getData(
-        buffer, offset, length, isVciSatisfied(), isVciDiscoveryAdvertised());
+    // SP 800-73-5 Part 1 Sections 3.3.2 and 5.5 require an issuer-controlled Discovery Object
+    // for VCI. The fallback response must not advertise policy that cannot satisfy the ACR.
+    return dataCommands.getData(buffer, offset, length, isVciSatisfied(), false);
   }
 
   void putData(byte[] buffer, short offset, short length) throws ISOException {

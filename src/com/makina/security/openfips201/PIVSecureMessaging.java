@@ -93,6 +93,7 @@ final class PIVSecureMessaging {
   private final short[] responseState;
   private final byte[] responseIv;
   private final byte[] responseBlock;
+  private final byte[] responseCandidateMcv;
   private final byte[] responseTail;
   private final AESKey skCfrm;
   private final AESKey skMac;
@@ -108,6 +109,8 @@ final class PIVSecureMessaging {
         JCSystem.makeTransientShortArray(LENGTH_RESPONSE_STATE, JCSystem.CLEAR_ON_DESELECT);
     responseIv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseBlock = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
+    responseCandidateMcv =
+        JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseTail = JCSystem.makeTransientByteArray((short) 14, JCSystem.CLEAR_ON_DESELECT);
     // #if VCI_CS2
     skCfrm = PIVCrypto.buildTransientAes128Key();
@@ -338,8 +341,8 @@ final class PIVSecureMessaging {
     responseState[OFFSET_RESPONSE_SW] = sw;
     responseState[OFFSET_RESPONSE_PLAIN_REMAINING] = plaintextLength;
 
-    PIVCrypto.doAesCmacInit(skRmac);
-    PIVCrypto.doAesCmacUpdate(responseMcv, (short) 0, LENGTH_BLOCK);
+    PIVCrypto.doAesResponseCmacInit(skRmac);
+    PIVCrypto.doAesResponseCmacUpdate(responseMcv, (short) 0, LENGTH_BLOCK);
 
     if (plaintextLength > (short) 0) {
       short paddedLength = paddedLength(plaintextLength);
@@ -397,6 +400,7 @@ final class PIVSecureMessaging {
     clearResponseState();
     Util.arrayFillNonAtomic(responseIv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(responseBlock, (short) 0, LENGTH_BLOCK, (byte) 0);
+    Util.arrayFillNonAtomic(responseCandidateMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(responseTail, (short) 0, (short) responseTail.length, (byte) 0);
   }
 
@@ -427,7 +431,7 @@ final class PIVSecureMessaging {
     while (cursor < end && responseState[OFFSET_RESPONSE_PHASE_OFFSET] < headerLength) {
       short index = responseState[OFFSET_RESPONSE_PHASE_OFFSET];
       out[cursor] = responseTail[index];
-      PIVCrypto.doAesCmacUpdate(out, cursor, (short) 1);
+      PIVCrypto.doAesResponseCmacUpdate(out, cursor, (short) 1);
       cursor++;
       responseState[OFFSET_RESPONSE_PHASE_OFFSET]++;
     }
@@ -496,7 +500,7 @@ final class PIVSecureMessaging {
     PIVCrypto.doAesEcbEncrypt(
         skEnc, responseBlock, (short) 0, LENGTH_BLOCK, responseBlock, (short) 0);
     Util.arrayCopyNonAtomic(responseBlock, (short) 0, responseIv, (short) 0, LENGTH_BLOCK);
-    PIVCrypto.doAesCmacUpdate(responseBlock, (short) 0, LENGTH_BLOCK);
+    PIVCrypto.doAesResponseCmacUpdate(responseBlock, (short) 0, LENGTH_BLOCK);
   }
 
   private void prepareFinalResponseTail() {
@@ -506,10 +510,12 @@ final class PIVSecureMessaging {
     // Keep the candidate R-MCV private until every response byte has been delivered. If response
     // chaining is interrupted, the host never received this MAC and must continue from the prior
     // delivered R-MCV.
-    PIVCrypto.doAesCmacFinal(responseTail, (short) 0, (short) 4, responseBlock, (short) 0);
+    PIVCrypto.doAesResponseCmacFinal(
+        responseTail, (short) 0, (short) 4, responseCandidateMcv, (short) 0);
     responseTail[(short) 4] = TAG_MAC;
     responseTail[(short) 5] = (byte) LENGTH_SHORT_MAC;
-    Util.arrayCopyNonAtomic(responseBlock, (short) 0, responseTail, (short) 6, LENGTH_SHORT_MAC);
+    Util.arrayCopyNonAtomic(
+        responseCandidateMcv, (short) 0, responseTail, (short) 6, LENGTH_SHORT_MAC);
     responseState[OFFSET_RESPONSE_PHASE_OFFSET] = (short) 0;
     responseState[OFFSET_RESPONSE_PHASE] = RESPONSE_PHASE_FINAL;
   }
@@ -520,7 +526,8 @@ final class PIVSecureMessaging {
     }
 
     if (responseState[OFFSET_RESPONSE_PHASE_OFFSET] == (short) 14) {
-      Util.arrayCopyNonAtomic(responseBlock, (short) 0, responseMcv, (short) 0, LENGTH_BLOCK);
+      Util.arrayCopyNonAtomic(
+          responseCandidateMcv, (short) 0, responseMcv, (short) 0, LENGTH_BLOCK);
       responseState[OFFSET_RESPONSE_PHASE] = RESPONSE_PHASE_NONE;
       responseState[OFFSET_RESPONSE_PHASE_OFFSET] = (short) 0;
       if (shouldIncrementCounter()) incrementCounter();
@@ -611,5 +618,6 @@ final class PIVSecureMessaging {
     for (short index = (short) 0; index < LENGTH_RESPONSE_STATE; index++) {
       responseState[index] = (short) 0;
     }
+    Util.arrayFillNonAtomic(responseCandidateMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
   }
 }

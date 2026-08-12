@@ -86,6 +86,7 @@ final class PIVCrypto {
   private static Signature cspECCSHA256;
   private static Signature cspECCSHA384;
   private static Signature cspAESCMAC;
+  private static Signature cspAESResponseCMAC;
 
   private static RandomData cspRNG;
 
@@ -99,6 +100,7 @@ final class PIVCrypto {
     cspECCSHA256 = null;
     cspECCSHA384 = null;
     cspAESCMAC = null;
+    cspAESResponseCMAC = null;
     cspSHA256 = null;
     // #if VCI_CS7
     cspSHA384 = null;
@@ -178,6 +180,14 @@ final class PIVCrypto {
       }
     }
 
+    if (cspAESResponseCMAC == null) {
+      try {
+        cspAESResponseCMAC = Signature.getInstance(Signature.ALG_AES_CMAC_128, false);
+      } catch (CryptoException ex) {
+        cspAESResponseCMAC = null;
+      }
+    }
+
     if (cspSHA256 == null) {
       try {
         cspSHA256 = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
@@ -249,6 +259,7 @@ final class PIVCrypto {
             && cspAES != null
             && cspAESCBC != null
             && cspAESCMAC != null
+            && cspAESResponseCMAC != null
             && cspSHA256 != null);
         // #else
         return false;
@@ -260,6 +271,7 @@ final class PIVCrypto {
             && cspAES != null
             && cspAESCBC != null
             && cspAESCMAC != null
+            && cspAESResponseCMAC != null
             && cspSHA384 != null);
         // #else
         return false;
@@ -470,8 +482,23 @@ final class PIVCrypto {
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
+  static void doAesResponseCmacInit(SecretKey key) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    cspAESResponseCMAC.init(key, Signature.MODE_SIGN);
+  }
+
+  static void doAesResponseCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
+    if (inLength != (short) 0) cspAESResponseCMAC.update(inBuffer, inOffset, inLength);
+  }
+
+  static short doAesResponseCmacFinal(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    return cspAESResponseCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
   static void requireAesCmac(short sw) {
-    if (cspAESCMAC == null) ISOException.throwIt(sw);
+    if (cspAESCMAC == null || cspAESResponseCMAC == null) ISOException.throwIt(sw);
   }
 
   static short doAesEcbEncrypt(

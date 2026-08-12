@@ -628,9 +628,9 @@ final class PIVSecurityProvider {
    * @param length The length within the buffer to clear
    */
   static void zeroise(byte[] buffer, short offset, short length) {
-
-    Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0x00);
-    Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0xFF);
+    // Java Card persistent arrays are logical storage, not directly addressable magnetic media.
+    // One complete overwrite establishes the required zeroized state without tripling EEPROM wear
+    // and APDU execution time; repeated patterns provide no portable physical-erasure guarantee.
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0x00);
   }
 }

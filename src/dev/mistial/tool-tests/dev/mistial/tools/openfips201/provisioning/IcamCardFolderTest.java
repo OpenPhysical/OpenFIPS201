@@ -44,6 +44,7 @@ class IcamCardFolderTest {
     boolean sawDiscovery = false;
     for (ConformancePackage.DataObject object : pkg.dataObjects) {
       assertTrue(object.payload.length > 0, object.label + " payload must be non-empty");
+      assertObjectAccess(object);
       if ("Cardholder Unique Identifier".equals(object.label)) {
         sawChuid = true;
         assertEquals(ConformancePackage.PutForm.TAG_LIST, object.putForm);
@@ -76,9 +77,45 @@ class IcamCardFolderTest {
       assertEquals(IcamCardFolder.ALG_RSA_2048, key.algorithm, key.label + " should be RSA-2048");
       assertTrue(key.privateKey instanceof RSAPrivateKey, key.label);
       assertEquals(IcamCardFolder.ATTR_IMPORTABLE, key.attributes);
+      assertKeyAccess(key);
     }
 
     assertFalse(pkg.keys.isEmpty());
+  }
+
+  private static void assertObjectAccess(ConformancePackage.DataObject object) {
+    byte vci = IcamCardFolder.ACCESS_VCI;
+    byte pin = IcamCardFolder.ACCESS_PIN;
+    if ("Security Object".equals(object.label)
+        || "Card Capability Container".equals(object.label)
+        || (object.label.contains("Certificate")
+            && !"Card Authentication Certificate".equals(object.label))) {
+      assertEquals(IcamCardFolder.ACCESS_ALWAYS, object.modeContact, object.label);
+      assertEquals(vci, object.modeContactless, object.label);
+    } else if ("Cardholder Fingerprints".equals(object.label)
+        || "Cardholder Facial Image".equals(object.label)
+        || "Printed Information".equals(object.label)) {
+      assertEquals(pin, object.modeContact, object.label);
+      assertEquals((byte) (vci | pin), object.modeContactless, object.label);
+    } else {
+      assertEquals(IcamCardFolder.ACCESS_ALWAYS, object.modeContact, object.label);
+      assertEquals(IcamCardFolder.ACCESS_ALWAYS, object.modeContactless, object.label);
+    }
+  }
+
+  private static void assertKeyAccess(ConformancePackage.KeyMaterial key) {
+    byte expectedContact =
+        "Digital Signature".equals(key.label)
+            ? IcamCardFolder.ACCESS_PIN_ALWAYS
+            : ("Card Authentication".equals(key.label)
+                ? IcamCardFolder.ACCESS_ALWAYS
+                : IcamCardFolder.ACCESS_PIN);
+    byte expectedContactless =
+        "Card Authentication".equals(key.label)
+            ? IcamCardFolder.ACCESS_ALWAYS
+            : (byte) (IcamCardFolder.ACCESS_VCI | expectedContact);
+    assertEquals(expectedContact, key.modeContact, key.label);
+    assertEquals(expectedContactless, key.modeContactless, key.label);
   }
 
   @Test

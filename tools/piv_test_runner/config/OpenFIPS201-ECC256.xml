@@ -27,12 +27,12 @@
 			<entry name="UNKNOWN_KEY" type="string">77</entry>
 			<entry name="RUN_BLOCKING_TESTS_PUK" type="string">false</entry>
 			<entry name="PIN_RESET_RETRY_COUNTER_RESETS_PUK_COUNTER" type="string">true</entry>
-			<entry name="PUK_BLOCK_ATTEMPTS" type="string">6</entry>
+			<entry name="PUK_BLOCK_ATTEMPTS" type="string">10</entry>
 			<entry name="GENERAL_AUTH_ALGORITHM_PIV_AUTHENTICATION_KEY" type="string">07</entry>
 			<entry name="UNKNOWN_OBJECT" type="string">05cf20</entry>
 			<entry name="OCC_PRIMARY_FINGER_VALUE" type="string"/>
 			<entry name="OCC_SECONDARY_FINGER_VALUE" type="string"/>
-			<entry name="KEY_ALGORITHMS_CARD_MANAGEMENT" type="string">00</entry>
+			<entry name="KEY_ALGORITHMS_CARD_MANAGEMENT" type="string">08</entry>
 			<entry name="KEY_ALGORITHMS_CARD_AUTHENTICATION_SYMMETRIC" type="string">03</entry>
 			<entry name="PIN_VALID" type="string">123456</entry>
 			<entry name="KEY_ALGORITHMS_CARD_AUTHENTICATION" type="string">11</entry>

@@ -65,6 +65,7 @@ public final class IcamCardFolder {
   public static final byte ACCESS_NEVER = (byte) 0x00;
   public static final byte ACCESS_PIN = (byte) 0x01;
   public static final byte ACCESS_PIN_ALWAYS = (byte) 0x02;
+  public static final byte ACCESS_VCI = (byte) 0x08;
   public static final byte ACCESS_ALWAYS = (byte) 0x7F;
 
   public static final byte ROLE_AUTHENTICATE = (byte) 0x01;
@@ -143,7 +144,7 @@ public final class IcamCardFolder {
         ID_SECURITY_OBJECT,
         "Security Object",
         ACCESS_ALWAYS,
-        ACCESS_ALWAYS,
+        ACCESS_VCI,
         ConformancePackage.PutForm.TAG_LIST,
         null,
         "");
@@ -154,7 +155,7 @@ public final class IcamCardFolder {
         ID_CCC,
         "Card Capability Container",
         ACCESS_ALWAYS,
-        ACCESS_ALWAYS,
+        ACCESS_VCI,
         ConformancePackage.PutForm.TAG_LIST,
         null,
         "");
@@ -176,7 +177,7 @@ public final class IcamCardFolder {
         ID_FINGERPRINTS,
         "Cardholder Fingerprints",
         ACCESS_PIN,
-        ACCESS_PIN,
+        (byte) (ACCESS_VCI | ACCESS_PIN),
         ConformancePackage.PutForm.TAG_LIST,
         null,
         "");
@@ -187,7 +188,7 @@ public final class IcamCardFolder {
         ID_FACE,
         "Cardholder Facial Image",
         ACCESS_PIN,
-        ACCESS_PIN,
+        (byte) (ACCESS_VCI | ACCESS_PIN),
         ConformancePackage.PutForm.TAG_LIST,
         null,
         "");
@@ -198,7 +199,7 @@ public final class IcamCardFolder {
         ID_PRINTED,
         "Printed Information",
         ACCESS_PIN,
-        ACCESS_PIN,
+        (byte) (ACCESS_VCI | ACCESS_PIN),
         ConformancePackage.PutForm.TAG_LIST,
         null,
         "");
@@ -213,7 +214,7 @@ public final class IcamCardFolder {
         "PIV Authentication",
         ROLE_SIGN,
         ACCESS_PIN,
-        ACCESS_PIN,
+        (byte) (ACCESS_VCI | ACCESS_PIN),
         ID_PIV_AUTH_CERT,
         "PIV Authentication Certificate",
         p12Password);
@@ -226,7 +227,7 @@ public final class IcamCardFolder {
         "Digital Signature",
         ROLE_SIGN,
         ACCESS_PIN_ALWAYS,
-        ACCESS_PIN_ALWAYS,
+        (byte) (ACCESS_VCI | ACCESS_PIN_ALWAYS),
         ID_DIG_SIG_CERT,
         "Digital Signature Certificate",
         p12Password);
@@ -239,7 +240,7 @@ public final class IcamCardFolder {
         "Key Management",
         ROLE_KEY_ESTABLISH,
         ACCESS_PIN,
-        ACCESS_PIN,
+        (byte) (ACCESS_VCI | ACCESS_PIN),
         ID_KEY_MGMT_CERT,
         "Key Management Certificate",
         p12Password);
@@ -365,7 +366,7 @@ public final class IcamCardFolder {
             certObjectId,
             certLabel,
             ACCESS_ALWAYS,
-            ACCESS_ALWAYS,
+            slot == SLOT_CARD_AUTH ? ACCESS_ALWAYS : ACCESS_VCI,
             ConformancePackage.PutForm.TAG_LIST,
             certContainer));
 

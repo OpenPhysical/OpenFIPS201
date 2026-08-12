@@ -239,8 +239,12 @@ Priority items for formal listing evidence:
 
 ## Related documents
 
+- [FIPS_AND_TEST_GAPS.md](FIPS_AND_TEST_GAPS.md) — FIPS_MODE product gaps, test
+  gaps, and the macOS emulator plan for GSA ICAM + NIST headless suites
 - [NPIVP_VENDOR_EVIDENCE.md](NPIVP_VENDOR_EVIDENCE.md) — VE checklist text for
   vendor documentation submissions
+- [CONFORMANCE_PROVISIONING.md](CONFORMANCE_PROVISIONING.md) — GSA ICAM
+  provisioning onto the emulator
 - [ATTESTATION.md](ATTESTATION.md) — OpenPhysical attestation extension
 - [OPENFIPS201_TOOL.md](OPENFIPS201_TOOL.md) — host tooling
 - [tools/piv_test_runner/README.md](../tools/piv_test_runner/README.md) — NIST

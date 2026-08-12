@@ -349,11 +349,14 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     short recoveredLength =
         PIVCrypto.doRsaPublic(
             publicKey, scratch, transformedOffset, transformedLength, scratch, offset);
-    if (recoveredLength != blockLength
-        || scratch[(short) (offset + blockLength - 1)] != (byte) 0x5A) {
+    if (recoveredLength <= (short) 0
+        || recoveredLength > blockLength
+        || scratch[(short) (offset + recoveredLength - 1)] != (byte) 0x5A) {
       return false;
     }
-    for (short index = 0; index < (short) (blockLength - 1); index++) {
+    // ALG_RSA_NOPAD providers may omit leading zero bytes from the recovered block. Verify the
+    // returned numeric value instead of requiring one provider-specific output encoding.
+    for (short index = 0; index < (short) (recoveredLength - 1); index++) {
       if (scratch[(short) (offset + index)] != (byte) 0) return false;
     }
     return true;

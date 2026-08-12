@@ -32,9 +32,11 @@ the Test Runner under `tools/piv_test_runner/local/install/`. These paths are
 ignored by git.
 
 This directory does **not** implement SP 800-85B data-model tests. For the
-broader conformance picture (repository coverage, VE checklist, 85A vs 85B), see:
+broader conformance picture (repository coverage, VE checklist, 85A vs 85B),
+FIPS product gaps, and the macOS emulator plan for GSA + NIST suites, see:
 
 - [docs/CONFORMANCE_AND_NPIVP.md](../../docs/CONFORMANCE_AND_NPIVP.md)
+- [docs/FIPS_AND_TEST_GAPS.md](../../docs/FIPS_AND_TEST_GAPS.md)
 - [docs/NPIVP_VENDOR_EVIDENCE.md](../../docs/NPIVP_VENDOR_EVIDENCE.md)
 
 ## Obtaining the tool
@@ -105,6 +107,17 @@ tools/piv_test_runner/run-nist-harness.sh \
   --out tools/piv_test_runner/piv_tests/smoke
 ```
 
+Provision a GSA ICAM folder into a FIPS_MODE image, then run a vector against
+that same image:
+
+```sh
+tools/piv_test_runner/run-nist-harness.sh \
+  --fips --target emulator \
+  --icam /path/to/46_Golden_FIPS_201-2_PIV \
+  --config tools/piv_test_runner/config/OpenFIPS201-RSA2048.xml \
+  --test GetDataCommand:1
+```
+
 Run a selected suite:
 
 ```sh
@@ -120,19 +133,25 @@ Useful selectors:
 | Option | Meaning |
 | ------ | ------- |
 | `--list-tests` | Print `Subsystem:Id` entries from the NIST configuration |
+| `--fips` | Compile and install the FIPS_MODE applet |
+| `--icam DIR` | Provision a GSA ICAM folder before running vectors |
 | `--test SelectCommand:1` | Run one vector |
 | `--suite contact` | Run vectors whose NIST `TestInterface` is `CONTACT` |
 | `--suite contactless` | Run vectors whose NIST `TestInterface` is `CONTACTLESS` |
+| `--suite card-contact` | Run contact card-application/CHECK vectors, excluding middleware `piv*` |
 | `--suite all` | Run all vectors loaded from the configuration |
+| `--shared-card` | Keep one provisioned image across vectors instead of the safe fresh-image default |
 | `--limit N` | Stop after N selected vectors |
 
-The emulator starts with a freshly installed applet. Most NIST suites require a
-pre-personalised and personalised card state matching the selected config. Use
-`SelectCommand:1` as the basic harness smoke test; broader suites are expected
-to fail until the adapter target provisions the emulator for that profile.
+The emulator starts with a freshly installed applet. Without `--icam`, use
+`SelectCommand:1` as the bare-card smoke test. With `--icam`, provisioning and
+both interface transports share one persistent emulator image. Run destructive
+PIN/PUK vectors safely: multi-vector `--icam` runs provision a fresh image for
+each vector by default. Use `--shared-card` only for an intentional stateful sequence.
 
 Generated runner output such as `piv_tests/`, logs, buffers, and result
-directories is local-only and ignored by git.
+directories is local-only and ignored by git. Every completed harness run writes
+CI-readable JUnit XML to `<out>/nist-results.xml`, including failed vectors.
 
 ## What these configs intentionally limit
 

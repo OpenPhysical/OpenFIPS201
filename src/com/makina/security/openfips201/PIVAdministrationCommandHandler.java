@@ -80,7 +80,7 @@ final class PIVAdministrationCommandHandler {
     }
   }
 
-  private void processCreateObjectRequest(TLVReader reader) {
+  private void processCreateObjectRequest(TLVReader reader, boolean legacy) {
 
     //
     // PRE-CONDITIONS
@@ -158,7 +158,7 @@ final class PIVAdministrationCommandHandler {
     if (!reader.isEOF()) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     // SP 800-73-5 Part 1 Table 8 defines card object capacities. Allocate that capacity during
     // CREATE OBJECT so later PUT DATA commands neither allocate persistent memory nor exceed it.
-    if (capacity == (short) 0) {
+    if (capacity == (short) 0 && (!legacy || FipsPolicy.ENABLED)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -530,7 +530,7 @@ final class PIVAdministrationCommandHandler {
         case CONST_OP_LEGACY_DATA:
         case CONST_TAG_CREATE_OBJECT:
           requireStructureMutable();
-          processCreateObjectRequest(reader);
+          processCreateObjectRequest(reader, legacy);
           break;
 
         case CONST_TAG_DELETE_OBJECT:

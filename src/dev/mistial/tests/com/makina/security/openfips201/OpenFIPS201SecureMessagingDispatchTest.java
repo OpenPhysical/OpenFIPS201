@@ -8,6 +8,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 import apdu4j.core.BIBO;
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -61,6 +62,29 @@ class OpenFIPS201SecureMessagingDispatchTest {
   void tearDownCard() {
     if (session != null) {
       session.close();
+    }
+  }
+
+  @Test
+  void sessionKeyBundleMapsEachPurposeToItsOwnSlot() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+      byte[] sessionKeys = distinctSessionKeys();
+      method(secureMessaging.getClass(), "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, sessionKeys, (short) 0);
+
+      String[] fields = {"skCfrm", "skMac", "skEnc", "skRmac"};
+      short keyLength = activeSessionKeyBytes();
+      for (short slot = 0; slot < (short) fields.length; slot++) {
+        byte[] actual = new byte[keyLength];
+        AESKey key = (AESKey) field(secureMessaging, fields[slot]).get(secureMessaging);
+        assertEquals(keyLength, key.getKey(actual, (short) 0), fields[slot] + " length");
+        byte[] expected = new byte[keyLength];
+        System.arraycopy(sessionKeys, slot * keyLength, expected, 0, keyLength);
+        assertArrayEquals(expected, actual, fields[slot] + " session-key slot");
+      }
     }
   }
 
@@ -1064,7 +1088,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
               boolean.class)
           .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
 
-      APDU apdu = streamingApdu((byte) 0xCB);
+      ByteArrayOutputStream protectedResponse = new ByteArrayOutputStream();
+      APDU apdu = capturingStreamingApdu((byte) 0xCB, protectedResponse);
       Method processOutgoingSecure =
           method(
               chainBuffer.getClass(),
@@ -1096,7 +1121,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, protectedGetResponse, (short) 5, (short) 10, work, (short) 0);
 
       byte[] beforeCompletion = counter(secureMessaging);
-      APDU getResponseApdu = streamingApdu((byte) 0xC0);
+      APDU getResponseApdu = capturingStreamingApdu((byte) 0xC0, protectedResponse);
       InvocationTargetException second =
           assertThrows(
               InvocationTargetException.class,
@@ -1109,6 +1134,24 @@ class OpenFIPS201SecureMessagingDispatchTest {
                       ISO7816.SW_NO_ERROR));
       assertTrue(second.getCause() instanceof ISOException);
       assertEquals(ISO7816.SW_NO_ERROR, ((ISOException) second.getCause()).getReason());
+
+      byte[] response = protectedResponse.toByteArray();
+      int rmacTag = response.length - 10;
+      assertEquals((byte) 0x8E, response[rmacTag], "Final response object must be R-MAC");
+      assertEquals((byte) 0x08, response[rmacTag + 1], "R-MAC is truncated to eight bytes");
+      byte[] rmacInput = new byte[16 + rmacTag];
+      System.arraycopy(response, 0, rmacInput, 16, rmacTag);
+      byte[] expectedRmac = aesCmac(zeroSessionKey(), rmacInput);
+      for (short i = 0; i < (short) 8; i++) {
+        assertEquals(
+            expectedRmac[i],
+            response[rmacTag + 2 + i],
+            "Protected GET RESPONSE must resume the original response CMAC state");
+      }
+      assertArrayEquals(
+          expectedRmac,
+          (byte[]) field(secureMessaging, "responseMcv").get(secureMessaging),
+          "Command IV scratch must not overwrite the response MAC chaining value");
 
       byte[] expectedCounter = beforeCompletion.clone();
       expectedCounter[15]++;
@@ -1227,6 +1270,21 @@ class OpenFIPS201SecureMessagingDispatchTest {
     return apdu;
   }
 
+  private static APDU capturingStreamingApdu(byte ins, ByteArrayOutputStream sent) {
+    APDU apdu = streamingApdu(ins);
+    doAnswer(
+            invocation -> {
+              byte[] source = invocation.getArgument(0);
+              short offset = invocation.getArgument(1);
+              short length = invocation.getArgument(2);
+              sent.write(source, offset, length);
+              return null;
+            })
+        .when(apdu)
+        .sendBytesLong(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort());
+    return apdu;
+  }
+
   private static short buildMacOnlyCommandInput(byte[] command, byte[] out) {
     short cursor = 0;
     for (short i = 0; i < 16; i++) {
@@ -1340,6 +1398,17 @@ class OpenFIPS201SecureMessagingDispatchTest {
     return cipher.doFinal(plaintext);
   }
 
+  private static byte[] aesCmac(byte[] key, byte[] input) {
+    byte[] mac = new byte[16];
+    org.bouncycastle.crypto.macs.CMac cmac =
+        new org.bouncycastle.crypto.macs.CMac(
+            org.bouncycastle.crypto.engines.AESEngine.newInstance());
+    cmac.init(new org.bouncycastle.crypto.params.KeyParameter(key));
+    cmac.update(input, 0, input.length);
+    cmac.doFinal(mac, 0);
+    return mac;
+  }
+
   private static byte[] commandMac(byte[] command, short bodyOffset, short bodyEnd) {
     byte[] macInput = new byte[16 + 16 + bodyEnd - bodyOffset];
     short cursor = 16;
@@ -1440,6 +1509,17 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   private static byte[] zeroSessionKeys() {
     return new byte[activeSessionKeyBytes() * 4];
+  }
+
+  private static byte[] distinctSessionKeys() {
+    short keyLength = activeSessionKeyBytes();
+    byte[] keys = new byte[keyLength * 4];
+    for (short slot = 0; slot < (short) 4; slot++) {
+      for (short i = 0; i < keyLength; i++) {
+        keys[(short) (slot * keyLength + i)] = (byte) (0x11 * (slot + 1));
+      }
+    }
+    return keys;
   }
 
   private static Field staticField(Class<?> target, String name) throws Exception {
