@@ -7,16 +7,22 @@
 
 package dev.mistial.tools.openfips201.provisioning;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
+import java.security.Signature;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.zip.GZIPInputStream;
 import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.icao.DataGroupHash;
 import org.bouncycastle.asn1.icao.LDSSecurityObject;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cms.CMSSignedData;
 import org.bouncycastle.cms.CMSProcessableByteArray;
@@ -105,6 +111,7 @@ public final class CertificationProfileValidator {
     }
     validateDiscovery(objects, claims);
     validateKeys(pkg, claims);
+    validateKeyBindings(pkg, objects);
     validateAccessModes(pkg);
     for (Map.Entry<String, ConformancePackage.DataObject> entry : objects.entrySet()) {
       validateContainer(entry.getKey(), entry.getValue().payload);
@@ -178,6 +185,99 @@ public final class CertificationProfileValidator {
     if (claims.governmentEmail && (!slots.contains(0x9C) || !slots.contains(0x9D))) {
       throw new IllegalArgumentException("government-email profile requires 9C and 9D keys");
     }
+  }
+
+  /** Proves that each imported cardholder key, certificate object, and X.509 public key agree. */
+  static void validateKeyBindings(
+      ConformancePackage pkg, Map<String, ConformancePackage.DataObject> objects) throws Exception {
+    for (ConformancePackage.KeyMaterial key : pkg.keys) {
+      String containerId = certificateContainerFor(key.slot & 0xFF);
+      if (containerId == null) continue;
+      if (key.privateKey == null || key.certificate == null) {
+        throw new IllegalArgumentException(
+            String.format("key %02X requires private key and certificate material", key.slot & 0xFF));
+      }
+      ConformancePackage.DataObject object = objects.get(containerId);
+      if (object == null) {
+        throw new IllegalArgumentException(
+            String.format("key %02X requires certificate container %s", key.slot & 0xFF, containerId));
+      }
+      byte[] encodedCertificate = certificateValue(object.payload, containerId);
+      if (!Arrays.equals(key.certificate.getEncoded(), encodedCertificate)) {
+        throw new IllegalArgumentException(
+            String.format("key %02X certificate does not match container %s", key.slot & 0xFF, containerId));
+      }
+
+      X509CertificateHolder certificateHolder =
+          new X509CertificateHolder(key.certificate.getEncoded());
+      Extension subjectKeyIdentifier =
+          certificateHolder.getExtension(Extension.subjectKeyIdentifier);
+      if (subjectKeyIdentifier != null) {
+        byte[] declaredIdentifier =
+            SubjectKeyIdentifier.getInstance(subjectKeyIdentifier.getParsedValue()).getKeyIdentifier();
+        byte[] computedIdentifier =
+            MessageDigest.getInstance("SHA-1")
+                .digest(certificateHolder.getSubjectPublicKeyInfo().getPublicKeyData().getBytes());
+        if (!Arrays.equals(declaredIdentifier, computedIdentifier)) {
+          throw new IllegalArgumentException(
+              String.format("key %02X certificate subject key identifier is invalid", key.slot & 0xFF));
+        }
+      }
+
+      String publicAlgorithm = key.certificate.getPublicKey().getAlgorithm();
+      String signatureAlgorithm;
+      if ("RSA".equalsIgnoreCase(publicAlgorithm)) signatureAlgorithm = "SHA256withRSA";
+      else if ("EC".equalsIgnoreCase(publicAlgorithm)) signatureAlgorithm = "SHA256withECDSA";
+      else {
+        throw new IllegalArgumentException(
+            String.format(
+                "key %02X uses unsupported certificate algorithm %s",
+                key.slot & 0xFF, publicAlgorithm));
+      }
+      try {
+        Signature proof = Signature.getInstance(signatureAlgorithm);
+        proof.initSign(key.privateKey);
+        proof.update(new byte[] {(byte) 0x4F, (byte) 0x46, key.slot});
+        byte[] signature = proof.sign();
+        proof.initVerify(key.certificate.getPublicKey());
+        proof.update(new byte[] {(byte) 0x4F, (byte) 0x46, key.slot});
+        if (!proof.verify(signature)) {
+          throw new IllegalArgumentException(
+              String.format("key %02X private key does not match its certificate", key.slot & 0xFF));
+        }
+      } catch (IllegalArgumentException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalArgumentException(
+            String.format("key %02X private key does not match its certificate", key.slot & 0xFF), e);
+      }
+    }
+  }
+
+  private static String certificateContainerFor(int slot) {
+    if (slot == 0x9A) return "5FC105";
+    if (slot == 0x9C) return "5FC10A";
+    if (slot == 0x9D) return "5FC10B";
+    if (slot == 0x9E) return "5FC101";
+    if (slot >= 0x82 && slot <= 0x95) return String.format("5FC1%02X", slot - 0x75);
+    return null;
+  }
+
+  private static byte[] certificateValue(byte[] payload, String id) throws Exception {
+    Tlv certificate = element(payload, 0, 0x70, 1, Integer.MAX_VALUE, id);
+    Tlv info = element(payload, certificate.end, 0x71, 1, 1, id);
+    byte[] encoded = Arrays.copyOfRange(payload, certificate.value, certificate.end);
+    if ((payload[info.value] & 0x01) == 0) return encoded;
+
+    GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(encoded));
+    ByteArrayOutputStream uncompressed = new ByteArrayOutputStream();
+    byte[] buffer = new byte[1024];
+    int count;
+    while ((count = gzip.read(buffer)) >= 0) {
+      if (count > 0) uncompressed.write(buffer, 0, count);
+    }
+    gzip.close();
+    return uncompressed.toByteArray();
   }
 
   private static void validateDiscovery(
@@ -500,6 +600,7 @@ public final class CertificationProfileValidator {
     }
     Map<Integer, ConformancePackage.DataObject> byDg =
         new HashMap<Integer, ConformancePackage.DataObject>();
+    Map<Integer, String> containerByDg = new HashMap<Integer, String>();
     Set<ConformancePackage.DataObject> mappedObjects = new HashSet<ConformancePackage.DataObject>();
     for (int offset = mapping.value; offset < mapping.end; offset += 3) {
       int dg = payload[offset] & 0xFF;
@@ -507,6 +608,7 @@ public final class CertificationProfileValidator {
           String.format("%04X", ((payload[offset + 1] & 0xFF) << 8) | (payload[offset + 2] & 0xFF));
       ConformancePackage.DataObject object = objectForContainer(objects, container);
       addSecurityObjectMapping(byDg, mappedObjects, dg, object);
+      containerByDg.put(dg, container);
     }
     if (requireProfileCoverage) validateRequiredSecurityObjectCoverage(objects, byDg);
 
@@ -534,14 +636,24 @@ public final class CertificationProfileValidator {
       if (object == null
           || !seen.add(dg)
           || !Arrays.equals(
-              hash.getDataGroupHashValue().getOctets(), digest.digest(object.payload))) {
+              hash.getDataGroupHashValue().getOctets(),
+              digest.digest(securityObjectHashInput(object)))) {
         throw new IllegalArgumentException(
-            "Security Object DG hash does not match BA mapping/input");
+            "Security Object DG hash does not match BA mapping/input: DG "
+                + dg
+                + ", container "
+                + containerByDg.get(dg));
       }
     }
     if (seen.size() != byDg.size()) {
       throw new IllegalArgumentException("Security Object BA and LDS hash sets differ");
     }
+  }
+
+  private static byte[] securityObjectHashInput(ConformancePackage.DataObject object) {
+    // Table 19 defines the Discovery Object data as its 4F and 5F2F elements. The outer 7E
+    // application template is the GET/PUT representation and is not part of the LDS data group.
+    return hex(object.id).equals("7E") ? tlvValue(object.payload, 0x7E) : object.payload;
   }
 
   @SuppressWarnings("unchecked")

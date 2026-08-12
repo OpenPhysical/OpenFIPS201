@@ -94,6 +94,7 @@ public final class IcamCardFolder {
   private static final byte[] ID_PRINTED = {(byte) 0x5F, (byte) 0xC1, 0x09};
   private static final byte[] ID_DIG_SIG_CERT = {(byte) 0x5F, (byte) 0xC1, 0x0A};
   private static final byte[] ID_KEY_MGMT_CERT = {(byte) 0x5F, (byte) 0xC1, 0x0B};
+  private static final byte[] ID_KEY_HISTORY = {(byte) 0x5F, (byte) 0xC1, 0x0C};
 
   /** Empty password used by the published GSA ICAM PKCS#12 corpus. */
   public static final char[] DEFAULT_P12_PASSWORD = new char[0];
@@ -137,6 +138,15 @@ public final class IcamCardFolder {
         ConformancePackage.PutForm.DISCOVERY,
         null,
         "");
+    addOptionalRawObject(
+        objects,
+        root,
+        "13 - Key History Object",
+        ID_KEY_HISTORY,
+        "Key History Object",
+        ACCESS_ALWAYS,
+        ACCESS_VCI,
+        ConformancePackage.PutForm.TAG_LIST);
     addRawObject(
         objects,
         root,
@@ -257,6 +267,23 @@ public final class IcamCardFolder {
         ID_CARD_AUTH_CERT,
         "Card Authentication Certificate",
         p12Password);
+    for (int index = 0; index < 20; index++) {
+      int fileNumber = 14 + index;
+      int keyNumber = index + 1;
+      addKeyAndCert(
+          objects,
+          keys,
+          root,
+          fileNumber + " - ICAM_PIV_Key_Hist" + keyNumber,
+          (byte) (0x82 + index),
+          "Retired Key Management " + keyNumber,
+          ROLE_KEY_ESTABLISH,
+          ACCESS_PIN,
+          (byte) (ACCESS_VCI | ACCESS_PIN),
+          new byte[] {(byte) 0x5F, (byte) 0xC1, (byte) (0x0D + index)},
+          "Retired Key Management Certificate " + keyNumber,
+          p12Password);
+    }
 
     if (objects.isEmpty() && keys.isEmpty()) {
       throw new IllegalArgumentException(
@@ -282,6 +309,7 @@ public final class IcamCardFolder {
       byId.put(toHex(object.id), object);
     }
     CertificationProfileValidator.validateSecurityObject(byId);
+    CertificationProfileValidator.validateKeyBindings(result, byId);
     return result;
   }
 
@@ -312,6 +340,27 @@ public final class IcamCardFolder {
       throw new IllegalArgumentException("Empty required ICAM object: " + file);
     }
     objects.add(new ConformancePackage.DataObject(id, label, modeContact, modeContactless, putForm, payload));
+  }
+
+  private static void addOptionalRawObject(
+      List<ConformancePackage.DataObject> objects,
+      Path root,
+      String filePrefix,
+      byte[] id,
+      String label,
+      byte modeContact,
+      byte modeContactless,
+      ConformancePackage.PutForm putForm)
+      throws IOException {
+    Path file = findFile(root, filePrefix, null, "");
+    if (file == null) return;
+    byte[] payload = Files.readAllBytes(file);
+    if (payload.length == 0) {
+      throw new IllegalArgumentException("Empty optional ICAM object: " + file);
+    }
+    objects.add(
+        new ConformancePackage.DataObject(
+            id, label, modeContact, modeContactless, putForm, payload));
   }
 
   private static void addKeyAndCert(
@@ -347,7 +396,9 @@ public final class IcamCardFolder {
       privateKey = entry.privateKey;
       certificate = entry.certificate;
     }
-    if (certificate == null && crt != null) {
+    // The standalone certificate is the card-image input. Do not silently replace a deliberately
+    // tampered or mismatched GSA negative fixture with the certificate embedded in its PKCS#12.
+    if (crt != null) {
       certificate = loadCertificate(crt);
     }
     if (certificate == null) {

@@ -42,7 +42,7 @@ Therefore:
 | System under test | Primary standards | Typical tooling |
 | ----------------- | ----------------- | --------------- |
 | Applet CAP + command logic | SP 800-73-5, SP 800-78-5, parts of SP 800-85A | JUnit / JCardEngine (`ant test`), NIST PIV Test Runner configs under `tools/piv_test_runner/` |
-| Fully personalised card + issuer content | SP 800-85B / 85B-4 data model | Deterministic issuer-input corpus in CI; NIST PIV Data Model Tester remains external |
+| Fully personalised card + issuer content | SP 800-85B / 85B-4 data model | Official runner `CHECK_*` groups on emulator; physical-card report remains external |
 | NPIVP product listing | 85A + 85B evidence + vendor docs | Test Summary spreadsheet + VE package ([NPIVP_VENDOR_EVIDENCE.md](NPIVP_VENDOR_EVIDENCE.md)) |
 
 ## Product posture (listing-oriented claims)
@@ -55,7 +55,7 @@ actually submitted.
 | ---------- | ------- | ----- |
 | PIV AID `A000000308000010000100` | Implemented | SELECT returns Application Property Template (APT) |
 | Local PIN (`0x80`) / PUK (`0x81`) | Implemented | SP 800-73-5 length and retry caps enforced in config |
-| Global PIN (`0x00`) | Supported in code | Prefer documenting explicitly if listed; CI coverage is limited |
+| Global PIN (`0x00`) | Supported; every defined Discovery policy combination is covered | Document explicitly if listed |
 | OCC (on-card comparison) | Out of scope | Not implemented and not claimed |
 | VCI with pairing code | Implemented | Discovery PIN Usage Policy bits; VERIFY key ref `0x98` over SM |
 | VCI without pairing code | Implemented | Configurable VCI mode |
@@ -74,7 +74,7 @@ actually submitted.
 
 ### Coverage evidence boundary
 
-`ant -f build/build.xml coverage` enforces a **55% applet line-coverage floor**, based on the
+`ant -f build/build.xml coverage` enforces an **80% applet line-coverage floor**, based on the
 measured simulator baseline. The metric records executed source lines. Security boundaries,
 failure paths, cryptographic state transitions, transaction behavior, and platform primitives are
 tracked through the requirement-specific tests and external gates below.
@@ -126,7 +126,7 @@ These areas require additional evidence for an NPIVP or SP 800-85A/B campaign.
 | SELECT | Full APT BER-TLV validation; re-SELECT preserves or clears security status per AS05.09–11; invalid AID behaviour on multi-app ICC |
 | GET DATA + ACRs | Matrix over mandatory OIDs with Always / PIN / PIN Always / VCI / Never on contact vs contactless |
 | Global PIN | VERIFY / CHANGE / Discovery policy combinations |
-| Contactless intermediate retry | Issuer intermediate retry → `6983` on VERIFY/CHANGE (logic exists; dedicated test coverage is limited) |
+| Contactless intermediate retry | Dedicated exhaustion test proves VERIFY returns `6983` and preserves the issuer's final contact retry |
 | RESET RETRY COUNTER | Full blocked-PUK, optional PUK-counter-reset policy, success-state matrix |
 | GENERAL AUTHENTICATE | Full keyRef × alg × role matrix; **interrupted chain rollback** (AS05.36C) |
 | GENERATE ASYMMETRIC KEY PAIR | Public-key encoding, replace-existing, admin gating, alg matrix |
@@ -134,14 +134,16 @@ These areas require additional evidence for an NPIVP or SP 800-85A/B campaign.
 
 #### SP 800-85B — data model
 
-Personalised content validation is **not** automated in this repository:
+The installed NIST SP 800-73-4 Test Runner includes four official SP 800-85B
+`CHECK_*` groups. `run-nist-data-model.sh` executes them headlessly against the
+positive GSA images and preserves JUnit XML, full logs, and a TSV matrix summary:
 
-| Area | Examples of missing assertions |
-| ---- | ------------------------------ |
-| BER-TLV objects | CCC data model number; CHUID FASC-N / GUID-UUID / expiry / signature field; Printed Information; cert container size/tags; Security Object; Key History |
-| CMS / signatures | SignedData structure for CHUID, biometrics, Security Object; pivSigner-DN / pivFASC-N or Card UUID attributes; algorithm tables from SP 800-78 |
-| Biometrics | CBEFF patron format; INCITS 378 fingerprint constraints; facial JPEG 2000 profile; iris (if claimed) |
-| Certificate profiles | keyUsage / EKU / policy OIDs / AIA; SAN FASC-N or UUID; public key matches on-card key; expiry vs CHUID |
+| Official group | Assertions exercised |
+| -------------- | -------------------- |
+| `CHECK_BER_TLV_conformance` | CCC, CHUID, Printed Information, certificate containers, Security Object, Key History |
+| `CHECK_signed_data_elements` | CHUID, biometric, and Security Object CMS structures, signatures, attributes, and hashes |
+| `CHECK_biometric_data` | CBEFF and fingerprint/facial data constraints |
+| `CHECK_certificate_profile` | key usage, EKU, policy, AIA/SAN, expiry, and on-card private-key correspondence |
 
 Attestation tests validate the **OpenPhysical attestation certificate profile**,
 not FIPS 201 PIV Authentication / Digital Signature / Key Management / Card
@@ -175,7 +177,8 @@ Configuration and notes: [tools/piv_test_runner/README.md](../tools/piv_test_run
 
 - Validates content of personalised containers (CHUID, biometrics, certs,
   Security Object, etc.).
-- **Not** integrated into this repository’s CI.
+- Integrated into the headless emulator harness through `run-nist-data-model.sh`,
+  but not invoked by the routine `ant test` target.
 - Requires issuer golden data (or NIST test personalisation material) that
   matches SP 800-78 and FIPS 201 certificate/biometric profiles.
 
@@ -204,9 +207,9 @@ one representative slot do not establish the other listing cells.
 
 ### Gate 3: SP 800-85B personalised-card evidence
 
-Run the official NIST PIV Data Model Tester against the final personalised physical-card profile.
+Run the official NIST runner's data-model groups against the final personalised physical-card profile.
 The checked-in corpus under `test-vectors/sp800-85b-personalization/` freezes issuer inputs only; it
-does not contain synthetic card objects and is not Data Model Tester evidence. Retain the tester
+does not contain synthetic card objects and is not runner evidence by itself. Retain the runner
 version and configuration, complete results, actual GET DATA captures, CMS verification evidence,
 CBEFF and certificate-profile results, and input-to-card consistency checks. Keep secrets outside
 the evidence archive.

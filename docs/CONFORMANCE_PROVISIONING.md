@@ -100,6 +100,19 @@ Expected MVP checks after load:
 3. GET DATA CHUID / CCC / at least one certificate returns `9000`.
 4. GENERAL AUTHENTICATE with Card Authentication (`9E`) verifies against the on-card cert.
 
+The repository owns a headless version of those checks, independent of the broken upstream GUI/CLI:
+
+```bash
+ant -f build/build.xml \
+  -Dfips.mode=true -Dfips.platform=test-jcard \
+  -Dvci.suite=CS2 -Dattestation.enabled=false \
+  test-gsa-icam-smoke
+```
+
+`GsaIcam46HeadlessSmokeTest` loads the vendored card 46, provisions all 11 objects and four keys,
+then requires successful SELECT, local PIN VERIFY, CCC/CHUID/Card Authentication certificate reads,
+and an independently verified RSA-2048 Card Authentication operation with key `9E`.
+
 ## Implementation map
 
 | Class | Role |

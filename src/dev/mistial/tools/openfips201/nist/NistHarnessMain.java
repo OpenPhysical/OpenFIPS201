@@ -170,6 +170,14 @@ public final class NistHarnessMain {
     entry.setValue(value);
   }
 
+  private static void setEntryIfPresent(
+      Configuration configuration, String name, String value) {
+    ConfigurationEntry entry = configuration.getEntry(name);
+    if (entry != null) {
+      entry.setValue(value);
+    }
+  }
+
   private static void patchProfileConfiguration(
       Configuration configuration, ConformancePackage profile, NativeVciProfile.Material nativeVci)
       throws Exception {
@@ -186,7 +194,9 @@ public final class NistHarnessMain {
         setEntry(configuration, "testing:KEY_ALGORITHMS_CARD_AUTHENTICATION", algorithm);
       }
       if (key.certificate != null) {
-        setEntry(
+        // NIST 5.0.1 has certificate fields for the primary PIV slots, but not
+        // for every retired key-management slot present in GSA card 37.
+        setEntryIfPresent(
             configuration,
             "testing:keytypealgorithmkeys:KEY_"
                 + String.format("%02X", key.slot & 0xFF)

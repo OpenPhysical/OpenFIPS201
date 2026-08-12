@@ -409,6 +409,23 @@ platform.id=${build.platform.id}
     </junitlauncher>
   </target>
 
+  <target name="test-gsa-icam-smoke" depends="test-compile">
+    <mkdir dir="${test.reportpath}" />
+    <junitlauncher printSummary="true" haltOnFailure="true">
+      <classpath refid="test.runtime.classpath"/>
+      <test name="dev.mistial.tools.openfips201.nist.GsaIcam46HeadlessSmokeTest"
+            outputdir="${test.reportpath}">
+        <fork>
+          <sysproperty key="vci.suite" value="${vci.suite}"/>
+          <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+          <sysproperty key="fips.mode" value="${fips.mode}"/>
+        </fork>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </test>
+    </junitlauncher>
+  </target>
+
   <target name="test-all-matrix" depends="resolve-test-deps,test-sp80085b-corpus">
     <delete dir="build/matrix"/>
     <mkdir dir="build/matrix"/>

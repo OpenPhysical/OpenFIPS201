@@ -57,6 +57,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   private static final boolean FIPS_MODE = Boolean.getBoolean("fips.mode");
 
+  private static final byte ALG_RSA_3072 = (byte) 0x05;
   private static final byte ALG_RSA_1024 = (byte) 0x06;
   private static final byte ALG_RSA_2048 = (byte) 0x07;
   private static final byte ALG_AES_128 = (byte) 0x08;
@@ -121,7 +122,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   @Test
   void attestationHandlesMaximumIssuerProfileWithRsa2048Target() throws Exception {
     // Exercise the maximum supported issuer subject size together with the largest supported
-    // target key (RSA-2048). The resulting certificate must fit in the applet's response buffer
+    // mandatory target key. The resulting certificate must fit in the applet's response buffer
     // size (LENGTH_CERT_BUFFER); DERWriter will fail with SW_FILE_FULL on overflow.
     Authority authority =
         Authority.create(
@@ -134,6 +135,25 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     setAuthorityOverScp(authority);
     createAsymmetricKeyOverScp(SLOT_KEY_MANAGEMENT, ALG_RSA_2048);
     generateKeyOverScp(SLOT_KEY_MANAGEMENT, "AC03800107");
+
+    X509Certificate cert = attest(SLOT_KEY_MANAGEMENT);
+    assertValidAttestation(cert, authority);
+  }
+
+  @Test
+  void attestationHandlesMaximumIssuerProfileWithRsa3072Target() throws Exception {
+    // RSA-3072 is an extension algorithm and produces the largest supported SPKI.
+    Authority authority =
+        Authority.create(
+            new X500Name("CN=" + repeated('C', 50) + ",O=" + repeated('O', 40) + ",C=US"));
+    assertTrue(
+        authority.subjectDer.length > 0x70 && authority.subjectDer.length <= 0x80,
+        "Test subject must sit at the top of the supported issuer subject range, got "
+            + authority.subjectDer.length);
+
+    setAuthorityOverScp(authority);
+    createAsymmetricKeyOverScp(SLOT_KEY_MANAGEMENT, ALG_RSA_3072);
+    generateKeyOverScp(SLOT_KEY_MANAGEMENT, "AC03800105");
 
     X509Certificate cert = attest(SLOT_KEY_MANAGEMENT);
     assertValidAttestation(cert, authority);

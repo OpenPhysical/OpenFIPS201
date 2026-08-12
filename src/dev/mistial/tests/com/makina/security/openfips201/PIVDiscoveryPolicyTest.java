@@ -119,6 +119,42 @@ class PIVDiscoveryPolicyTest {
   }
 
   @Test
+  void acceptsEveryDefinedGlobalPinDiscoveryCombination() {
+    PIVDataStore store = mock(PIVDataStore.class);
+    PIVDataObject discovery = mock(PIVDataObject.class);
+    PIVDataCommandHandler handler =
+        new PIVDataCommandHandler(
+            mock(Config.class),
+            mock(PIVSecurityProvider.class),
+            store,
+            mock(ChainBuffer.class),
+            new byte[32]);
+    when(store.findSingleByte(PIV.ID_DATA_DISCOVERY)).thenReturn(discovery);
+    when(discovery.isInitialised()).thenReturn(true);
+
+    int[] localOnlyPolicies = {0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C};
+    for (int first : localOnlyPolicies) {
+      setPolicy(discovery, first, 0x00);
+      assertEquals((first << 8), handler.getDiscoveryPolicy());
+      assertFalse(handler.isGlobalPinAdvertised());
+    }
+
+    int[] globalPolicies = {0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x78, 0x7C};
+    for (int first : globalPolicies) {
+      for (int preference : new int[] {0x10, 0x20}) {
+        setPolicy(discovery, first, preference);
+        assertEquals((first << 8) | preference, handler.getDiscoveryPolicy());
+        assertTrue(handler.isGlobalPinAdvertised());
+      }
+    }
+
+    setPolicy(discovery, 0x40, 0x10);
+    assertEquals(-1, handler.getDiscoveryPolicy(), "Local-only policy cannot prefer Global PIN");
+    setPolicy(discovery, 0x60, 0x00);
+    assertEquals(-1, handler.getDiscoveryPolicy(), "Global PIN policy must state its preference");
+  }
+
+  @Test
   void validatesPart1DiscoveryShapeAndPairingPolicy() {
     PIVDataStore store = mock(PIVDataStore.class);
     PIVDataObject discovery = mock(PIVDataObject.class);
@@ -172,6 +208,13 @@ class PIVDiscoveryPolicyTest {
       result[i / 2] = (byte) Integer.parseInt(value.substring(i, i + 2), 16);
     }
     return result;
+  }
+
+  private static void setPolicy(PIVDataObject discovery, int first, int second) {
+    discovery.content = hex("7E124F0BA0000003080000100001005F2F020000");
+    discovery.content[discovery.content.length - 2] = (byte) first;
+    discovery.content[discovery.content.length - 1] = (byte) second;
+    when(discovery.getLength()).thenReturn((short) discovery.content.length);
   }
 
   private static boolean mandatoryObjectIsValid(byte suffix, byte[] content) {

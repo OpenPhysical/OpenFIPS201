@@ -31,9 +31,10 @@ extracts the installer under `tools/piv_test_runner/local/runner/`, and installs
 the Test Runner under `tools/piv_test_runner/local/install/`. These paths are
 ignored by git.
 
-This directory does **not** implement SP 800-85B data-model tests. For the
-broader conformance picture (repository coverage, VE checklist, 85A vs 85B),
-FIPS product gaps, and the macOS emulator plan for GSA + NIST suites, see:
+The installed SP 800-73-4 Test Runner package also contains NIST's official
+SP 800-85B `CHECK_*` data-model groups. The headless adapter can execute those
+groups against the same personalised emulator image. For the broader
+conformance picture, FIPS product gaps, and the macOS emulator plan, see:
 
 - [docs/CONFORMANCE_AND_NPIVP.md](../../docs/CONFORMANCE_AND_NPIVP.md)
 - [docs/FIPS_AND_TEST_GAPS.md](../../docs/FIPS_AND_TEST_GAPS.md)
@@ -61,6 +62,7 @@ The Test Runner is **external** to this repository and is **not** invoked by
 | `test_keys/` | Sample keys/certificates used with the configs |
 | `setup-nist-tester.sh` | Local-only download/extract/install helper for the NIST package |
 | `run-nist-harness.sh` | Headless harness wrapper for repo-owned adapter code |
+| `run-nist-data-model.sh` | Complete positive-golden-image data-model matrix and TSV summary |
 
 The checked-in configs use the SP 800-73-4 Test Runner configuration format
 (`ConfigFormat_PIV_SP800_73_4.xml`).
@@ -132,6 +134,30 @@ tools/piv_test_runner/run-nist-harness.sh \
 Use `--vci cs7` for P-384/AES-256. The output directory contains an ephemeral
 content-signer key and certificate. They are test-card issuer artifacts and must
 not be reused for production credentials.
+
+Run the reviewed CS2/CS7 secure-messaging and virtual-contact matrix together:
+
+```sh
+tools/piv_test_runner/run-nist-vci-matrix.sh --out /tmp/openfips201-nist-vci
+```
+
+The matrix gate expects the currently classified claim-inapplicable runner failures and fails on
+any change to that boundary. Review an unexpected pass as carefully as an unexpected failure, then
+update the classification and `docs/FIPS_AND_TEST_GAPS.md` together.
+
+Run all four official SP 800-85B data-model groups against every compatible
+positive GSA image:
+
+```sh
+tools/piv_test_runner/run-nist-data-model.sh \
+  --out tools/piv_test_runner/piv_tests/data-model
+```
+
+The default matrix covers seven positive images on the standard build and
+cards 37, 46, and 47 on the FIPS build. It writes `summary.tsv`, one JUnit XML
+file per build/image/group, and the complete runner logs. A nonzero exit means
+an official assertion failed or a result file was not produced; the script
+still runs every matrix cell before exiting.
 
 Run a selected suite:
 
@@ -217,8 +243,8 @@ For a listing evidence run:
 5. Archive the immutable runner configuration, complete logs, results, card personalisation record,
    and matrix. Store the evidence outside git and review it before preparing vendor statements.
 
-Run the NIST Data Model Tester on the same final personalised profile and retain its actual card
-captures and report as the separate SP 800-85B gate.
+Run the package's `CHECK_*` groups on the same final personalised profile and retain its actual card
+captures and report as the separate SP 800-85B evidence gate.
 
 ## Relationship to in-repo JUnit tests
 
@@ -226,7 +252,7 @@ captures and report as the separate SP 800-85B gate.
 | ------- | --------- | ----------- |
 | `ant test` (JCardEngine) | Fast; VCI/SM vectors; PIN/admin edge cases; no physical reader | Not a NIST-certified 85A run; limited SP 800-85B content checks |
 | PIV Test Runner (this dir) | Closer to NPIVP interface procedures | Requires personalised card; configs must be widened for listing; not in CI |
-| SP 800-85B Data Model Tester | CHUID/CMS/biometrics/cert profiles | Separate NIST tool; not configured in this directory |
+| SP 800-85B `CHECK_*` groups | CHUID/CMS/biometrics/cert profiles | Available through the installed runner; emulator evidence is not a physical-card lab report |
 
 ## Algorithm and feature matrix
 

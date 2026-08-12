@@ -220,7 +220,14 @@ public final class NativeVciProfile {
       mapping.write(dg);
       mapping.write(container >>> 8);
       mapping.write(container);
-      hashes.add(new DataGroupHash(dg, new DEROctetString(sha256.digest(object.payload))));
+      byte[] hashInput = object.payload;
+      if (entry[0].equals("7E")) {
+        BerTlvReader.Tlv discovery = BerTlvReader.read(object.payload, 0);
+        hashInput =
+            Arrays.copyOfRange(
+                object.payload, discovery.valueOffset, discovery.nextOffset);
+      }
+      hashes.add(new DataGroupHash(dg, new DEROctetString(sha256.digest(hashInput))));
       dg++;
     }
     LDSSecurityObject lds =

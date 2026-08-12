@@ -6,7 +6,19 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
+import java.math.BigInteger;
+import java.security.AlgorithmParameters;
+import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PublicKey;
+import java.security.interfaces.ECPublicKey;
+import java.security.spec.ECGenParameterSpec;
+import java.security.spec.ECParameterSpec;
+import java.security.spec.ECPoint;
+import java.security.spec.ECPublicKeySpec;
 import javacard.framework.ISO7816;
+import javax.crypto.KeyAgreement;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
@@ -142,6 +154,65 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void derivesP256SharedSecretThroughGeneralAuthenticate() throws Exception {
+    assertEcdhSharedSecret(0x11, "secp256r1", 32);
+  }
+
+  @Test
+  void derivesP384SharedSecretThroughGeneralAuthenticate() throws Exception {
+    assumeFalse(
+        Boolean.getBoolean("fips.mode")
+            && "CS2".equalsIgnoreCase(System.getProperty("vci.suite", "CS2")),
+        "SP 800-78-5 requires CS7 when a VCI-capable FIPS profile uses P-384 slot 9D");
+    assertEcdhSharedSecret(0x14, "secp384r1", 48);
+  }
+
+  private void assertEcdhSharedSecret(int algorithm, String curve, int fieldBytes)
+      throws Exception {
+    final int keyManagementReference = 0x9D;
+    final byte[][] cardPoint = new byte[1][];
+    withMockedScp(
+        () -> {
+          createKey(keyManagementReference, algorithm, 0x02);
+          byte[] generated =
+              collectResponse(
+                  transmit(
+                      0x84,
+                      0x47,
+                      0x00,
+                      keyManagementReference,
+                      new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, (byte) algorithm},
+                      0),
+                  "EC key-management generation");
+          cardPoint[0] = tlvValue(generated, (byte) 0x86);
+        });
+    verifyLocalPin();
+
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+    generator.initialize(new ECGenParameterSpec(curve));
+    KeyPair host = generator.generateKeyPair();
+    byte[] hostPoint = encodePoint((ECPublicKey) host.getPublic(), fieldBytes);
+    byte[] response =
+        collectResponse(
+            transmit(
+                0x00,
+                0x87,
+                algorithm,
+                keyManagementReference,
+                tlv((byte) 0x7C, tlv((byte) 0x85, hostPoint)),
+                0),
+            "EC GENERAL AUTHENTICATE key establishment");
+    byte[] cardSecret = tlvValue(tlvValue(response, (byte) 0x7C), (byte) 0x82);
+
+    KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
+    agreement.init(host.getPrivate());
+    agreement.doPhase(decodePoint(cardPoint[0], curve, fieldBytes), true);
+    assertTrue(
+        java.util.Arrays.equals(agreement.generateSecret(), cardSecret),
+        "Card and host must derive the same ECDH shared secret");
+  }
+
+  @Test
   void signsP256DigestThroughGeneralAuthenticate() {
     withMockedScp(
         () -> {
@@ -215,6 +286,37 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
       0x01,
       0x00
     };
+  }
+
+  private static byte[] encodePoint(ECPublicKey key, int fieldBytes) {
+    return concat(
+        new byte[] {0x04},
+        fixed(key.getW().getAffineX(), fieldBytes),
+        fixed(key.getW().getAffineY(), fieldBytes));
+  }
+
+  private static PublicKey decodePoint(byte[] point, String curve, int fieldBytes)
+      throws Exception {
+    byte[] x = new byte[fieldBytes];
+    byte[] y = new byte[fieldBytes];
+    System.arraycopy(point, 1, x, 0, fieldBytes);
+    System.arraycopy(point, 1 + fieldBytes, y, 0, fieldBytes);
+    AlgorithmParameters parameters = AlgorithmParameters.getInstance("EC");
+    parameters.init(new ECGenParameterSpec(curve));
+    ECParameterSpec spec = parameters.getParameterSpec(ECParameterSpec.class);
+    return KeyFactory.getInstance("EC")
+        .generatePublic(
+            new ECPublicKeySpec(
+                new ECPoint(new BigInteger(1, x), new BigInteger(1, y)), spec));
+  }
+
+  private static byte[] fixed(BigInteger value, int length) {
+    byte[] encoded = value.toByteArray();
+    byte[] result = new byte[length];
+    int sourceOffset = Math.max(0, encoded.length - length);
+    int copyLength = Math.min(encoded.length, length);
+    System.arraycopy(encoded, sourceOffset, result, length - copyLength, copyLength);
+    return result;
   }
 
   protected void withMockedScp(Runnable action) {

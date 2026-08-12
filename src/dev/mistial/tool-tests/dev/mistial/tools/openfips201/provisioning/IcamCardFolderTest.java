@@ -1,5 +1,7 @@
 package dev.mistial.tools.openfips201.provisioning;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -11,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.interfaces.RSAPrivateKey;
+import java.security.KeyPairGenerator;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -24,12 +28,83 @@ class IcamCardFolderTest {
 
   @TempDir Path temporaryDirectory;
 
+  private static final Path ICAM_ROOT =
+      Paths.get("test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects");
+  private static final String[] VENDORED_POSITIVE_CARDS = {
+    "01_Golden_PIV",
+    "02_Golden_PIV-I",
+    "37_Golden_FIPS_201-2_PIV_PPS_F=512_D=64",
+    "39_Golden_FIPS_201-2_Fed_PIV-I",
+    "46_Golden_FIPS_201-2_PIV",
+    "47_Golden_FIPS_201-2_PIV_SAN_Order",
+    "54_Golden_FIPS_201-2_NFI_PIV-I"
+  };
+  private static final String[] VENDORED_NEGATIVE_CARDS = {
+    "03_SKID_Mismatch",
+    "04_Tampered_CHUID",
+    "06_Tampered_PHOTO",
+    "07_Tampered_Fingerprints",
+    "08_Tampered_Security_Object",
+    "23_Public_Private_Key_mismatch",
+    "38_Bad_Hash_in_Sec_Object",
+    "55_FIPS_201-2_Missing_Security_Object"
+  };
+
   private static final Path ICAM_46 =
       Paths.get(
           System.getProperty(
               "openfips201.icam46",
               "test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/"
                   + "46_Golden_FIPS_201-2_PIV"));
+
+  @Test
+  void loadsEveryVendoredPositiveGsaProfile() throws Exception {
+    assumeTrue(Files.isDirectory(ICAM_ROOT), "vendored GSA corpus not present at " + ICAM_ROOT);
+    for (String card : VENDORED_POSITIVE_CARDS) {
+      Path path = ICAM_ROOT.resolve(card);
+      assertTrue(Files.isDirectory(path), "missing vendored positive GSA card " + card);
+      ConformancePackage pkg;
+      try {
+        pkg = IcamCardFolder.load(path);
+      } catch (Exception e) {
+        throw new AssertionError(card + " must pass the positive GSA profile preflight", e);
+      }
+      assertEquals(card, pkg.credentialId);
+      assertTrue(pkg.dataObjects.size() >= 7, card + " must contain the core PIV objects");
+      assertTrue(pkg.keys.size() >= 2, card + " must contain mandatory PIV keys");
+    }
+  }
+
+  @Test
+  void rejectsEveryVendoredNegativeGsaProfile() {
+    assumeTrue(Files.isDirectory(ICAM_ROOT), "vendored GSA corpus not present at " + ICAM_ROOT);
+    for (String card : VENDORED_NEGATIVE_CARDS) {
+      Path path = ICAM_ROOT.resolve(card);
+      assertTrue(Files.isDirectory(path), "missing vendored negative GSA card " + card);
+      assertThrows(Exception.class, () -> IcamCardFolder.load(path), card + " must be rejected");
+    }
+  }
+
+  @Test
+  void card05SourceFolderRequiresRuntimeCertificateTampering() throws Exception {
+    Path path = ICAM_ROOT.resolve("05_Tampered_Certificates");
+    assumeTrue(Files.isDirectory(path), "vendored GSA card 05 not present at " + path);
+
+    // GSA card 05's source folder contains valid signed certificate/key pairs. The two
+    // ICAM_Test_Card certificate copies are byte-identical to their numbered counterparts, so the
+    // negative condition exists only after the test harness tampers with an on-card certificate.
+    assertArrayEquals(
+        Files.readAllBytes(path.resolve("4 - ICAM_PIV_Dig_Sig_SP_800-73-4.crt")),
+        Files.readAllBytes(
+            path.resolve(
+                "4 - ICAM_Test_Card_PIV_Dig_Sig_SP_800-73-4_Tampered_Certificates.crt")));
+    assertArrayEquals(
+        Files.readAllBytes(path.resolve("5 - ICAM_PIV_Key_Mgmt_SP_800-73-4.crt")),
+        Files.readAllBytes(
+            path.resolve(
+                "5 - ICAM_Test_Card_PIV_Key_Mgmt_SP_800-73-4_Tampered_Certificates.crt")));
+    assertDoesNotThrow(() -> IcamCardFolder.load(path));
+  }
 
   @Test
   void loadsGoldenCard46Natively() throws Exception {
@@ -110,6 +185,107 @@ class IcamCardFolderTest {
     assertTrue(failure.getMessage().contains("CHUID CMS signature verification failed"));
   }
 
+  @Test
+  void rejectsGoldenCardWithTamperedSecurityObjectInputs() throws Exception {
+    assumeTrue(Files.isDirectory(ICAM_46), "ICAM card 46 not present at " + ICAM_46);
+    ConformancePackage pkg = IcamCardFolder.load(ICAM_46);
+    for (String objectId : new String[] {"5FC103", "5FC108"}) {
+      Map<String, ConformancePackage.DataObject> objects = index(pkg);
+      replaceWithTamperedPayload(objects, objectId);
+
+      IllegalArgumentException failure =
+          assertThrows(
+              IllegalArgumentException.class,
+              () -> CertificationProfileValidator.validateSecurityObject(objects));
+      assertTrue(
+          failure.getMessage().contains("DG hash"),
+          objectId + " tampering must be detected through the signed LDS hash");
+    }
+  }
+
+  @Test
+  void rejectsGoldenCardWithTamperedCertificateContainer() throws Exception {
+    assumeTrue(Files.isDirectory(ICAM_46), "ICAM card 46 not present at " + ICAM_46);
+    ConformancePackage pkg = IcamCardFolder.load(ICAM_46);
+    Map<String, ConformancePackage.DataObject> objects = index(pkg);
+    replaceWithTamperedPayload(objects, "5FC105");
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> CertificationProfileValidator.validateKeyBindings(pkg, objects));
+    assertTrue(failure.getMessage().contains("does not match container"));
+  }
+
+  @Test
+  void rejectsGoldenCardWithTamperedSecurityObjectCms() throws Exception {
+    assumeTrue(Files.isDirectory(ICAM_46), "ICAM card 46 not present at " + ICAM_46);
+    ConformancePackage pkg = IcamCardFolder.load(ICAM_46);
+    Map<String, ConformancePackage.DataObject> objects = index(pkg);
+    replaceWithTamperedPayload(objects, "5FC106");
+
+    assertThrows(Exception.class, () -> CertificationProfileValidator.validateSecurityObject(objects));
+  }
+
+  @Test
+  void certificationPreflightProvesKeyCertificateAndContainerBinding() throws Exception {
+    assumeTrue(Files.isDirectory(ICAM_46), "ICAM card 46 not present at " + ICAM_46);
+    ConformancePackage pkg = IcamCardFolder.load(ICAM_46);
+    Map<String, ConformancePackage.DataObject> objects = index(pkg);
+    assertDoesNotThrow(() -> CertificationProfileValidator.validateKeyBindings(pkg, objects));
+
+    ConformancePackage.KeyMaterial original = pkg.keys.get(0);
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+    generator.initialize(2048);
+    ConformancePackage.KeyMaterial mismatched =
+        new ConformancePackage.KeyMaterial(
+            original.slot,
+            original.label,
+            original.algorithm,
+            original.role,
+            original.attributes,
+            original.modeContact,
+            original.modeContactless,
+            generator.generateKeyPair().getPrivate(),
+            original.certificate);
+    ArrayList<ConformancePackage.KeyMaterial> wrongKeys =
+        new ArrayList<ConformancePackage.KeyMaterial>(pkg.keys);
+    wrongKeys.set(0, mismatched);
+    ConformancePackage wrongKeyPackage =
+        new ConformancePackage(
+            pkg.credentialId,
+            pkg.sourceDirectory,
+            pkg.pin,
+            pkg.puk,
+            pkg.adminKeyAlg,
+            pkg.adminKey,
+            pkg.dataObjects,
+            wrongKeys);
+    IllegalArgumentException keyFailure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> CertificationProfileValidator.validateKeyBindings(wrongKeyPackage, objects));
+    assertTrue(keyFailure.getMessage().contains("private key does not match"));
+
+    Map<String, ConformancePackage.DataObject> wrongObjects = index(pkg);
+    ConformancePackage.DataObject pivAuth = wrongObjects.get("5FC105");
+    ConformancePackage.DataObject cardAuth = wrongObjects.get("5FC101");
+    wrongObjects.put(
+        "5FC105",
+        new ConformancePackage.DataObject(
+            pivAuth.id,
+            pivAuth.label,
+            pivAuth.modeContact,
+            pivAuth.modeContactless,
+            pivAuth.putForm,
+            cardAuth.payload));
+    IllegalArgumentException containerFailure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> CertificationProfileValidator.validateKeyBindings(pkg, wrongObjects));
+    assertTrue(containerFailure.getMessage().contains("does not match container"));
+  }
+
   private static Map<String, ConformancePackage.DataObject> index(ConformancePackage pkg) {
     Map<String, ConformancePackage.DataObject> result =
         new HashMap<String, ConformancePackage.DataObject>();
@@ -119,6 +295,23 @@ class IcamCardFolderTest {
       result.put(id.toString(), object);
     }
     return result;
+  }
+
+  private static void replaceWithTamperedPayload(
+      Map<String, ConformancePackage.DataObject> objects, String objectId) {
+    ConformancePackage.DataObject original = objects.get(objectId);
+    assertNotNull(original, objectId);
+    byte[] tampered = original.payload.clone();
+    tampered[tampered.length / 2] ^= 0x01;
+    objects.put(
+        objectId,
+        new ConformancePackage.DataObject(
+            original.id,
+            original.label,
+            original.modeContact,
+            original.modeContactless,
+            original.putForm,
+            tampered));
   }
 
   private static void assertObjectAccess(ConformancePackage.DataObject object) {

@@ -1,6 +1,7 @@
 package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
@@ -38,10 +39,16 @@ import org.junit.jupiter.api.Timeout;
 class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport {
 
   private static final byte ALG_ECC_P256 = (byte) 0x11;
+  private static final byte ALG_ECC_P384 = (byte) 0x14;
+  private static final byte ALG_RSA_2048 = (byte) 0x07;
+  private static final byte ALG_RSA_3072 = (byte) 0x05;
+  private static final byte SLOT_AUTHENTICATION = (byte) 0x9A;
   private static final byte SLOT_SIGNATURE = (byte) 0x9C;
+  private static final byte SLOT_CARD_AUTHENTICATION = (byte) 0x9E;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte ROLE_SIGN = (byte) 0x04;
   private static final int P256_FIELD_BYTES = 32;
+  private static final int P384_FIELD_BYTES = 48;
 
   @BeforeAll
   static void installProvider() {
@@ -89,6 +96,132 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
             SLOT_SIGNATURE & 0xFF,
             signTemplate(filled(64, (byte) 0x5A))),
         "ECC must not sign a 64-byte (SHA-512) digest");
+  }
+
+  @Test
+  void p384SignsSha384Digest() throws Exception {
+    assumeFalse(
+        Boolean.getBoolean("fips.mode")
+            && "CS2".equalsIgnoreCase(System.getProperty("vci.suite", "CS2")),
+        "SP 800-78-5 requires CS7 when a VCI-capable FIPS profile uses P-384 slot 9C");
+    byte[] publicPoint = provisionEccKey(SLOT_SIGNATURE, ROLE_SIGN, ALG_ECC_P384);
+    byte[] digest = filled(P384_FIELD_BYTES, (byte) 0x6D);
+
+    byte[] response =
+        collect(
+            transmit(
+                new CommandAPDU(
+                    0x00,
+                    0x87,
+                    ALG_ECC_P384 & 0xFF,
+                    SLOT_SIGNATURE & 0xFF,
+                    signTemplate(digest),
+                    256)),
+            "P-384 sign over a SHA-384-sized digest must succeed");
+    byte[] signature = tlvValue(tlvValue(response, (byte) 0x7C), (byte) 0x82);
+    assertTrue(
+        verifiesEcdsa(publicPoint, digest, signature),
+        "Returned signature must verify as P-384 ECDSA over the supplied digest");
+  }
+
+  @Test
+  void rsa2048RawSignatureMatchesGeneratedPublicKey() {
+    assertRsaRawSignature(SLOT_SIGNATURE, (byte) 0x02, (byte) 0x0A, ALG_RSA_2048, 256);
+  }
+
+  @Test
+  void rsa3072RawSignatureMatchesGeneratedPublicKey() {
+    assertRsaRawSignature(SLOT_SIGNATURE, (byte) 0x02, (byte) 0x0A, ALG_RSA_3072, 384);
+  }
+
+  @Test
+  void rsa2048SigningWorksAtEverySigningKeyReference() {
+    assertRsaRawSignature(SLOT_AUTHENTICATION, (byte) 0x01, (byte) 0x09, ALG_RSA_2048, 256);
+    assertRsaRawSignature(SLOT_CARD_AUTHENTICATION, (byte) 0x7F, (byte) 0x7F, ALG_RSA_2048, 256);
+  }
+
+  private void assertRsaRawSignature(
+      final byte slot,
+      final byte modeContact,
+      final byte modeContactless,
+      final byte algorithm,
+      final int blockLength) {
+    final byte[][] publicComponents = new byte[2][];
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before RSA signing-key provisioning");
+          byte[] definition =
+              new byte[] {
+                (byte) 0x66,
+                (byte) 0x12,
+                (byte) 0x8B,
+                (byte) 0x01,
+                slot,
+                (byte) 0x8C,
+                (byte) 0x01,
+                modeContact,
+                (byte) 0x8D,
+                (byte) 0x01,
+                modeContactless,
+                (byte) 0x8E,
+                (byte) 0x01,
+                algorithm,
+                (byte) 0x8F,
+                (byte) 0x01,
+                ROLE_SIGN,
+                (byte) 0x90,
+                (byte) 0x01,
+                (byte) 0x10
+              };
+          assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, definition), "Create RSA sign key");
+          byte[] generated =
+              collect(
+                  transmit(
+                      0x84,
+                      0x47,
+                      0x00,
+                      slot & 0xFF,
+                      new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, algorithm},
+                      256),
+                  "GENERATE RSA sign key");
+          publicComponents[0] = tlvValue(generated, (byte) 0x81);
+          publicComponents[1] = tlvValue(generated, (byte) 0x82);
+        });
+
+    if (slot != SLOT_CARD_AUTHENTICATION) verifyLocalPin();
+    byte[] representative = filled(blockLength, (byte) 0x5C);
+    representative[0] = 0;
+    byte[] request = signTemplate(representative);
+    byte[] first = Arrays.copyOfRange(request, 0, 200);
+    byte[] last = Arrays.copyOfRange(request, 200, request.length);
+    assertSw(
+        0x9000,
+        transmit(
+            0x10,
+            0x87,
+            algorithm & 0xFF,
+            slot & 0xFF,
+            first),
+        "First chained RSA signature fragment");
+    byte[] response =
+        collect(
+            transmit(
+                new CommandAPDU(
+                    0x00,
+                    0x87,
+                    algorithm & 0xFF,
+                    slot & 0xFF,
+                    last,
+                    256)),
+            "RSA raw private-key operation must succeed");
+    byte[] signature = tlvValue(tlvValue(response, (byte) 0x7C), (byte) 0x82);
+
+    BigInteger modulus = new BigInteger(1, publicComponents[0]);
+    BigInteger exponent = new BigInteger(1, publicComponents[1]);
+    byte[] recovered = fixed(new BigInteger(1, signature).modPow(exponent, modulus), blockLength);
+    assertTrue(
+        Arrays.equals(representative, recovered),
+        "RSA public operation must recover the exact supplied representative");
   }
 
   @Test
@@ -172,6 +305,10 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
   }
 
   private byte[] provisionEccKey(final byte slot, final byte roles) {
+    return provisionEccKey(slot, roles, ALG_ECC_P256);
+  }
+
+  private byte[] provisionEccKey(final byte slot, final byte roles, final byte algorithm) {
     final byte[][] publicPoint = new byte[1][];
     withMockedScp(
         () -> {
@@ -191,7 +328,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                 (byte) 0x0A,
                 (byte) 0x8E,
                 (byte) 0x01,
-                ALG_ECC_P256,
+                algorithm,
                 (byte) 0x8F,
                 (byte) 0x01,
                 roles,
@@ -202,7 +339,13 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
           assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, definition), "Create ECC sign key");
           byte[] generated =
               collect(
-                  transmit(0x84, 0x47, 0x00, slot & 0xFF, hex("AC03800111"), 256),
+                  transmit(
+                      0x84,
+                      0x47,
+                      0x00,
+                      slot & 0xFF,
+                      new byte[] {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, algorithm},
+                      256),
                   "GENERATE ECC sign key");
           publicPoint[0] = tlvValue(generated, (byte) 0x86);
         });
@@ -252,15 +395,24 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
 
   private static boolean verifiesEcdsa(byte[] uncompressedPoint, byte[] digest, byte[] derSignature)
       throws Exception {
+    int fieldBytes = (uncompressedPoint.length - 1) / 2;
+    String curveName;
+    if (fieldBytes == P256_FIELD_BYTES) {
+      curveName = "secp256r1";
+    } else if (fieldBytes == P384_FIELD_BYTES) {
+      curveName = "secp384r1";
+    } else {
+      throw new IllegalArgumentException("Unsupported EC point length: " + uncompressedPoint.length);
+    }
     AlgorithmParameters parameters =
         AlgorithmParameters.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME);
-    parameters.init(new ECGenParameterSpec("secp256r1"));
+    parameters.init(new ECGenParameterSpec(curveName));
     ECParameterSpec ecSpec = parameters.getParameterSpec(ECParameterSpec.class);
 
-    byte[] x = new byte[P256_FIELD_BYTES];
-    byte[] y = new byte[P256_FIELD_BYTES];
-    System.arraycopy(uncompressedPoint, 1, x, 0, P256_FIELD_BYTES);
-    System.arraycopy(uncompressedPoint, 1 + P256_FIELD_BYTES, y, 0, P256_FIELD_BYTES);
+    byte[] x = new byte[fieldBytes];
+    byte[] y = new byte[fieldBytes];
+    System.arraycopy(uncompressedPoint, 1, x, 0, fieldBytes);
+    System.arraycopy(uncompressedPoint, 1 + fieldBytes, y, 0, fieldBytes);
     ECPoint w = new ECPoint(new BigInteger(1, x), new BigInteger(1, y));
     PublicKey publicKey =
         KeyFactory.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)

@@ -57,7 +57,8 @@ final class PIVAttestation {
   // version, serial, algorithm identifiers, subject CN, extensions, and DER staging overhead.
   // DERWriter fails closed with SW_FILE_FULL on overflow. ChainBuffer streams a complete response
   // from one buffer, so the worst-case certificate size is the floor for this value.
-  static final short LENGTH_CERT_BUFFER = (short) 0x0300;
+  // RSA-3072 SPKI plus the maximum accepted issuer profile exceeds 768 bytes.
+  static final short LENGTH_CERT_BUFFER = (short) 0x0400;
   // Issuer subject is capped below the full certificate budget (authority name only, not
   // cardholder data). Large target keys (RSA-2048 SPKI) are supported.
   static final short LENGTH_SUBJECT_MAX = (short) 0x80;
