@@ -110,7 +110,7 @@ The applet supports a number of additional useful enhancements to PIN functional
 * PIN Complexity Rules - Two basic 'weak PIN' prevention rules have been added as optional parameters:
   * Sequence Rule - Allows you to prevent more than `[n]` consecutive digits from being used (for example, 123456).
   * Distinct Rule - Allows you to prevent more than [n] instances of the same character being used (for example, 111111).
-* PUK Retry Limits - PUK retries can now be defined in the same way PIN retries are (including separate counters for the Contact and Contactless interface). If the PUK is locked, it can only be unlocked by an administrative role over SCP03.
+* PUK Retry Limits - PUK retries can now be defined in the same way PIN retries are (including separate counters for the Contact and Contactless interface). If the PUK is locked, it can be unlocked through either authenticated administrative-key access (normally `9B`) or SCP.
 
 <u>PIV Impacts:</u>
 
