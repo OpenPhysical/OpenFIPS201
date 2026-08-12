@@ -200,8 +200,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
   void objectChainRejectsProtectionContextChangeAndRollsBack() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
       ChainBuffer chain = new ChainBuffer();
-      PIVDataObject destination =
-          new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
+      PIVDataObject destination = new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
       destination.allocate((short) 4);
       byte[] original = new byte[] {0x11, 0x22, 0x33, 0x44};
       System.arraycopy(original, 0, destination.content, 0, original.length);
@@ -236,8 +235,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
   void unrelatedCommandSoftAbortsProtectedObjectChain() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
       ChainBuffer chain = new ChainBuffer();
-      PIVDataObject destination =
-          new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
+      PIVDataObject destination = new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
       destination.allocate((short) 4);
       byte[] original = new byte[] {0x11, 0x22, 0x33, 0x44};
       System.arraycopy(original, 0, destination.content, 0, original.length);
@@ -341,7 +339,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(chainBuffer, new byte[256], (short) 0, (short) 256, true);
       ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
 
-      byte[] deliveredRmac = ((byte[]) field(secureMessaging, "responseMcv").get(secureMessaging)).clone();
+      byte[] deliveredRmac =
+          ((byte[]) field(secureMessaging, "responseMcv").get(secureMessaging)).clone();
       byte[] counterBefore = counter(secureMessaging);
       APDU apdu = streamingApdu((byte) 0xCB, (short) 32);
       InvocationTargetException first =
@@ -361,11 +360,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
       expectedCounter[15]++;
       assertArrayEquals(expectedCounter, counter(secureMessaging));
       assertArrayEquals(
-          deliveredRmac,
-          (byte[]) field(secureMessaging, "responseMcv").get(secureMessaging));
+          deliveredRmac, (byte[]) field(secureMessaging, "responseMcv").get(secureMessaging));
       assertEquals(
-          false,
-          method(secureMessagingClass, "isResponseStreamActive").invoke(secureMessaging));
+          false, method(secureMessagingClass, "isResponseStreamActive").invoke(secureMessaging));
       assertEquals(false, method(chainBuffer.getClass(), "isOutgoingActive").invoke(chainBuffer));
 
       method(pivClass, "abortOutgoingResponse").invoke(piv);
@@ -731,11 +728,10 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     ResponseAPDU response =
         transmit(
-            new CommandAPDU(
-                0x00, 0x87, PIV.ID_ALG_ECC_SM & 0xFF, 0x04, hex("7C058101008200"), 0));
+            new CommandAPDU(0x00, 0x87, PIV.ID_ALG_ECC_SM & 0xFF, 0x04, hex("7C058101008200"), 0));
 
     assertSw(
-        0x6A88,
+        0x6A86,
         response,
         "Plaintext OPACITY re-establishment reaches GENERAL AUTHENTICATE instead of SM teardown");
     assertEquals(
@@ -763,8 +759,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     try (AutoCloseable ignored = enterEngineContext()) {
       method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
           .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
-      method(secureMessagingClass, "markEstablished", boolean.class)
-          .invoke(secureMessaging, false);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
     }
 
     byte[] publicPoint = new byte[isCs2Build() ? 65 : 97];

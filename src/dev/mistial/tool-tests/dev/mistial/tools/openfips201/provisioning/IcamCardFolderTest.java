@@ -5,15 +5,16 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.interfaces.RSAPrivateKey;
 import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPrivateKey;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -72,6 +73,7 @@ class IcamCardFolderTest {
       assertEquals(card, pkg.credentialId);
       assertTrue(pkg.dataObjects.size() >= 7, card + " must contain the core PIV objects");
       assertTrue(pkg.keys.size() >= 2, card + " must contain mandatory PIV keys");
+      assertNull(pkg.managementKey, card + " must leave administration to SCP");
     }
   }
 
@@ -96,13 +98,11 @@ class IcamCardFolderTest {
     assertArrayEquals(
         Files.readAllBytes(path.resolve("4 - ICAM_PIV_Dig_Sig_SP_800-73-4.crt")),
         Files.readAllBytes(
-            path.resolve(
-                "4 - ICAM_Test_Card_PIV_Dig_Sig_SP_800-73-4_Tampered_Certificates.crt")));
+            path.resolve("4 - ICAM_Test_Card_PIV_Dig_Sig_SP_800-73-4_Tampered_Certificates.crt")));
     assertArrayEquals(
         Files.readAllBytes(path.resolve("5 - ICAM_PIV_Key_Mgmt_SP_800-73-4.crt")),
         Files.readAllBytes(
-            path.resolve(
-                "5 - ICAM_Test_Card_PIV_Key_Mgmt_SP_800-73-4_Tampered_Certificates.crt")));
+            path.resolve("5 - ICAM_Test_Card_PIV_Key_Mgmt_SP_800-73-4_Tampered_Certificates.crt")));
     assertDoesNotThrow(() -> IcamCardFolder.load(path));
   }
 
@@ -142,7 +142,9 @@ class IcamCardFolderTest {
             object.payload[object.payload.length - 2],
             object.label + " must end with empty FE tag");
         assertEquals(
-            0, object.payload[object.payload.length - 1] & 0xFF, object.label + " FE length must be 0");
+            0,
+            object.payload[object.payload.length - 1] & 0xFF,
+            object.label + " FE length must be 0");
       }
     }
     assertTrue(sawChuid, "CHUID must be present");
@@ -224,7 +226,8 @@ class IcamCardFolderTest {
     Map<String, ConformancePackage.DataObject> objects = index(pkg);
     replaceWithTamperedPayload(objects, "5FC106");
 
-    assertThrows(Exception.class, () -> CertificationProfileValidator.validateSecurityObject(objects));
+    assertThrows(
+        Exception.class, () -> CertificationProfileValidator.validateSecurityObject(objects));
   }
 
   @Test
@@ -257,8 +260,7 @@ class IcamCardFolderTest {
             pkg.sourceDirectory,
             pkg.pin,
             pkg.puk,
-            pkg.adminKeyAlg,
-            pkg.adminKey,
+            pkg.managementKey,
             pkg.dataObjects,
             wrongKeys);
     IllegalArgumentException keyFailure =
@@ -373,9 +375,7 @@ class IcamCardFolderTest {
   void fileSelectionIsDeterministic() throws Exception {
     Path later = Files.write(temporaryDirectory.resolve("7 - CCC-z.bin"), new byte[] {2});
     Path earlier = Files.write(temporaryDirectory.resolve("7 - CCC-a.bin"), new byte[] {1});
-    assertEquals(
-        earlier,
-        IcamCardFolder.findFile(temporaryDirectory, "7 - CCC", null, ""));
+    assertEquals(earlier, IcamCardFolder.findFile(temporaryDirectory, "7 - CCC", null, ""));
     assertTrue(Files.exists(later));
   }
 }

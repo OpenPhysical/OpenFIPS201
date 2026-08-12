@@ -19,8 +19,12 @@ class PIVCVMPINTest {
     // platform Global PIN; this adapter must preserve the platform CVM state.
     CVM cvm = Mockito.mock(CVM.class);
     Mockito.when(cvm.getTriesRemaining()).thenReturn((byte) 5);
-    Mockito.when(cvm.verify(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyByte(),
-            Mockito.eq(CVM.FORMAT_HEX)))
+    Mockito.when(
+            cvm.verify(
+                Mockito.any(byte[].class),
+                Mockito.anyShort(),
+                Mockito.anyByte(),
+                Mockito.eq(CVM.FORMAT_HEX)))
         .thenReturn(CVM.CVM_SUCCESS);
     Mockito.when(cvm.isVerified()).thenReturn(true);
 

@@ -1,0 +1,39 @@
+name: codeql
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 9 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Java security analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Java build-mode none is intentional. CodeQL analyzes source directly, while the quality
+      # workflow remains authoritative for this repository's custom Ant and Java Card build.
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: java
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:java

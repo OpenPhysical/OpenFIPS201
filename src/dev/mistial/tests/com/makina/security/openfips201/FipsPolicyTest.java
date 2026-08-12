@@ -33,11 +33,7 @@ class FipsPolicyTest {
         "5FC104 is reserved by SP 800-73-5 Part 1 Table 3");
     assertTrue(
         FipsPolicy.allowsObjectDefinition(
-            new byte[] {(byte) 0xDF, (byte) 0x01},
-            (short) 0,
-            (short) 2,
-            always,
-            always),
+            new byte[] {(byte) 0xDF, (byte) 0x01}, (short) 0, (short) 2, always, always),
         "Table 3 validation is scoped to the interoperable PIV namespace");
     assertTrue(
         FipsPolicy.allowsObjectDefinition(
@@ -225,8 +221,7 @@ class FipsPolicyTest {
       assertExactObjectAccess(pivObject(suffix), modeAlways(), modeAlways());
     }
     for (int suffix : new int[] {0x03, 0x08, 0x09, 0x21, 0x23}) {
-      assertExactObjectAccess(
-          pivObject(suffix), modePin(), (byte) (modeVci() | modePin()));
+      assertExactObjectAccess(pivObject(suffix), modePin(), (byte) (modeVci() | modePin()));
     }
     for (int suffix = 0x05; suffix <= 0x20; suffix++) {
       if (suffix == 0x08 || suffix == 0x09) continue;
@@ -317,8 +312,7 @@ class FipsPolicyTest {
         boolean exact = contact == expectedContact && contactless == expectedContactless;
         assertEquals(
             !FipsPolicy.ENABLED || exact,
-            FipsPolicy.allowsKeyDefinition(
-                id, contact, contactless, mechanism, role, attributes),
+            FipsPolicy.allowsKeyDefinition(id, contact, contactless, mechanism, role, attributes),
             "key " + hex(id) + " access " + hex(contact) + "/" + hex(contactless));
       }
     }

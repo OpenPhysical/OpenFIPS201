@@ -16,7 +16,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.bouncycastle.util.encoders.Hex;
@@ -55,7 +54,7 @@ import org.junit.jupiter.api.TestFactory;
  * SM TLV encoding and command chaining.
  */
 @Tag("slow")
-class OpenFIPS201VciVectorTest {
+class OpenFIPS201VciVectorTest extends VciVectorTestSupport {
 
   private static final byte[] TRANSPORT_SW = Hex.decode("9000");
 
@@ -132,7 +131,7 @@ class OpenFIPS201VciVectorTest {
   Stream<DynamicTest> fullSmSessionReplayMatchesCapturedExchanges() throws Exception {
     return forEachVector(
         (name, v) -> {
-          List<Exchange> exchanges = mergeTransportChains(allExchanges(v));
+          List<Exchange> exchanges = reassembleTransportChains(allExchanges(v));
           List<Exchange> sm = new ArrayList<>();
           for (Exchange ex : exchanges) {
             if ((ex.command[0] & 0xFF) == 0x0C || (ex.command[0] & 0xFF) == 0x1C) {
@@ -152,25 +151,19 @@ class OpenFIPS201VciVectorTest {
             assertEquals(
                 0x0C, cla, name + " [" + ex.description + "]: expected CLA 0x0C after merge");
 
-            if (ex.plainCommand != null && ex.plainCommand.length >= 4) {
-              Object[] parsed = VciSupport.parsePlainCommand(ex.plainCommand);
-              byte ins = (Byte) parsed[0];
-              byte p1 = (Byte) parsed[1];
-              byte p2 = (Byte) parsed[2];
-              byte[] data = (byte[]) parsed[3];
-              boolean hasLe = (Boolean) parsed[4];
-              byte[] wrappedCmd = VciSupport.wrapCommand(session, ins, p1, p2, data, hasLe);
-              assertArrayEquals(
-                  ex.command, wrappedCmd, name + " [" + ex.description + "]: re-wrapped command");
-              wrapped++;
-            } else {
-              // Still advance command MCV / lastCla by verifying MAC via unwrap-side state only:
-              // seed lastCla/Ins from the captured SM header so response counter rules match.
-              session.lastCla = (byte) 0x0C;
-              session.lastIns = ex.command[1];
-              // Advance command MCV by extracting the full CMAC from the captured command.
-              advanceCommandMcvFromCaptured(session, ex.command);
-            }
+            assertTrue(
+                ex.plainCommand != null && ex.plainCommand.length >= 4,
+                name + " [" + ex.description + "]: reassembled SM command lacks plaintext");
+            Object[] parsed = VciSupport.parsePlainCommand(ex.plainCommand);
+            byte ins = (Byte) parsed[0];
+            byte p1 = (Byte) parsed[1];
+            byte p2 = (Byte) parsed[2];
+            byte[] data = (byte[]) parsed[3];
+            boolean hasLe = (Boolean) parsed[4];
+            byte[] wrappedCmd = VciSupport.wrapCommand(session, ins, p1, p2, data, hasLe);
+            assertArrayEquals(
+                ex.command, wrappedCmd, name + " [" + ex.description + "]: re-wrapped command");
+            wrapped++;
 
             if (ex.sw == 0x9000 && ex.response != null && ex.response.length > 0) {
               VciSupport.SmResponse resp =
@@ -233,7 +226,7 @@ class OpenFIPS201VciVectorTest {
           boolean hasPinCheckpoint =
               s.has("verify_pin_state_after") && s.get("verify_pin_state_after").isJsonObject();
 
-          for (Exchange ex : mergeTransportChains(secureMessagingExchanges(v))) {
+          for (Exchange ex : reassembleTransportChains(secureMessagingExchanges(v))) {
             session.lastCla = (byte) 0x0C;
             session.lastIns = (byte) 0x00;
 
@@ -295,7 +288,7 @@ class OpenFIPS201VciVectorTest {
     return forEachVector(
         (name, v) -> {
           JsonObject s = v.getAsJsonObject("sm_session");
-          List<Exchange> exchanges = mergeTransportChains(secureMessagingExchanges(v));
+          List<Exchange> exchanges = reassembleTransportChains(secureMessagingExchanges(v));
 
           Exchange pairing =
               findExchange(
@@ -517,150 +510,11 @@ class OpenFIPS201VciVectorTest {
    * Merges CLA {@code 1C} transport intermediates with the following CLA {@code 0C} final chunk
    * into a single logical SM command (mirrors {@code verify_vectors._merge_transport_chains}).
    */
-  private static List<Exchange> mergeTransportChains(List<Exchange> exchanges) {
-    List<Exchange> merged = new ArrayList<>();
-    List<byte[]> pendingChunks = new ArrayList<>();
-
-    for (Exchange ex : exchanges) {
-      int cla = ex.command[0] & 0xFF;
-      if (cla == 0x1C) {
-        // Intermediate: buffer SM data field (short form CLA INS P1 P2 Lc Data)
-        byte[] cmd = ex.command;
-        int lc = cmd[4] & 0xFF;
-        pendingChunks.add(Arrays.copyOfRange(cmd, 5, 5 + lc));
-        continue;
-      }
-      if (!pendingChunks.isEmpty() && cla == 0x0C) {
-        byte[] cmd = ex.command;
-        byte ins = cmd[1];
-        byte p1 = cmd[2];
-        byte p2 = cmd[3];
-        int lc;
-        byte[] finalData;
-        byte[] trailingLe;
-        if ((cmd[4] & 0xFF) == 0x00 && cmd.length > 7) {
-          lc = ((cmd[5] & 0xFF) << 8) | (cmd[6] & 0xFF);
-          finalData = Arrays.copyOfRange(cmd, 7, 7 + lc);
-          trailingLe = Arrays.copyOfRange(cmd, 7 + lc, cmd.length);
-        } else {
-          lc = cmd[4] & 0xFF;
-          finalData = Arrays.copyOfRange(cmd, 5, 5 + lc);
-          trailingLe = Arrays.copyOfRange(cmd, 5 + lc, cmd.length);
-        }
-        int total = 0;
-        for (byte[] c : pendingChunks) {
-          total += c.length;
-        }
-        total += finalData.length;
-        byte[] fullPayload = new byte[total];
-        int off = 0;
-        for (byte[] c : pendingChunks) {
-          System.arraycopy(c, 0, fullPayload, off, c.length);
-          off += c.length;
-        }
-        System.arraycopy(finalData, 0, fullPayload, off, finalData.length);
-
-        byte[] reassembled;
-        if (fullPayload.length <= 255) {
-          reassembled =
-              concat(
-                  new byte[] {0x0C, ins, p1, p2, (byte) fullPayload.length},
-                  fullPayload,
-                  trailingLe.length > 0 ? trailingLe : new byte[] {0x00});
-        } else {
-          // Prefer the trailing Le from the final chunk when it is already extended (2 bytes);
-          // otherwise use Le=0x0100 (256), matching VciSupport.wrapCommand.
-          byte[] le = trailingLe.length >= 2 ? trailingLe : new byte[] {0x01, 0x00};
-          reassembled =
-              concat(
-                  new byte[] {
-                    0x0C,
-                    ins,
-                    p1,
-                    p2,
-                    0x00,
-                    (byte) ((fullPayload.length >> 8) & 0xFF),
-                    (byte) (fullPayload.length & 0xFF)
-                  },
-                  fullPayload,
-                  le);
-        }
-        String base = ex.description;
-        int bracket = base.toLowerCase(Locale.ROOT).lastIndexOf(" [transport");
-        if (bracket > 0) {
-          base = base.substring(0, bracket);
-        }
-        merged.add(
-            new Exchange(
-                base + " (reassembled)",
-                reassembled,
-                ex.response,
-                ex.sw,
-                ex.plainCommand,
-                ex.plainResponse));
-        pendingChunks.clear();
-      } else {
-        pendingChunks.clear();
-        merged.add(ex);
-      }
-    }
-    return merged;
-  }
 
   /**
    * Advances the command MCV from a captured SM APDU by recomputing the full C-MAC (used when
    * plain_command is absent so we cannot re-wrap).
    */
-  private static void advanceCommandMcvFromCaptured(VciSupport.SmSession session, byte[] command) {
-    // Re-derive via wrap is preferred; this path keeps MCV chaining correct for response-only
-    // verification. We recompute the MAC input from the captured TLV field.
-    int lc;
-    byte[] dataField;
-    if ((command[4] & 0xFF) == 0x00 && command.length > 7) {
-      lc = ((command[5] & 0xFF) << 8) | (command[6] & 0xFF);
-      dataField = Arrays.copyOfRange(command, 7, 7 + lc);
-    } else {
-      lc = command[4] & 0xFF;
-      dataField = Arrays.copyOfRange(command, 5, 5 + lc);
-    }
-
-    java.io.ByteArrayOutputStream macInput = new java.io.ByteArrayOutputStream();
-    macInput.write(session.commandMcv, 0, 16);
-    byte[] header = new byte[16];
-    header[0] = 0x0C;
-    header[1] = command[1];
-    header[2] = command[2];
-    header[3] = command[3];
-    header[4] = (byte) 0x80;
-    macInput.write(header, 0, 16);
-
-    // Include 87 and 97 TLVs (everything except 8E) in MAC order.
-    int cursor = 0;
-    while (cursor < dataField.length) {
-      int tag = dataField[cursor] & 0xFF;
-      int hdr = cursor;
-      cursor++; // tag (1-byte tags only in SM data field)
-      int lengthByte = dataField[cursor++] & 0xFF;
-      int length;
-      if (lengthByte < 0x80) {
-        length = lengthByte;
-      } else if (lengthByte == 0x81) {
-        length = dataField[cursor++] & 0xFF;
-      } else if (lengthByte == 0x82) {
-        length = ((dataField[cursor++] & 0xFF) << 8) | (dataField[cursor++] & 0xFF);
-      } else {
-        throw new IllegalStateException("Unsupported TLV length in SM command");
-      }
-      int next = cursor + length;
-      if (tag == 0x87 || tag == 0x97) {
-        macInput.write(dataField, hdr, next - hdr);
-      }
-      cursor = next;
-    }
-    byte[] fullMac = VciSupport.aesCmac(session.skMac, macInput.toByteArray());
-    System.arraycopy(fullMac, 0, session.commandMcv, 0, 16);
-  }
-
   private static Exchange findExchange(
       List<Exchange> exchanges, java.util.function.Predicate<Exchange> pred) {
     return exchanges.stream().filter(pred).findFirst().orElse(null);
@@ -742,29 +596,5 @@ class OpenFIPS201VciVectorTest {
       off += a.length;
     }
     return out;
-  }
-
-  private static final class Exchange {
-    final String description;
-    final byte[] command;
-    final byte[] response;
-    final int sw;
-    final byte[] plainCommand;
-    final byte[] plainResponse;
-
-    Exchange(
-        String description,
-        byte[] command,
-        byte[] response,
-        int sw,
-        byte[] plainCommand,
-        byte[] plainResponse) {
-      this.description = description;
-      this.command = command;
-      this.response = response;
-      this.sw = sw;
-      this.plainCommand = plainCommand;
-      this.plainResponse = plainResponse;
-    }
   }
 }

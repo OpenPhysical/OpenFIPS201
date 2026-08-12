@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
-import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.security.AlgorithmParameters;
 import java.security.KeyFactory;
@@ -19,13 +18,8 @@ import java.security.spec.ECPoint;
 import java.security.spec.ECPublicKeySpec;
 import javacard.framework.ISO7816;
 import javax.crypto.KeyAgreement;
-import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
-import org.globalplatform.GPSystem;
-import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
   private static final int KEY_REFERENCE = 0x9A;
@@ -70,8 +64,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
               0x9000,
               transmit(0x14, 0x47, 0x00, KEY_REFERENCE, hex("AC03")),
               "First protected GENERATE fragment");
-          ResponseAPDU response =
-              transmit(0x04, 0x47, 0x00, KEY_REFERENCE, hex("800111"), 0);
+          ResponseAPDU response = transmit(0x04, 0x47, 0x00, KEY_REFERENCE, hex("800111"), 0);
           assertSw(0x9000, response, "Final protected GENERATE fragment");
           assertEquals((byte) 0x7F, response.getData()[0]);
           assertEquals((byte) 0x49, response.getData()[1]);
@@ -98,19 +91,6 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
           }
           assertTrue(found, "Generated RSA public exponent must be 65537");
         });
-  }
-
-  private byte[] collectResponse(ResponseAPDU response, String context) {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    ResponseAPDU current = response;
-    while ((current.getSW() & 0xFF00) == 0x6100) {
-      out.write(current.getData(), 0, current.getData().length);
-      int le = current.getSW2() == 0 ? 256 : current.getSW2();
-      current = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, le));
-    }
-    assertSw(0x9000, current, context);
-    out.write(current.getData(), 0, current.getData().length);
-    return out.toByteArray();
   }
 
   @Test
@@ -306,8 +286,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     ECParameterSpec spec = parameters.getParameterSpec(ECParameterSpec.class);
     return KeyFactory.getInstance("EC")
         .generatePublic(
-            new ECPublicKeySpec(
-                new ECPoint(new BigInteger(1, x), new BigInteger(1, y)), spec));
+            new ECPublicKeySpec(new ECPoint(new BigInteger(1, x), new BigInteger(1, y)), spec));
   }
 
   private static byte[] fixed(BigInteger value, int length) {
@@ -317,22 +296,5 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     int copyLength = Math.min(encoded.length, length);
     System.arraycopy(encoded, sourceOffset, result, length - copyLength, copyLength);
     return result;
-  }
-
-  protected void withMockedScp(Runnable action) {
-    try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
-      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
-      SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
-      Mockito.when(secureChannel.getSecurityLevel())
-          .thenReturn(
-              (byte)
-                  (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
-      Mockito.when(
-              secureChannel.unwrap(
-                  Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-          .thenAnswer(invocation -> (short) invocation.getArgument(2));
-      Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
-      action.run();
-    }
   }
 }

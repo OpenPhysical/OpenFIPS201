@@ -153,7 +153,7 @@ In-repo tests exercise command behaviour, VCI/secure messaging, and selected
 crypto paths. Formal interface and personalised-data testing is described in
 [docs/CONFORMANCE_AND_NPIVP.md](docs/CONFORMANCE_AND_NPIVP.md).
 
-The enforced 55% JaCoCo line floor records the simulator regression baseline.
+The enforced 80% JaCoCo applet line floor records the simulator regression baseline.
 
 Release candidates must pass `ant -f build/build.xml test-all`. This runs slow SM/VCI coverage for
 the full standard/FIPS × CS2/CS7 × attestation on/off matrix.

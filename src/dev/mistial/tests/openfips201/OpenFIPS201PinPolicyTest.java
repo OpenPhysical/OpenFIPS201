@@ -99,11 +99,7 @@ class OpenFIPS201PinPolicyTest extends OpenFIPS201TestSupport {
 
   private javax.smartcardio.ResponseAPDU changePin(byte[] current, byte[] replacement) {
     return transmit(
-        0x00,
-        INS_CHANGE_REFERENCE_DATA,
-        0x00,
-        LOCAL_PIN_REFERENCE,
-        concat(current, replacement));
+        0x00, INS_CHANGE_REFERENCE_DATA, 0x00, LOCAL_PIN_REFERENCE, concat(current, replacement));
   }
 
   private void configurePinPolicy(byte[] policyElements) {

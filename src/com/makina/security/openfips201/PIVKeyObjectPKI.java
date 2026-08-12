@@ -123,8 +123,7 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
 
   /** Returns whether complete, consistency-tested key material is ready for use. */
   final boolean isInitialised() {
-    return hasPrivateMaterial()
-        && (isGenerated() || importedPairReady != (byte) 0);
+    return hasPrivateMaterial() && (isGenerated() || importedPairReady != (byte) 0);
   }
 
   abstract boolean hasPrivateMaterial();

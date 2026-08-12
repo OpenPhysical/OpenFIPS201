@@ -52,8 +52,7 @@ class PIVOpacitySelfTestBehaviorTest {
     try {
       try (AutoCloseable ignored = enterEngineContext()) {
         assertFalse(
-            new PIVOpacity(new byte[768], new byte[448])
-                .runCryptographicAlgorithmSelfTest());
+            new PIVOpacity(new byte[768], new byte[448]).runCryptographicAlgorithmSelfTest());
       }
     } finally {
       expected[0] = original;

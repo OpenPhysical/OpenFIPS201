@@ -1,7 +1,7 @@
 package com.makina.security.openfips201;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -58,8 +58,7 @@ class TLVValidationTest {
 
   @Test
   void findsTwoByteTagsAndTracksEndOfInput() {
-    TLVReader reader =
-        reader(new byte[] {(byte) 0x9F, (byte) 0x33, 0x01, 0x7A, (byte) 0x80, 0x00});
+    TLVReader reader = reader(new byte[] {(byte) 0x9F, (byte) 0x33, 0x01, 0x7A, (byte) 0x80, 0x00});
     assertTrue(reader.find((short) 0x9F33));
     assertEquals((short) 0x9F33, reader.getTagShort());
     assertTrue(reader.matchData((byte) 0x7A));
@@ -74,9 +73,18 @@ class TLVValidationTest {
     TLVReader reader =
         reader(
             new byte[] {
-              (byte) 0x80, 0x02, 0x12, 0x34,
-              (byte) 0x81, 0x01, 0x01,
-              (byte) 0x9F, 0x33, 0x02, 0x56, 0x78
+              (byte) 0x80,
+              0x02,
+              0x12,
+              0x34,
+              (byte) 0x81,
+              0x01,
+              0x01,
+              (byte) 0x9F,
+              0x33,
+              0x02,
+              0x56,
+              0x78
             });
     assertTrue(reader.isInitialized());
     assertFalse(reader.isEOF());

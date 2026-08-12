@@ -25,13 +25,16 @@
 
 package dev.mistial.tools.openfips201.provisioning;
 
-import apdu4j.core.BIBO;
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.common.ApduSupport;
+import dev.mistial.tools.openfips201.common.CardConnectionFactory;
 import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.LogicalResponseCollector;
+import dev.mistial.tools.openfips201.common.PlainPivSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
-import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
@@ -39,16 +42,13 @@ import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.List;
-import pro.javacard.capfile.AID;
-import pro.javacard.gp.GPSecureChannelVersion;
 import pro.javacard.gp.GPSession;
-import pro.javacard.gp.keys.PlaintextKeys;
 
 /**
- * Provisions an OpenFIPS201 card (or ZMQ emulator) from a {@link ConformancePackage} over GlobalPlatform
- * SCP03, using the same administrative PUT DATA / CHANGE REFERENCE DATA model as a real issuer.
+ * Provisions an OpenFIPS201 card (or ZMQ emulator) from a {@link ConformancePackage} over
+ * GlobalPlatform SCP03, using the same administrative PUT DATA / CHANGE REFERENCE DATA model as a
+ * real issuer.
  *
  * <p>Does not personalise the applet lifecycle state (tag {@code 69}); leaves the card in the
  * pre-personalisation administrative state so subsequent admin operations remain available under
@@ -93,17 +93,95 @@ public final class ConformanceProvisioner {
     if (pkg == null) {
       throw new IllegalArgumentException("package is required");
     }
-    ScpConfig config = scp == null ? ScpConfig.defaultTestScp03() : scp;
-    BIBO bibo = target.openBibo();
-    try {
-      return provision(bibo, config, pkg, log);
-    } finally {
-      try {
-        bibo.close();
-      } catch (Exception ignored) {
-        // best-effort close
+    return provision((CardConnectionFactory) target, scp, pkg, log);
+  }
+
+  /**
+   * Confirms that the live card matches the public portion of a declared personalization profile.
+   * This preflight never verifies a PIN, so selecting the wrong profile cannot consume retries.
+   */
+  public static void verifyPublicProfile(CardConnectionFactory connections, ConformancePackage pkg)
+      throws Exception {
+    try (PlainPivSession piv = PlainPivSession.open(connections, GlobalPlatformSession.PIV_AID)) {
+      int checked = 0;
+      for (ConformancePackage.DataObject object : pkg.dataObjects) {
+        if (object.modeContact != IcamCardFolder.ACCESS_ALWAYS) continue;
+        byte[] expected =
+            object.putForm == ConformancePackage.PutForm.DISCOVERY
+                ? object.payload
+                : AdminTlv.tlv(0x53, object.payload);
+        byte[] actual = getData(piv, object.id, expected.length);
+        if (!Arrays.equals(expected, actual)) {
+          throw new IllegalStateException(
+              "Physical card does not match profile "
+                  + pkg.credentialId
+                  + " at "
+                  + object.label
+                  + " ("
+                  + hexId(object.id)
+                  + ")");
+        }
+        checked++;
       }
+      if (checked == 0) {
+        throw new IllegalArgumentException("Profile has no public objects to verify");
+      }
+      verifyManagementMechanism(piv, pkg);
     }
+  }
+
+  private static void verifyManagementMechanism(PlainPivSession piv, ConformancePackage pkg) {
+    int algorithm =
+        pkg.managementKey == null
+            ? StandardCardProfile.ADMIN_KEY_ALG & 0xFF
+            : pkg.managementKey.algorithm & 0xFF;
+    ResponseAPDU response =
+        piv.transmit(
+            new CommandAPDU(
+                0x00,
+                0x87,
+                algorithm,
+                ADMIN_KEY_REF & 0xFF,
+                new byte[] {0x7C, 0x02, (byte) 0x81, 0x00}));
+    if (pkg.managementKey == null) {
+      // SP 800-73-5 Part 2, Section 3.2.4 assigns 6A86 to an unsupported P2. Any other response
+      // proves that a profile claiming SCP-only administration does not match the live card.
+      if (response.getSW() != 0x6A86) {
+        throw new IllegalStateException(
+            String.format(
+                "Physical card unexpectedly exposes management key 9B (SW %04X)",
+                response.getSW()));
+      }
+    } else if (response.getSW() != 0x9000) {
+      throw new IllegalStateException(
+          String.format(
+              "Physical card does not expose declared management key 9B (SW %04X)",
+              response.getSW()));
+    }
+  }
+
+  /** Provisions through SCP03, then verifies through a fresh plain PIV connection. */
+  public static ProvisionReport provision(
+      CardConnectionFactory connections, ScpConfig scp, ConformancePackage pkg, PrintStream log)
+      throws Exception {
+    if (connections == null) throw new IllegalArgumentException("connections are required");
+    if (pkg == null) throw new IllegalArgumentException("package is required");
+    ScpConfig config = scp == null ? ScpConfig.defaultTestScp03() : scp;
+    ProvisionReport report;
+    try (CardTransport transport = CardTransport.own(connections.open());
+        GlobalPlatformSession administrative =
+            transport.openGlobalPlatformSession(GlobalPlatformSession.PIV_AID, config)) {
+      report = provisionAdministrative(administrative.gp(), pkg, log);
+    }
+    try {
+      verifyReadback(connections, pkg, log, report.steps);
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "Provisioning writes were committed, but plain PIV readback failed; the applet was not"
+              + " personalized",
+          e);
+    }
+    return report;
   }
 
   /** Validates, provisions, and only then performs the irreversible lifecycle transition. */
@@ -123,82 +201,75 @@ public final class ConformanceProvisioner {
   private static void personalize(CardTarget target, ScpConfig scp) throws Exception {
     if (target == null) throw new IllegalArgumentException("target is required");
     ScpConfig config = scp == null ? ScpConfig.defaultTestScp03() : scp;
-    BIBO bibo = target.openBibo();
-    try {
-      GPSession gp = GPSession.connect(bibo, new AID(GlobalPlatformSession.PIV_AID));
-      gp.openSecureChannel(
-          config.toPlaintextKeys(),
-          new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
-          null,
-          EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
+    try (GlobalPlatformSession administrative =
+        GlobalPlatformSession.open(target, GlobalPlatformSession.PIV_AID, config)) {
       // Proprietary admin PUT DATA operation 69 has an empty value.
       expect(
-          gp.transmit(
-              new CommandAPDU(
-                  0x00, 0xDB, 0x3F, 0x00, AdminTlv.tlv(0x69, new byte[0]))),
+          administrative.transmit(
+              new CommandAPDU(0x80, 0xDB, 0xFF, 0xFF, AdminTlv.tlv(0x69, new byte[0]))),
           "Personalize validated certification profile");
-    } finally {
-      try {
-        bibo.close();
-      } catch (Exception ignored) {
-        // best-effort close
-      }
     }
   }
 
-  /** Provisions over an already-open BIBO transport. */
-  public static ProvisionReport provision(
-      BIBO bibo, ScpConfig scp, ConformancePackage pkg, PrintStream log) throws Exception {
+  /** Applies administrative mutations over an already-open SCP-capable transport. */
+  private static ProvisionReport provisionAdministrative(
+      GPSession gp, ConformancePackage pkg, PrintStream log) throws Exception {
     IcamCardFolder.ensureProvider();
-    ScpConfig config = scp == null ? ScpConfig.defaultTestScp03() : scp;
     List<String> steps = new ArrayList<String>();
-    PrintStream out = log == null ? new PrintStream(new java.io.OutputStream() {
-      @Override
-      public void write(int b) {
-        // discard
-      }
-    }) : log;
+    PrintStream out =
+        log == null
+            ? new PrintStream(
+                new java.io.OutputStream() {
+                  @Override
+                  public void write(int b) {
+                    // discard
+                  }
+                })
+            : log;
 
-    GPSession gp = GPSession.connect(bibo, new AID(GlobalPlatformSession.PIV_AID));
-    PlaintextKeys keys = config.toPlaintextKeys();
-    gp.openSecureChannel(
-        keys,
-        new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
-        null,
-        EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
     steps.add("Opened SCP03 to PIV AID");
     out.println("Opened SCP03 to PIV AID for credential " + pkg.credentialId);
 
     // PIN / PUK (administrative CHANGE REFERENCE DATA over SCP).
     expect(
         gp.transmit(
-            new CommandAPDU(
-                0x00, 0x24, 0xFF, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pkg.pin)),
+            new CommandAPDU(0x80, 0x24, 0x01, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pkg.pin)),
         "Set local PIN");
     steps.add("Set local PIN");
     expect(
-        gp.transmit(
-            new CommandAPDU(0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, pkg.puk)),
+        gp.transmit(new CommandAPDU(0x80, 0x24, 0x01, StandardCardProfile.PUK_REF & 0xFF, pkg.puk)),
         "Set PUK");
     steps.add("Set PUK");
 
-    // Management key 9B.
-    expect(
-        gp.transmit(
-            new CommandAPDU(
-                0x00, 0xDB, 0x3F, 0x00, StandardCardProfile.managementKeyDefinition(pkg.adminKeyAlg))),
-        "Create management key 9B");
-    expect(
-        gp.transmit(
-            new CommandAPDU(
-                0x00,
-                0x24,
-                pkg.adminKeyAlg & 0xFF,
-                ADMIN_KEY_REF & 0xFF,
-                StandardCardProfile.keyUpdateData(pkg.adminKey))),
-        "Import management key 9B");
-    steps.add("Provisioned management key 9B");
-    out.println("Provisioned management key 9B");
+    // SP 800-73 permits administration through an authenticated card-management key or through
+    // the issuer's secure channel. Do not invent 9B material for an ICAM package that has none.
+    if (pkg.managementKey != null) {
+      expect(
+          gp.transmit(
+              new CommandAPDU(
+                  0x80,
+                  0xDB,
+                  0xFF,
+                  0xFF,
+                  StandardCardProfile.managementKeyDefinition(pkg.managementKey.algorithm))),
+          "Create management key 9B");
+      expect(
+          gp.transmit(
+              new CommandAPDU(
+                  0x80,
+                  0x25,
+                  0x01,
+                  ADMIN_KEY_REF & 0xFF,
+                  adminKeyUpdateData(
+                      pkg.managementKey.algorithm,
+                      StandardCardProfile.keyUpdateData(pkg.managementKey.key)))),
+          "Import management key 9B");
+      steps.add("Provisioned management key 9B");
+      out.println("Provisioned management key 9B");
+    } else {
+      steps.add("Management restricted to SCP (no 9B material supplied)");
+      out.println("No management key supplied; administration remains SCP-only");
+    }
 
     int keysImported = 0;
     for (ConformancePackage.KeyMaterial key : pkg.keys) {
@@ -231,8 +302,6 @@ public final class ConformanceProvisioner {
               + " bytes)");
     }
 
-    verifyReadback(gp, pkg, out, steps);
-
     out.println(
         "Provisioning complete: "
             + objectsCreated
@@ -244,59 +313,59 @@ public final class ConformanceProvisioner {
   }
 
   private static void verifyReadback(
-      GPSession gp, ConformancePackage pkg, PrintStream out, List<String> steps) {
-    byte[] pinBlock = new byte[8];
-    Arrays.fill(pinBlock, (byte) 0xFF);
-    System.arraycopy(pkg.pin, 0, pinBlock, 0, Math.min(pkg.pin.length, pinBlock.length));
-    expect(
-        gp.transmit(
-            new CommandAPDU(
-                0x00, 0x20, 0x00, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pinBlock)),
-        "Verify local PIN for object readback");
+      CardConnectionFactory connections,
+      ConformancePackage pkg,
+      PrintStream log,
+      List<String> steps)
+      throws Exception {
+    PrintStream out =
+        log == null
+            ? new PrintStream(
+                new java.io.OutputStream() {
+                  @Override
+                  public void write(int b) {
+                    // discard
+                  }
+                })
+            : log;
+    try (PlainPivSession piv = PlainPivSession.open(connections, GlobalPlatformSession.PIV_AID)) {
+      byte[] pinBlock = new byte[8];
+      Arrays.fill(pinBlock, (byte) 0xFF);
+      System.arraycopy(pkg.pin, 0, pinBlock, 0, Math.min(pkg.pin.length, pinBlock.length));
+      expect(
+          piv.transmit(
+              new CommandAPDU(
+                  0x00, 0x20, 0x00, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pinBlock)),
+          "Verify local PIN for object readback");
 
-    for (ConformancePackage.DataObject object : pkg.dataObjects) {
-      byte[] actual = getData(gp, object.id);
-      byte[] expected =
-          object.putForm == ConformancePackage.PutForm.DISCOVERY
-              ? object.payload
-              : AdminTlv.tlv(0x53, object.payload);
-      if (!Arrays.equals(expected, actual)) {
-        throw new IllegalStateException(
-            "Readback mismatch for "
-                + object.label
-                + " ("
-                + hexId(object.id)
-                + "): expected "
-                + expected.length
-                + " bytes, got "
-                + actual.length);
+      for (ConformancePackage.DataObject object : pkg.dataObjects) {
+        byte[] expected =
+            object.putForm == ConformancePackage.PutForm.DISCOVERY
+                ? object.payload
+                : AdminTlv.tlv(0x53, object.payload);
+        byte[] actual = getData(piv, object.id, expected.length);
+        if (!Arrays.equals(expected, actual)) {
+          throw new IllegalStateException(
+              "Readback mismatch for "
+                  + object.label
+                  + " ("
+                  + hexId(object.id)
+                  + "): expected "
+                  + expected.length
+                  + " bytes, got "
+                  + actual.length);
+        }
       }
+      steps.add("Verified exact readback of " + pkg.dataObjects.size() + " data objects");
+      out.println("Verified exact readback of " + pkg.dataObjects.size() + " data objects");
     }
-    steps.add("Verified exact readback of " + pkg.dataObjects.size() + " data objects");
-    out.println("Verified exact readback of " + pkg.dataObjects.size() + " data objects");
   }
 
-  private static byte[] getData(GPSession gp, byte[] objectId) {
+  private static byte[] getData(PlainPivSession piv, byte[] objectId, int maximumLength) {
     ResponseAPDU response =
-        gp.transmit(
-            new CommandAPDU(
-                0x00,
-                0xCB,
-                0x3F,
-                0xFF,
-                AdminTlv.tlv(0x5C, objectId),
-                256));
-    ByteArrayOutputStream result = new ByteArrayOutputStream();
-    while (true) {
-      byte[] chunk = response.getData();
-      result.write(chunk, 0, chunk.length);
-      if (response.getSW1() != 0x61) {
-        expect(response, "Read back object " + hexId(objectId));
-        return result.toByteArray();
-      }
-      int le = response.getSW2() == 0 ? 256 : response.getSW2();
-      response = gp.transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, le));
-    }
+        piv.transmit(new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, AdminTlv.tlv(0x5C, objectId), 256));
+    return LogicalResponseCollector.collect(
+        piv, response, 0x00, maximumLength, "Read back object " + hexId(objectId));
   }
 
   private static void createKey(GPSession gp, ConformancePackage.KeyMaterial key) {
@@ -311,7 +380,7 @@ public final class ConformanceProvisioner {
                 AdminTlv.tlv(0x8F, new byte[] {key.role}),
                 AdminTlv.tlv(0x90, new byte[] {key.attributes})));
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, definition)),
+        gp.transmit(new CommandAPDU(0x80, 0xDB, 0xFF, 0xFF, definition)),
         "Create key " + key.label);
   }
 
@@ -337,24 +406,24 @@ public final class ConformanceProvisioner {
 
     sendChained(
         gp,
-        0x24,
-        key.algorithm & 0xFF,
+        0x25,
+        0x01,
         key.slot & 0xFF,
-        AdminTlv.tlv(0x30, AdminTlv.tlv(0x81, modulus)),
+        adminKeyUpdateData(key.algorithm, AdminTlv.tlv(0x30, AdminTlv.tlv(0x81, modulus))),
         "Import RSA modulus for " + key.label);
     sendChained(
         gp,
-        0x24,
-        key.algorithm & 0xFF,
+        0x25,
+        0x01,
         key.slot & 0xFF,
-        AdminTlv.tlv(0x30, AdminTlv.tlv(0x82, publicExponent)),
+        adminKeyUpdateData(key.algorithm, AdminTlv.tlv(0x30, AdminTlv.tlv(0x82, publicExponent))),
         "Import RSA public exponent for " + key.label);
     sendChained(
         gp,
-        0x24,
-        key.algorithm & 0xFF,
+        0x25,
+        0x01,
         key.slot & 0xFF,
-        AdminTlv.tlv(0x30, AdminTlv.tlv(0x83, privateExponent)),
+        adminKeyUpdateData(key.algorithm, AdminTlv.tlv(0x30, AdminTlv.tlv(0x83, privateExponent))),
         "Import RSA private exponent for " + key.label);
   }
 
@@ -370,24 +439,22 @@ public final class ConformanceProvisioner {
 
     sendChained(
         gp,
-        0x24,
-        key.algorithm & 0xFF,
+        0x25,
+        0x01,
         key.slot & 0xFF,
-        AdminTlv.tlv(0x30, AdminTlv.tlv(0x86, publicPoint)),
+        adminKeyUpdateData(key.algorithm, AdminTlv.tlv(0x30, AdminTlv.tlv(0x86, publicPoint))),
         "Import ECC public point for " + key.label);
     sendChained(
         gp,
-        0x24,
-        key.algorithm & 0xFF,
+        0x25,
+        0x01,
         key.slot & 0xFF,
-        AdminTlv.tlv(0x30, AdminTlv.tlv(0x87, privateScalar)),
+        adminKeyUpdateData(key.algorithm, AdminTlv.tlv(0x30, AdminTlv.tlv(0x87, privateScalar))),
         "Import ECC private scalar for " + key.label);
   }
 
   private static void createDataObject(GPSession gp, ConformancePackage.DataObject object) {
-    int capacity =
-        CertificationProfileValidator.requiredCapacity(
-            object.id, object.payload.length);
+    int capacity = CertificationProfileValidator.requiredCapacity(object.id, object.payload.length);
     byte[] definition =
         AdminTlv.tlv(
             0x64,
@@ -396,10 +463,9 @@ public final class ConformanceProvisioner {
                 AdminTlv.tlv(0x8C, new byte[] {object.modeContact}),
                 AdminTlv.tlv(0x8D, new byte[] {object.modeContactless}),
                 AdminTlv.tlv(0x91, new byte[] {ADMIN_KEY_REF}),
-                AdminTlv.tlv(
-                    0x92, new byte[] {(byte) (capacity >> 8), (byte) capacity})));
+                AdminTlv.tlv(0x92, new byte[] {(byte) (capacity >> 8), (byte) capacity})));
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, definition)),
+        gp.transmit(new CommandAPDU(0x80, 0xDB, 0xFF, 0xFF, definition)),
         "Create object " + object.label);
   }
 
@@ -412,31 +478,23 @@ public final class ConformanceProvisioner {
         payload = AdminTlv.tlv(0x7E, object.payload);
       }
     } else {
-      payload =
-          AdminTlv.concat(AdminTlv.tlv(0x5C, object.id), AdminTlv.tlv(0x53, object.payload));
+      payload = AdminTlv.concat(AdminTlv.tlv(0x5C, object.id), AdminTlv.tlv(0x53, object.payload));
     }
     sendChained(gp, 0xDB, 0x3F, 0xFF, payload, "PUT DATA " + object.label);
   }
 
   private static void sendChained(
       GPSession gp, int ins, int p1, int p2, byte[] payload, String context) {
-    int offset = 0;
-    while (offset < payload.length) {
-      int chunkLength = Math.min(MAX_CHUNK, payload.length - offset);
-      byte[] chunk = new byte[chunkLength];
-      System.arraycopy(payload, offset, chunk, 0, chunkLength);
-      offset += chunkLength;
-      int cla = offset < payload.length ? CLA_CHAINING : 0x00;
-      expect(gp.transmit(new CommandAPDU(cla, ins, p1, p2, chunk)), context);
-    }
+    int baseCla = ins == 0x25 ? 0x80 : 0x00;
+    ApduSupport.sendChained(gp::transmit, baseCla, ins, p1, p2, payload, MAX_CHUNK, context);
+  }
+
+  private static byte[] adminKeyUpdateData(byte algorithm, byte[] keyElement) {
+    return AdminTlv.concat(AdminTlv.tlv(0x80, new byte[] {algorithm}), keyElement);
   }
 
   private static ResponseAPDU expect(ResponseAPDU response, String context) {
-    if (response.getSW() != 0x9000) {
-      throw new IllegalStateException(
-          String.format("%s failed with SW 0x%04X", context, response.getSW()));
-    }
-    return response;
+    return ApduSupport.expectSuccess(response, context);
   }
 
   private static int modulusByteLength(byte algorithm) {
@@ -446,7 +504,8 @@ public final class ConformanceProvisioner {
     if (algorithm == IcamCardFolder.ALG_RSA_2048) {
       return 256;
     }
-    throw new IllegalArgumentException("Not an RSA algorithm: 0x" + Integer.toHexString(algorithm & 0xFF));
+    throw new IllegalArgumentException(
+        "Not an RSA algorithm: 0x" + Integer.toHexString(algorithm & 0xFF));
   }
 
   private static int coordByteLength(byte algorithm) {
@@ -456,7 +515,8 @@ public final class ConformanceProvisioner {
     if (algorithm == IcamCardFolder.ALG_ECC_P384) {
       return 48;
     }
-    throw new IllegalArgumentException("Not an ECC algorithm: 0x" + Integer.toHexString(algorithm & 0xFF));
+    throw new IllegalArgumentException(
+        "Not an ECC algorithm: 0x" + Integer.toHexString(algorithm & 0xFF));
   }
 
   private static byte[] encodeUncompressedPoint(ECPublicKey publicKey, int coordLength) {

@@ -196,23 +196,11 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
     byte[] last = Arrays.copyOfRange(request, 200, request.length);
     assertSw(
         0x9000,
-        transmit(
-            0x10,
-            0x87,
-            algorithm & 0xFF,
-            slot & 0xFF,
-            first),
+        transmit(0x10, 0x87, algorithm & 0xFF, slot & 0xFF, first),
         "First chained RSA signature fragment");
     byte[] response =
         collect(
-            transmit(
-                new CommandAPDU(
-                    0x00,
-                    0x87,
-                    algorithm & 0xFF,
-                    slot & 0xFF,
-                    last,
-                    256)),
+            transmit(new CommandAPDU(0x00, 0x87, algorithm & 0xFF, slot & 0xFF, last, 256)),
             "RSA raw private-key operation must succeed");
     byte[] signature = tlvValue(tlvValue(response, (byte) 0x7C), (byte) 0x82);
 
@@ -231,8 +219,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
         KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME);
     generator.initialize(new ECGenParameterSpec("secp256r1"));
     KeyPair mismatch = generator.generateKeyPair();
-    byte[] privateScalar =
-        fixed(((ECPrivateKey) mismatch.getPrivate()).getS(), P256_FIELD_BYTES);
+    byte[] privateScalar = fixed(((ECPrivateKey) mismatch.getPrivate()).getS(), P256_FIELD_BYTES);
 
     withMockedScp(
         () ->
@@ -402,7 +389,8 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
     } else if (fieldBytes == P384_FIELD_BYTES) {
       curveName = "secp384r1";
     } else {
-      throw new IllegalArgumentException("Unsupported EC point length: " + uncompressedPoint.length);
+      throw new IllegalArgumentException(
+          "Unsupported EC point length: " + uncompressedPoint.length);
     }
     AlgorithmParameters parameters =
         AlgorithmParameters.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME);

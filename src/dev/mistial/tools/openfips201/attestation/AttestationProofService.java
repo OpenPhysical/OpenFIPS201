@@ -7,13 +7,16 @@
 
 package dev.mistial.tools.openfips201.attestation;
 
+import static dev.mistial.tools.openfips201.common.ByteArrays.concat;
+
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.common.ApduSupport;
 import dev.mistial.tools.openfips201.common.CardSession;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
-import java.io.ByteArrayOutputStream;
+import dev.mistial.tools.openfips201.common.LogicalResponseCollector;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 
@@ -69,9 +72,7 @@ public final class AttestationProofService {
     if (pin == null || pin.length != 8) {
       throw new IllegalArgumentException("proof PIN must use the eight-byte PIV wire format");
     }
-    expect(
-        session.transmit(new CommandAPDU(0x84, 0x24, 0x01, 0x80, pin)),
-        "set proof PIN");
+    expect(session.transmit(new CommandAPDU(0x84, 0x24, 0x01, 0x80, pin)), "set proof PIN");
   }
 
   public Result collectAndDelete(
@@ -107,8 +108,8 @@ public final class AttestationProofService {
     return certificate;
   }
 
-  public byte[] collectPlainProof(
-      CardTransport transport, byte[] appletAid, byte slot, byte[] pin) throws Exception {
+  public byte[] collectPlainProof(CardTransport transport, byte[] appletAid, byte slot, byte[] pin)
+      throws Exception {
     byte[] certificate = collectPlain(transport, appletAid, slot, pin);
     parseCertificate(certificate);
     return certificate;
@@ -139,7 +140,7 @@ public final class AttestationProofService {
     }
     return AttestationSupport.tlv(
         0x66,
-        AttestationSupport.concat(
+        concat(
             AttestationSupport.tlv(0x8B, new byte[] {slot}),
             AttestationSupport.tlv(0x8C, new byte[] {contact}),
             AttestationSupport.tlv(0x8D, new byte[] {contactless}),
@@ -161,16 +162,18 @@ public final class AttestationProofService {
   static byte[] deleteProofKeyPayload(byte slot) {
     return AttestationSupport.tlv(
         0x67,
-        AttestationSupport.concat(
+        concat(
             AttestationSupport.tlv(0x8B, new byte[] {slot}),
             AttestationSupport.tlv(0x8E, new byte[] {AttestationSupport.ALG_ECC_P256})));
   }
 
   private static byte[] collectProtected(CardSession session, byte slot) {
-    return collect(
-        command -> session.transmit(command),
+    return LogicalResponseCollector.collect(
+        session,
         session.transmit(new CommandAPDU(0x84, 0xF9, slot & 0xFF, 0x00, 0)),
-        0x84);
+        0x84,
+        4096,
+        "attestation proof");
   }
 
   private static byte[] collectPlain(CardTarget target, byte[] appletAid, byte slot)
@@ -182,54 +185,46 @@ public final class AttestationProofService {
 
   private static byte[] collectPlain(CardTransport transport, byte[] appletAid, byte slot) {
     apdu4j.core.BIBO bibo = transport.bibo();
-    ResponseAPDU select = bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, appletAid, 256));
-    if (select.getSW() != 0x9000) {
-      throw new IllegalStateException(
-          "SELECT PIV failed SW=" + String.format("0x%04X", select.getSW()));
-    }
-    return collect(
-        command -> bibo.transmit(command),
+    ApduSupport.selectApplication(bibo, appletAid, "SELECT PIV");
+    CardSession session = borrowed(bibo);
+    return LogicalResponseCollector.collect(
+        session,
         bibo.transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0)),
-        0x00);
+        0x00,
+        4096,
+        "attestation proof");
   }
 
   private static byte[] collectPlain(
       CardTransport transport, byte[] appletAid, byte slot, byte[] pin) {
     apdu4j.core.BIBO bibo = transport.bibo();
-    ResponseAPDU select = bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, appletAid, 256));
-    if (select.getSW() != 0x9000) {
-      throw new IllegalStateException(
-          "SELECT PIV failed SW=" + String.format("0x%04X", select.getSW()));
-    }
+    ApduSupport.selectApplication(bibo, appletAid, "SELECT PIV");
     ResponseAPDU verified = bibo.transmit(new CommandAPDU(0x00, 0x20, 0x00, 0x80, pin));
     if (verified.getSW() != 0x9000) {
       throw new IllegalStateException(
           "VERIFY proof PIN failed SW=" + String.format("0x%04X", verified.getSW()));
     }
-    return collect(
-        command -> bibo.transmit(command),
+    CardSession session = borrowed(bibo);
+    return LogicalResponseCollector.collect(
+        session,
         bibo.transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0)),
-        0x00);
+        0x00,
+        4096,
+        "attestation proof");
   }
 
-  private static byte[] collect(Transmitter transmitter, ResponseAPDU initial, int cla) {
-    ByteArrayOutputStream output = new ByteArrayOutputStream();
-    ResponseAPDU current = initial;
-    while ((current.getSW() & 0xFF00) == 0x6100) {
-      output.write(current.getData(), 0, current.getData().length);
-      int le = current.getSW() & 0xFF;
-      current = transmitter.transmit(new CommandAPDU(cla, 0xC0, 0x00, 0x00, le == 0 ? 256 : le));
-    }
-    if (current.getSW() != 0x9000) {
-      throw new IllegalStateException(
-          "attestation proof failed SW=" + String.format("0x%04X", current.getSW()));
-    }
-    output.write(current.getData(), 0, current.getData().length);
-    return output.toByteArray();
-  }
+  private static CardSession borrowed(final apdu4j.core.BIBO bibo) {
+    return new CardSession() {
+      @Override
+      public ResponseAPDU transmit(CommandAPDU command) {
+        return bibo.transmit(command);
+      }
 
-  private interface Transmitter {
-    ResponseAPDU transmit(CommandAPDU command);
+      @Override
+      public void close() {
+        // The enclosing CardTransport owns this connection.
+      }
+    };
   }
 
   private static ResponseAPDU expect(ResponseAPDU response, String label) {

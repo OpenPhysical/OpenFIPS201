@@ -13,9 +13,9 @@ import java.util.concurrent.TimeUnit;
 import javax.crypto.Cipher;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.Assumptions;
 
 @Timeout(value = 10, unit = TimeUnit.SECONDS)
 class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestSupport {
@@ -101,14 +101,7 @@ class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestS
         "First chained RSA key-transport fragment");
     byte[] response =
         collect(
-            transmit(
-                new CommandAPDU(
-                    0x00,
-                    0x87,
-                    algorithm & 0xFF,
-                    slot & 0xFF,
-                    last,
-                    256)),
+            transmit(new CommandAPDU(0x00, 0x87, algorithm & 0xFF, slot & 0xFF, last, 256)),
             "RSA key transport");
     byte[] plaintext = tlvValue(tlvValue(response, (byte) 0x7C), (byte) 0x82);
     assertTrue(

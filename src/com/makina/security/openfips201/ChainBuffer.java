@@ -459,7 +459,7 @@ final class ChainBuffer {
     // Validate that we are chaining for the correct command
     if (!firstFrame
         && (context[CONTEXT_APDU_CLASS]
-            != (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK)
+                != (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK)
             || context[CONTEXT_APDU_P1P2] != Util.getShort(buffer, ISO7816.OFFSET_P1))) {
 
       // Abort the data object write

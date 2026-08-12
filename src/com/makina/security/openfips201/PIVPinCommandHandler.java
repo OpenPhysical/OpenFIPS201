@@ -10,7 +10,6 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.PIN;
-import javacard.framework.Util;
 
 /** Handles PIV PIN, PUK, pairing-code, and CVM policy commands. */
 final class PIVPinCommandHandler {
@@ -96,8 +95,7 @@ final class PIVPinCommandHandler {
     // reference shall remain unchanged.
     byte intermediateRetries = config.getIntermediatePINRetries();
     short usableRetries =
-        usableRetries(
-            pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
+        usableRetries(pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
     if (usableRetries <= (short) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
 
     //
@@ -107,8 +105,7 @@ final class PIVPinCommandHandler {
     // Verify the PIN
     if (!pin.check(buffer, offset, (byte) length)) {
       short remaining =
-          usableRetries(
-              pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
+          usableRetries(pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
 
       // Return the number of retries remaining
       ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
@@ -155,9 +152,7 @@ final class PIVPinCommandHandler {
     // limit to every VERIFY form, including an empty status request.
     short remaining =
         usableRetries(
-            pin.getTriesRemaining(),
-            config.getIntermediatePINRetries(),
-            cspPIV.getIsContactless());
+            pin.getTriesRemaining(), config.getIntermediatePINRetries(), cspPIV.getIsContactless());
     if (remaining <= (short) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
 
     // If we are not validated
@@ -358,7 +353,8 @@ final class PIVPinCommandHandler {
         // Check whether we are allowed to operate over contactless if applicable
         if (cspPIV.getIsContactless()
             && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !owner.isVciSatisfied())) {
+            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)
+                || !owner.isVciSatisfied())) {
           // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
           // key references 00/80 only over VCI.
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
@@ -377,7 +373,8 @@ final class PIVPinCommandHandler {
         // Check whether we are allowed to operate over contactless if applicable
         if (cspPIV.getIsContactless()
             && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !owner.isVciSatisfied())) {
+            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)
+                || !owner.isVciSatisfied())) {
           // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
           // key references 00/80 only over VCI.
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
@@ -891,5 +888,4 @@ final class PIVPinCommandHandler {
     // We got this far, passed!
     return true;
   }
-
 }

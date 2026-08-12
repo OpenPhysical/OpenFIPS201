@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -25,9 +24,6 @@ import java.security.spec.ECPoint;
 import java.util.Collections;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
-import javacard.framework.APDU;
-import javax.crypto.Cipher;
-import javax.crypto.spec.SecretKeySpec;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.bouncycastle.asn1.ASN1EncodableVector;
@@ -47,10 +43,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 @Timeout(value = 35, unit = TimeUnit.SECONDS)
 class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
@@ -173,7 +166,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     byte[] managementKey = keyMaterialAes128((byte) 0x57);
 
     provisionManagementKeyAndF9DefinitionOverScp(managementKey);
-    authenticateManagementKey(managementKey);
+    authenticateCardManagementKey(ALG_AES_128, managementKey);
 
     ResponseAPDU response =
         transmit(
@@ -274,8 +267,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, updated.subjectDer);
 
     ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
-    assertSw(
-        0x9000, cleared, "F9 metadata re-import should recommit and clear existing data");
+    assertSw(0x9000, cleared, "F9 metadata re-import should recommit and clear existing data");
     assertArrayEquals(hex("5300"), cleared.getData());
   }
 
@@ -388,8 +380,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   @Test
   void attestationRequiresTargetSlotPinWhenTargetAclRequiresPin() throws Exception {
     Assumptions.assumeFalse(
-        Boolean.getBoolean("fips.mode"),
-        "FIPS fixes the 9A contactless mode to VCI and PIN");
+        Boolean.getBoolean("fips.mode"), "FIPS fixes the 9A contactless mode to VCI and PIN");
     Authority authority = Authority.create(new X500Name("CN=ACL Required,O=Example"));
     setAuthorityOverScp(authority);
     setLocalPinOverScp(LOCAL_PIN);
@@ -410,24 +401,23 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   @Test
   void attestationHonorsTargetContactlessAccessMode() throws Exception {
     Assumptions.assumeFalse(
-        Boolean.getBoolean("fips.mode"),
-        "FIPS fixes the 9A contactless mode to VCI and PIN");
+        Boolean.getBoolean("fips.mode"), "FIPS fixes the 9A contactless mode to VCI and PIN");
     Authority authority = Authority.create(new X500Name("CN=Contactless ACL,O=Example"));
     setAuthorityOverScp(authority);
     createAsymmetricKeyOverScp(
         SLOT_AUTHENTICATION, ALG_ECC_P256, ACCESS_MODE_ALWAYS, ACCESS_MODE_NEVER);
     generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(
-          0x9000, selectApplet(), "SELECT over contactless should succeed before target ACL check");
-      ResponseAPDU blocked =
-          transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0));
-      assertSw(0x6982, blocked, "INS F9 must honor the target contactless access mode");
-    }
+    withContactless(
+        () -> {
+          assertSw(
+              0x9000,
+              selectApplet(),
+              "SELECT over contactless should succeed before target ACL check");
+          ResponseAPDU blocked =
+              transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0));
+          assertSw(0x6982, blocked, "INS F9 must honor the target contactless access mode");
+        });
   }
 
   @Test
@@ -834,19 +824,6 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         "Verify local PIN before attesting a Table 5 protected key");
   }
 
-  private byte[] collectResponse(ResponseAPDU response, String context) {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    ResponseAPDU current = response;
-    while ((current.getSW() & 0xFF00) == 0x6100) {
-      out.write(current.getData(), 0, current.getData().length);
-      int le = current.getSW2() == 0 ? 256 : current.getSW2();
-      current = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, le));
-    }
-    assertSw(0x9000, current, context);
-    out.write(current.getData(), 0, current.getData().length);
-    return out.toByteArray();
-  }
-
   private static void assertValidAttestation(X509Certificate cert, Authority authority)
       throws Exception {
     assertSignedAttestation(cert, authority);
@@ -1101,10 +1078,19 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                     concat(
                         tlv((byte) 0x8B, objectId),
                         new byte[] {
-                          (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
-                          (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
-                          (byte) 0x91, (byte) 0x01, (byte) 0x9B,
-                          (byte) 0x92, (byte) 0x02, (byte) 0x10, (byte) 0x00
+                          (byte) 0x8C,
+                          (byte) 0x01,
+                          (byte) 0x7F,
+                          (byte) 0x8D,
+                          (byte) 0x01,
+                          (byte) 0x7F,
+                          (byte) 0x91,
+                          (byte) 0x01,
+                          (byte) 0x9B,
+                          (byte) 0x92,
+                          (byte) 0x02,
+                          (byte) 0x10,
+                          (byte) 0x00
                         }));
             assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, create), "Create data object");
             assertSw(
@@ -1190,52 +1176,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         });
   }
 
-  private void authenticateManagementKey(byte[] managementKey) {
-    assertSw(0x9000, selectApplet(), "SELECT before plaintext management-key authentication");
-    ResponseAPDU challengeResponse =
-        transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
-    assertSw(0x9000, challengeResponse, "Management key challenge request");
-
-    byte[] challenge = extractChallenge(challengeResponse.getData());
-    byte[] encryptedChallenge = encryptAes128(managementKey, challenge);
-    byte[] authResponse =
-        concat(
-            new byte[] {
-              (byte) 0x7C,
-              (byte) (encryptedChallenge.length + 2),
-              (byte) 0x82,
-              (byte) encryptedChallenge.length
-            },
-            encryptedChallenge);
-    assertSw(
-        0x9000,
-        transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, authResponse),
-        "Plaintext management-key authentication");
-  }
-
   private static byte[] normalTagList(byte id) {
     return new byte[] {(byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, id};
-  }
-
-  private static byte[] extractChallenge(byte[] responseData) {
-    assertEquals(0x14, responseData.length, "Unexpected AES challenge response length");
-    assertEquals(
-        (byte) 0x7C, responseData[0], "Challenge must use dynamic authentication template");
-    assertEquals((byte) 0x81, responseData[2], "Challenge response must use tag 81");
-    assertEquals((byte) 0x10, responseData[3], "AES challenge must be 16 bytes");
-    byte[] challenge = new byte[0x10];
-    System.arraycopy(responseData, 4, challenge, 0, challenge.length);
-    return challenge;
-  }
-
-  private static byte[] encryptAes128(byte[] key, byte[] challenge) {
-    try {
-      Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
-      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"));
-      return cipher.doFinal(challenge);
-    } catch (Exception e) {
-      throw new IllegalStateException("Failed to encrypt management-key challenge", e);
-    }
   }
 
   private static KeyPair generateEcP256() throws Exception {

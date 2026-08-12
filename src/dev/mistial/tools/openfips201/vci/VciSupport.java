@@ -25,18 +25,16 @@
 
 package dev.mistial.tools.openfips201.vci;
 
+import dev.mistial.tools.openfips201.common.BerTlvReader;
+import dev.mistial.tools.openfips201.common.BerTlvWriter;
 import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
 import java.security.PublicKey;
-import java.security.Signature;
 import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-import org.bouncycastle.asn1.ASN1BitString;
 import org.bouncycastle.asn1.ASN1EncodableVector;
-import org.bouncycastle.asn1.ASN1Primitive;
-import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.DERBitString;
 import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.sec.SECNamedCurves;
@@ -138,14 +136,14 @@ final class VciSupport {
     byte[] curveOid =
         cardPublicPoint.length == 1 + COORD_LENGTH_CS7 * 2 ? CURVE_OID_P384 : CURVE_OID_P256;
     ByteArrayOutputStream body = new ByteArrayOutputStream();
-    writeTlv(body, TAG_CVC_PROFILE, new byte[] {CVC_PROFILE_IDENTIFIER});
-    writeTlv(body, TAG_CVC_ISSUER_ID, issuerId);
-    writeTlv(body, TAG_CVC_SUBJECT_ID, subjectId);
+    BerTlvWriter.append(body, TAG_CVC_PROFILE, new byte[] {CVC_PROFILE_IDENTIFIER});
+    BerTlvWriter.append(body, TAG_CVC_ISSUER_ID, issuerId);
+    BerTlvWriter.append(body, TAG_CVC_SUBJECT_ID, subjectId);
     ByteArrayOutputStream keyTemplate = new ByteArrayOutputStream();
-    writeTlv(keyTemplate, TAG_CVC_PUBLIC_KEY_OID, curveOid);
-    writeTlv(keyTemplate, TAG_CVC_PUBLIC_POINT, cardPublicPoint);
-    writeTlv(body, TAG_CVC_PUBLIC_KEY, keyTemplate.toByteArray());
-    writeTlv(body, TAG_CVC_ROLE, new byte[] {CVC_ROLE_KEY_ESTABLISHMENT});
+    BerTlvWriter.append(keyTemplate, TAG_CVC_PUBLIC_KEY_OID, curveOid);
+    BerTlvWriter.append(keyTemplate, TAG_CVC_PUBLIC_POINT, cardPublicPoint);
+    BerTlvWriter.append(body, TAG_CVC_PUBLIC_KEY, keyTemplate.toByteArray());
+    BerTlvWriter.append(body, TAG_CVC_ROLE, new byte[] {CVC_ROLE_KEY_ESTABLISHMENT});
     return body.toByteArray();
   }
 
@@ -186,65 +184,26 @@ final class VciSupport {
    * CS7 production encodings).
    */
   static boolean verifyCvc(byte[] cvc, PublicKey signerPublicKey) {
-    try {
-      int[] outer = locateTlv(cvc, 0, TAG_CVC);
-      if (outer == null) {
-        return false;
-      }
-      int valueOffset = outer[1];
-      int valueLength = outer[2];
-
-      int[] signature = locateTlv(cvc, valueOffset, TAG_CVC_SIGNATURE);
-      if (signature == null) {
-        return false;
-      }
-      int signatureTagOffset = signature[0];
-      if (signature[1] + signature[2] != valueOffset + valueLength) {
-        return false;
-      }
-
-      int signedLength = signatureTagOffset - valueOffset;
-      byte[] signatureField = Arrays.copyOfRange(cvc, signature[1], signature[1] + signature[2]);
-      byte[] rawSig = unwrapCvcSignature(signatureField);
-      // Try both suite hashes; production CS2=SHA256, CS7=SHA384.
-      for (String jca : new String[] {"SHA256withECDSA", "SHA384withECDSA"}) {
-        try {
-          Signature verifier = Signature.getInstance(jca);
-          verifier.initVerify(signerPublicKey);
-          verifier.update(cvc, valueOffset, signedLength);
-          if (verifier.verify(rawSig)) {
-            return true;
-          }
-        } catch (Exception ignored) {
-          // try next
-        }
-      }
-      return false;
-    } catch (Exception e) {
+    int[] outer = locateTlv(cvc, 0, TAG_CVC);
+    if (outer == null) {
       return false;
     }
-  }
+    int valueOffset = outer[1];
+    int valueLength = outer[2];
 
-  /**
-   * Returns the raw ECDSA-Sig-Value (DER {@code SEQUENCE&#123;r,s&#125;}) from a {@code 5F37}
-   * signature field that is either that raw value or a DER-wrapped X.509 SignatureValue ({@code
-   * SEQUENCE&#123;AlgorithmIdentifier, BIT STRING&#123;ECDSA-Sig-Value&#125;&#125;}).
-   */
-  private static byte[] unwrapCvcSignature(byte[] signatureField) {
-    try {
-      ASN1Primitive parsed = ASN1Primitive.fromByteArray(signatureField);
-      if (parsed instanceof ASN1Sequence) {
-        ASN1Sequence sequence = (ASN1Sequence) parsed;
-        if (sequence.size() == 2
-            && sequence.getObjectAt(0) instanceof ASN1Sequence
-            && sequence.getObjectAt(1) instanceof ASN1BitString) {
-          return ((ASN1BitString) sequence.getObjectAt(1)).getOctets();
-        }
-      }
-    } catch (Exception e) {
-      // Not DER-wrapped; treat the field as a raw ECDSA-Sig-Value.
+    int[] signature = locateTlv(cvc, valueOffset, TAG_CVC_SIGNATURE);
+    if (signature == null) {
+      return false;
     }
-    return signatureField;
+    int signatureTagOffset = signature[0];
+    if (signature[1] + signature[2] != valueOffset + valueLength) {
+      return false;
+    }
+
+    byte[] signatureField = Arrays.copyOfRange(cvc, signature[1], signature[1] + signature[2]);
+    VciCvcSupport.SignatureParts parts = VciCvcSupport.parseSignatureField(signatureField);
+    byte[] tbs = Arrays.copyOfRange(cvc, valueOffset, signatureTagOffset);
+    return VciCvcSupport.verifySignature(signerPublicKey, parts.algorithmOid, parts.signature, tbs);
   }
 
   /** Extracts the uncompressed card SM public point ({@code 04 || X || Y}) from a CVC. */
@@ -746,28 +705,7 @@ final class VciSupport {
   // ---------------------------------------------------------------------------------------------
 
   static byte[] tlv(int tag, byte[] value) {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    writeTlv(out, tag, value);
-    return out.toByteArray();
-  }
-
-  private static void writeTlv(ByteArrayOutputStream out, int tag, byte[] value) {
-    if (tag > 0xFF) {
-      out.write((tag >> 8) & 0xFF);
-    }
-    out.write(tag & 0xFF);
-    int length = value.length;
-    if (length < 0x80) {
-      out.write(length);
-    } else if (length <= 0xFF) {
-      out.write(0x81);
-      out.write(length);
-    } else {
-      out.write(0x82);
-      out.write((length >> 8) & 0xFF);
-      out.write(length & 0xFF);
-    }
-    out.write(value, 0, value.length);
+    return BerTlvWriter.encode(tag, value);
   }
 
   /**

@@ -12,12 +12,11 @@ import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.CardTransport;
-import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
 public final class CardDiversificationDataService {
-  private static final byte[] ISD_AID = HexUtil.parse("A000000151000000");
   private static final int KDD_LENGTH = 10;
   private static final int INITIALIZE_UPDATE_MIN_LENGTH = 28;
 
@@ -50,7 +49,8 @@ public final class CardDiversificationDataService {
       throw new IllegalArgumentException("host challenge must be 8 bytes");
     }
 
-    ResponseAPDU select = bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, ISD_AID, 0));
+    ResponseAPDU select =
+        bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, GlobalPlatformSession.ISD_AID, 0));
     requireSuccess(select, "SELECT ISD");
 
     ResponseAPDU initializeUpdate =

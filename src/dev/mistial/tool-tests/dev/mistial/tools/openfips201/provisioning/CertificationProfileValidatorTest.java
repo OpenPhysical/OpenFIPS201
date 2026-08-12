@@ -241,7 +241,8 @@ class CertificationProfileValidatorTest {
 
   @Test
   void rejectsObjectAndKeyAccessModesOutsidePart1Tables2And5() {
-    ArrayList<ConformancePackage.DataObject> objects = new ArrayList<ConformancePackage.DataObject>();
+    ArrayList<ConformancePackage.DataObject> objects =
+        new ArrayList<ConformancePackage.DataObject>();
     objects.add(object(hex("5FC103"), hex("BC0101FE00")));
     ConformancePackage wrongBiometric = packageWith(objects);
     assertThrows(
@@ -277,8 +278,7 @@ class CertificationProfileValidatorTest {
             Paths.get("."),
             StandardCardProfile.PIN,
             StandardCardProfile.PUK,
-            StandardCardProfile.ADMIN_KEY_ALG,
-            StandardCardProfile.ADMIN_KEY,
+            null,
             Collections.<ConformancePackage.DataObject>emptyList(),
             Collections.singletonList(badCardAuth));
     assertThrows(
@@ -312,8 +312,7 @@ class CertificationProfileValidatorTest {
         Paths.get("."),
         StandardCardProfile.PIN,
         StandardCardProfile.PUK,
-        StandardCardProfile.ADMIN_KEY_ALG,
-        StandardCardProfile.ADMIN_KEY,
+        null,
         objects,
         Collections.<ConformancePackage.KeyMaterial>emptyList());
   }

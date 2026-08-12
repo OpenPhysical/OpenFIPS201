@@ -25,34 +25,36 @@
 
 package dev.mistial.tools.openfips201.vci;
 
+import static dev.mistial.tools.openfips201.common.ByteArrays.concat;
+
 import apdu4j.core.BIBO;
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
+import dev.mistial.tools.openfips201.common.ApduSupport;
+import dev.mistial.tools.openfips201.common.CardTransport;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.ScpConfig;
+import dev.mistial.tools.openfips201.crypto.CryptoProviders;
+import dev.mistial.tools.openfips201.crypto.PemFiles;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
-import java.io.Reader;
-import java.io.Writer;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
-import java.security.Security;
 import java.security.Signature;
 import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
-import java.util.EnumSet;
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.KeyUsage;
-import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -63,15 +65,9 @@ import org.bouncycastle.crypto.params.ECPrivateKeyParameters;
 import org.bouncycastle.crypto.params.ECPublicKeyParameters;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.math.ec.ECPoint;
-import org.bouncycastle.openssl.PEMKeyPair;
-import org.bouncycastle.openssl.PEMParser;
-import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
-import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.bouncycastle.util.encoders.Hex;
-import pro.javacard.capfile.AID;
-import pro.javacard.gp.GPSecureChannelVersion;
 import pro.javacard.gp.GPSession;
 import pro.javacard.gp.keys.PlaintextKeys;
 
@@ -84,7 +80,6 @@ import pro.javacard.gp.keys.PlaintextKeys;
  */
 final class VciProvisioning {
 
-  private static final byte[] PIV_AID = Hex.decode("A000000308000010000100");
   private static final byte[] PAIRING_OBJECT_ID = {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
   private static final byte[][] INSPECTION_OBJECT_SWEEP = {
     Hex.decode("5FC102"),
@@ -137,9 +132,7 @@ final class VciProvisioning {
   // ---------------------------------------------------------------------------------------------
 
   static void ensureProvider() {
-    if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-      Security.addProvider(new BouncyCastleProvider());
-    }
+    CryptoProviders.ensureBouncyCastle();
   }
 
   static CaMaterial makeCa(String outPrefix, String subjectDn) throws Exception {
@@ -186,8 +179,8 @@ final class VciProvisioning {
 
   static CaMaterial loadCa(String certPath, String keyPath) throws Exception {
     ensureProvider();
-    X509Certificate certificate = readCertificate(Paths.get(certPath));
-    PrivateKey privateKey = readPrivateKey(Paths.get(keyPath), certificate);
+    X509Certificate certificate = PemFiles.readCertificate(Paths.get(certPath));
+    PrivateKey privateKey = PemFiles.readPrivateKey(Paths.get(keyPath), null, certificate);
     return new CaMaterial(privateKey, certificate);
   }
 
@@ -267,36 +260,33 @@ final class VciProvisioning {
         scp03KeyHex == null
             ? PlaintextKeys.DEFAULT_KEY()
             : Hex.decode(scp03KeyHex.replace(" ", ""));
-    GPSession gp = GPSession.connect(bibo, new AID(PIV_AID));
-    PlaintextKeys keys = PlaintextKeys.fromMasterKey(scpKey);
-    keys.setVersion(0);
-    gp.openSecureChannel(
-        keys,
-        new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
-        null,
-        EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
+    try (CardTransport transport = CardTransport.borrow(bibo);
+        GlobalPlatformSession administrative =
+            transport.openGlobalPlatformSession(
+                GlobalPlatformSession.PIV_AID,
+                ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 0, scpKey))) {
+      GPSession gp = administrative.gp();
 
-    // STEP 0 - Set the deterministic standard-card PIN and PUK (administrative CHANGE REFERENCE
-    // DATA
-    // over SCP). The applet boots with a random PIN/PUK, so without this the emulator card has an
-    // unknown PIN; using the shared profile keeps it identical to the JUnit standard test card.
-    expect(
-        gp.transmit(
-            new CommandAPDU(
-                0x00,
-                0x24,
-                0xFF,
-                StandardCardProfile.LOCAL_PIN_REF & 0xFF,
-                StandardCardProfile.PIN)),
-        "Set standard local PIN");
-    expect(
-        gp.transmit(
-            new CommandAPDU(
-                0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
-        "Set standard PUK");
+      // These issuer mutations require SCP. This does not replace the distinct PIV 9B
+      // GENERAL AUTHENTICATE path, which authorizes administration without a secure channel.
+      expect(
+          gp.transmit(
+              new CommandAPDU(
+                  0x00,
+                  0x24,
+                  0xFF,
+                  StandardCardProfile.LOCAL_PIN_REF & 0xFF,
+                  StandardCardProfile.PIN)),
+          "Set standard local PIN");
+      expect(
+          gp.transmit(
+              new CommandAPDU(
+                  0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
+          "Set standard PUK");
 
-    provisionSmCredential(gp, ca, suite, minimumCvcLength);
-    provisionDataObjects(gp, ca, pairingCode, suite);
+      provisionSmCredential(gp, ca, suite, minimumCvcLength);
+      provisionDataObjects(gp, ca, pairingCode, suite);
+    }
   }
 
   /** Adds only the on-card SM key and CVC to an already provisioned Part 1 data profile. */
@@ -311,21 +301,20 @@ final class VciProvisioning {
         scp03KeyHex == null
             ? PlaintextKeys.DEFAULT_KEY()
             : Hex.decode(scp03KeyHex.replace(" ", ""));
-    GPSession gp = GPSession.connect(bibo, new AID(PIV_AID));
-    PlaintextKeys keys = PlaintextKeys.fromMasterKey(scpKey);
-    keys.setVersion(0);
-    gp.openSecureChannel(
-        keys,
-        new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
-        null,
-        EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
-    provisionSmCredential(gp, ca, suite, 0);
-    expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
-        "Set VCI mode to pairing-code");
-    expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A0038301FF"))),
-        "Permit PIN use over contactless VCI");
+    try (CardTransport transport = CardTransport.borrow(bibo);
+        GlobalPlatformSession administrative =
+            transport.openGlobalPlatformSession(
+                GlobalPlatformSession.PIV_AID,
+                ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 0, scpKey))) {
+      GPSession gp = administrative.gp();
+      provisionSmCredential(gp, ca, suite, 0);
+      expect(
+          gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
+          "Set VCI mode to pairing-code");
+      expect(
+          gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A0038301FF"))),
+          "Permit PIN use over contactless VCI");
+    }
   }
 
   private static void provisionSmCredential(
@@ -479,11 +468,7 @@ final class VciProvisioning {
     expect(
         gp.transmit(
             new CommandAPDU(
-                0x00,
-                0xDB,
-                0x3F,
-                0xFF,
-                Hex.decode("7E124F0BA0000003080000100001005F2F024800"))),
+                0x00, 0xDB, 0x3F, 0xFF, Hex.decode("7E124F0BA0000003080000100001005F2F024800"))),
         "Write pairing-required Discovery policy");
 
     System.out.println(
@@ -636,7 +621,10 @@ final class VciProvisioning {
     X509Certificate caCertificate = readCertificate(Paths.get(caCertPath));
 
     ResponseAPDU select =
-        transceive(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256), "SELECT PIV");
+        transceive(
+            bibo,
+            new CommandAPDU(0x00, 0xA4, 0x04, 0x00, GlobalPlatformSession.PIV_AID, 256),
+            "SELECT PIV");
     byte suite = detectAdvertisedSuite(select.getData());
     if (suite == 0) {
       System.out.println("FAIL: APT does not advertise CS2 or CS7 (SM key or CVC missing)");
@@ -732,7 +720,10 @@ final class VciProvisioning {
 
   static int submitOpacityWithHostPublicPoint(BIBO bibo, byte suite, byte[] hostPublicPoint)
       throws Exception {
-    transceive(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256), "SELECT PIV");
+    transceive(
+        bibo,
+        new CommandAPDU(0x00, 0xA4, 0x04, 0x00, GlobalPlatformSession.PIV_AID, 256),
+        "SELECT PIV");
     byte[] witness = concat(new byte[] {0x00}, VciSupport.buildWitness(hostPublicPoint));
     byte[] template =
         VciSupport.tlv(
@@ -881,22 +872,11 @@ final class VciProvisioning {
 
   private static void sendChained(
       GPSession gp, int ins, int p1, int p2, byte[] payload, String context) {
-    int offset = 0;
-    while (offset < payload.length) {
-      int chunkLength = Math.min(MAX_CHUNK, payload.length - offset);
-      byte[] chunk = Arrays.copyOfRange(payload, offset, offset + chunkLength);
-      offset += chunkLength;
-      int cla = offset < payload.length ? CLA_CHAINING : 0x00;
-      expect(gp.transmit(new CommandAPDU(cla, ins, p1, p2, chunk)), context);
-    }
+    ApduSupport.sendChained(gp::transmit, 0x00, ins, p1, p2, payload, MAX_CHUNK, context);
   }
 
   private static ResponseAPDU expect(ResponseAPDU response, String context) {
-    if (response.getSW() != 0x9000) {
-      throw new IllegalStateException(
-          String.format("%s failed with SW 0x%04X", context, response.getSW()));
-    }
-    return response;
+    return ApduSupport.expectSuccess(response, context);
   }
 
   private static ResponseAPDU transceive(BIBO bibo, CommandAPDU command, String context) {
@@ -945,74 +925,15 @@ final class VciProvisioning {
     return out;
   }
 
-  private static byte[] concat(byte[]... arrays) {
-    int total = 0;
-    for (byte[] array : arrays) {
-      total += array.length;
-    }
-    byte[] out = new byte[total];
-    int offset = 0;
-    for (byte[] array : arrays) {
-      System.arraycopy(array, 0, out, offset, array.length);
-      offset += array.length;
-    }
-    return out;
-  }
-
   private static void writePem(Path path, Object object) throws Exception {
-    try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.US_ASCII);
-        JcaPEMWriter pemWriter = new JcaPEMWriter(writer)) {
-      pemWriter.writeObject(object);
-    }
+    PemFiles.writeObject(path, object);
   }
 
   static X509Certificate readCertificate(Path path) throws Exception {
-    ensureProvider();
-    try (Reader reader = Files.newBufferedReader(path, StandardCharsets.US_ASCII);
-        PEMParser parser = new PEMParser(reader)) {
-      Object object = parser.readObject();
-      if (!(object instanceof X509CertificateHolder)) {
-        throw new IllegalArgumentException("Expected an X.509 certificate PEM in " + path);
-      }
-      return new JcaX509CertificateConverter()
-          .setProvider(BouncyCastleProvider.PROVIDER_NAME)
-          .getCertificate((X509CertificateHolder) object);
-    }
+    return PemFiles.readCertificate(path);
   }
 
   static PrivateKey readPrivateKey(Path path) throws Exception {
-    return readPrivateKey(path, null);
-  }
-
-  private static PrivateKey readPrivateKey(Path path, X509Certificate certificate)
-      throws Exception {
-    ensureProvider();
-    try (Reader reader = Files.newBufferedReader(path, StandardCharsets.US_ASCII);
-        PEMParser parser = new PEMParser(reader)) {
-      Object object = parser.readObject();
-      JcaPEMKeyConverter converter =
-          new JcaPEMKeyConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME);
-      if (object instanceof PEMKeyPair) {
-        PEMKeyPair pair = (PEMKeyPair) object;
-        if (pair.getPublicKeyInfo() == null) {
-          return converter.getPrivateKey(withCertificateParameters(pair.getPrivateKeyInfo(), certificate));
-        }
-        return converter.getKeyPair(pair).getPrivate();
-      }
-      if (object instanceof PrivateKeyInfo) {
-        return converter.getPrivateKey(withCertificateParameters((PrivateKeyInfo) object, certificate));
-      }
-      throw new IllegalArgumentException("Unsupported private key PEM object in " + path);
-    }
-  }
-
-  private static PrivateKeyInfo withCertificateParameters(
-      PrivateKeyInfo privateKey, X509Certificate certificate) throws Exception {
-    if (privateKey.getPrivateKeyAlgorithm().getParameters() != null || certificate == null) {
-      return privateKey;
-    }
-    SubjectPublicKeyInfo publicKey =
-        SubjectPublicKeyInfo.getInstance(certificate.getPublicKey().getEncoded());
-    return new PrivateKeyInfo(publicKey.getAlgorithm(), privateKey.parsePrivateKey());
+    return PemFiles.readPrivateKey(path, null);
   }
 }

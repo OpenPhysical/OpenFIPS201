@@ -125,7 +125,9 @@ public final class StandardCardProfile {
       (byte) 0x01,
       (byte) 0x90,
       (byte) 0x01,
-      (byte) 0x11
+      // 9B must remain importable (0x10), and 0x04 permits the external-authentication flow that
+      // authorizes administration when no SCP is active. SCP remains an independent valid path.
+      (byte) 0x14
     };
   }
 }

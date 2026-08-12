@@ -6,7 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import apdu4j.core.BIBO;
 import com.makina.security.openfips201.OpenFIPS201;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
+import java.io.ByteArrayOutputStream;
+import java.util.function.Supplier;
 import javacard.framework.AID;
+import javacard.framework.APDU;
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
@@ -118,7 +123,8 @@ abstract class OpenFIPS201TestSupport {
                   0x25,
                   0x01,
                   StandardCardProfile.ADMIN_KEY_REF & 0xFF,
-                  concat(new byte[] {(byte) 0x80, (byte) 0x01, algorithm}, keyUpdateData(keyBytes))),
+                  concat(
+                      new byte[] {(byte) 0x80, (byte) 0x01, algorithm}, keyUpdateData(keyBytes))),
               "SCP initial key import for 9B should succeed");
         });
   }
@@ -135,6 +141,65 @@ abstract class OpenFIPS201TestSupport {
       key[i] = (byte) (seed + i);
     }
     return key;
+  }
+
+  /**
+   * Performs PIV external authentication with the 9B card-management key over plain APDUs.
+   *
+   * <p>This helper exercises the non-SCP authorization path. Administrative commands may instead be
+   * authorized by an active GlobalPlatform secure channel; both paths are supported and tested.
+   */
+  protected void authenticateCardManagementKey(byte algorithm, byte[] keyBytes) {
+    assertSw(
+        0x9000,
+        authenticateCardManagementKeyResponse(algorithm, keyBytes),
+        "GENERAL AUTHENTICATE should accept the current 9B key");
+  }
+
+  /** Same plaintext 9B flow, returning the verification response for negative tests. */
+  protected ResponseAPDU authenticateCardManagementKeyResponse(byte algorithm, byte[] keyBytes) {
+    assertSw(0x9000, selectApplet(), "SELECT before plaintext 9B authentication");
+    ResponseAPDU challengeResponse =
+        transmit(
+            0x00,
+            0x87,
+            algorithm & 0xFF,
+            StandardCardProfile.ADMIN_KEY_REF & 0xFF,
+            hex("7C028100"));
+    assertSw(0x9000, challengeResponse, "9B challenge request");
+
+    int blockLength = algorithm == (byte) 0x03 ? 8 : 16;
+    byte[] challenge = tlvValue(challengeResponse.getData(), (byte) 0x81);
+    assertEquals(blockLength, challenge.length, "Unexpected 9B challenge length");
+    byte[] cryptogram = encryptManagementChallenge(algorithm, keyBytes, challenge);
+    return transmit(
+        0x00,
+        0x87,
+        algorithm & 0xFF,
+        StandardCardProfile.ADMIN_KEY_REF & 0xFF,
+        tlv((byte) 0x7C, tlv((byte) 0x82, cryptogram)));
+  }
+
+  protected static byte[] encryptManagementChallenge(
+      byte algorithm, byte[] keyBytes, byte[] challenge) {
+    try {
+      boolean tripleDes = algorithm == (byte) 0x03;
+      if (!tripleDes
+          && algorithm != (byte) 0x08
+          && algorithm != (byte) 0x0A
+          && algorithm != (byte) 0x0C) {
+        throw new IllegalArgumentException(
+            "Unsupported PIV management-key algorithm: " + String.format("0x%02X", algorithm));
+      }
+      String primitive = tripleDes ? "DESede" : "AES";
+      Cipher cipher = Cipher.getInstance(primitive + "/ECB/NoPadding");
+      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(keyBytes, primitive));
+      return cipher.doFinal(challenge);
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new IllegalStateException("Unable to compute 9B challenge response", e);
+    }
   }
 
   protected JavaCardEngine createEngine() {
@@ -184,6 +249,20 @@ abstract class OpenFIPS201TestSupport {
     return transmit(new CommandAPDU(cla, ins, p1, p2, data, le));
   }
 
+  /** Collects an ISO 7816 response chain using plaintext GET RESPONSE commands. */
+  protected byte[] collectResponse(ResponseAPDU response, String context) {
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    ResponseAPDU current = response;
+    while ((current.getSW() & 0xFF00) == 0x6100) {
+      output.write(current.getData(), 0, current.getData().length);
+      int le = current.getSW2() == 0 ? 256 : current.getSW2();
+      current = transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, le));
+    }
+    assertSw(0x9000, current, context);
+    output.write(current.getData(), 0, current.getData().length);
+    return output.toByteArray();
+  }
+
   protected static void assertSw(int expectedSw, ResponseAPDU response, String context) {
     assertEquals(
         expectedSw,
@@ -230,6 +309,20 @@ abstract class OpenFIPS201TestSupport {
   }
 
   protected void withMockedScp(Runnable action) {
+    withMockedScp(
+        () -> {
+          action.run();
+          return null;
+        });
+  }
+
+  /**
+   * Runs an administrative operation with an authenticated SCP supplied by the test harness.
+   *
+   * <p>This models the SCP authorization alternative to plaintext 9B authentication. The applet
+   * deliberately supports both paths.
+   */
+  protected <T> T withMockedScp(Supplier<T> action) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
       Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
@@ -242,6 +335,16 @@ abstract class OpenFIPS201TestSupport {
                   Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
           .thenAnswer(invocation -> (short) invocation.getArgument(2));
       Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
+      return action.get();
+    }
+  }
+
+  /** Runs an APDU flow with Java Card's transport reported as ISO 14443 contactless Type A. */
+  protected void withContactless(Runnable action) {
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
       action.run();
     }
   }
@@ -282,7 +385,9 @@ abstract class OpenFIPS201TestSupport {
 
   protected static byte[] tlvValue(byte[] data, byte tag) {
     int offset = 0;
-    if (data.length > 0 && data[0] == (byte) 0x7F) {
+    // Test responses commonly wrap the requested primitive in a dynamic-authentication (7C) or
+    // two-byte application (7Fxx) template. Enter that outer value before scanning its children.
+    if (data.length > 0 && data[0] != tag && (data[0] == (byte) 0x7C || data[0] == (byte) 0x7F)) {
       offset = contentOffset(data, 0);
     }
     while (offset < data.length) {

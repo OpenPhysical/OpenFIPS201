@@ -1,10 +1,7 @@
 package dev.mistial.tests.openfips201;
 
-import javacard.framework.APDU;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 /**
  * Verifies that the Virtual Contact Interface (VCI) is enforced as a contactless access condition.
@@ -41,10 +38,19 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
                     concat(
                         tlv((byte) 0x8B, TEST_OBJECT_ID),
                         new byte[] {
-                          (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
-                          (byte) 0x8D, (byte) 0x01, contactlessMode,
-                          (byte) 0x91, (byte) 0x01, (byte) 0x9B,
-                          (byte) 0x92, (byte) 0x02, (byte) 0x00, (byte) 0x10
+                          (byte) 0x8C,
+                          (byte) 0x01,
+                          ACCESS_MODE_ALWAYS,
+                          (byte) 0x8D,
+                          (byte) 0x01,
+                          contactlessMode,
+                          (byte) 0x91,
+                          (byte) 0x01,
+                          (byte) 0x9B,
+                          (byte) 0x92,
+                          (byte) 0x02,
+                          (byte) 0x00,
+                          (byte) 0x10
                         }));
             assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, create), "Create test object");
             assertSw(
@@ -65,17 +71,16 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   void contactlessReadOfVciObjectIsDeniedWithoutVci() {
     createObject(ACCESS_MODE_VCI);
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
-      assertSw(
-          0x6982,
-          blocked,
-          "Contactless GET DATA of a VCI-gated object must fail closed before VCI is established");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+          assertSw(
+              0x6982,
+              blocked,
+              "Contactless GET DATA of a VCI-gated object must fail closed before VCI is"
+                  + " established");
+        });
   }
 
   /**
@@ -102,17 +107,15 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   void contactlessReadOfAlwaysObjectStillSucceeds() {
     createObject(ACCESS_MODE_ALWAYS);
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
-      assertSw(
-          0x9000,
-          response,
-          "An ALWAYS object remains contactless-readable (no VCI bit, unaffected)");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+          assertSw(
+              0x9000,
+              response,
+              "An ALWAYS object remains contactless-readable (no VCI bit, unaffected)");
+        });
   }
 
   /**
@@ -126,17 +129,16 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   void contactlessReadOfVciAndPinObjectIsDeniedWithoutVci() {
     createObject(ACCESS_MODE_VCI_AND_PIN);
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
-      assertSw(
-          0x6982,
-          blocked,
-          "Contactless GET DATA of a VCI+PIN object must fail closed before VCI is established");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+          assertSw(
+              0x6982,
+              blocked,
+              "Contactless GET DATA of a VCI+PIN object must fail closed before VCI is"
+                  + " established");
+        });
   }
 
   /**
@@ -149,14 +151,12 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   void contactlessReadOfNeverObjectIsDenied() {
     createObject(ACCESS_MODE_NEVER);
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
-      assertSw(0x6982, blocked, "Contactless NEVER object must not be readable");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+          assertSw(0x6982, blocked, "Contactless NEVER object must not be readable");
+        });
   }
 
   /**
@@ -169,13 +169,11 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
   void contactlessReadOfPinOnlyObjectIsDeniedWithoutPin() {
     createObject(ACCESS_MODE_PIN);
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
-      assertSw(0x6982, blocked, "Contactless PIN-only object requires PIN verification");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          ResponseAPDU blocked = transmit(0x00, 0xCB, 0x3F, 0xFF, TEST_TAG_LIST, 0);
+          assertSw(0x6982, blocked, "Contactless PIN-only object requires PIN verification");
+        });
   }
 }

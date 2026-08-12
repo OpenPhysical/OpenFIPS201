@@ -12,6 +12,7 @@ import static com.makina.security.openfips201.PIV.*;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.Util;
+import javacard.security.CryptoException;
 
 /** Handles GENERAL AUTHENTICATE, OPACITY dispatch, and asymmetric key generation. */
 final class PIVAuthenticationCommandHandler {
@@ -43,8 +44,9 @@ final class PIVAuthenticationCommandHandler {
       byte[] smCommand,
       byte[] smResponse,
       PIVOpacity opacity
-      // #if ATTESTATION_ENABLED
-      , PIVAttestation attestation,
+          // #if ATTESTATION_ENABLED
+          ,
+      PIVAttestation attestation,
       byte[] attestationResponse
       // #endif
       ) {
@@ -67,6 +69,13 @@ final class PIVAuthenticationCommandHandler {
 
   private void authenticateReset() throws ISOException {
     authenticationContext.reset();
+  }
+
+  /** Clears all authentication state and scratch data before returning a failing status word. */
+  private void failAuthentication(short statusWord) {
+    authenticateReset();
+    PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+    ISOException.throwIt(statusWord);
   }
 
   /**
@@ -118,18 +127,18 @@ final class PIVAuthenticationCommandHandler {
     // deliberately handled as 'not found' so its presence is not observable through this command.
     PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[ISO7816.OFFSET_P1]);
     if (key == null || buffer[ISO7816.OFFSET_P2] == ID_KEY_ATTESTATION) {
-      // If any key reference value is specified that is not supported by the card, the PIV Card
-      // Application shall return the status word '6A 88'.
+      // NIST SP 800-73-5 Part 2, Section 3.2.4 and its response table define an unsupported P2 or
+      // algorithm/key-reference combination as 6A86 for GENERAL AUTHENTICATE. VERIFY has a
+      // different command-specific 6A88 rule; it does not apply here.
       cspPIV.clearPINAlways();
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return ZERO; // Keep compiler happy
     }
 
     // PRE-CONDITION 3 - The access rules must be satisfied for the requested key
     // NOTE: A call to this method automatically clears the PIN ALWAYS status.
-    if (!cspPIV.checkAccessModeObject(
-        key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
+    if (!cspPIV.checkAccessModeObject(key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return ZERO; // Keep compiler happy
@@ -238,34 +247,26 @@ final class PIVAuthenticationCommandHandler {
         if (key instanceof PIVKeyObjectPKI) {
           return generalAuthenticateCase1B((PIVKeyObjectPKI) key, challengeOffset, challengeLength);
         } else {
-          authenticateReset();
-          PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-          ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+          failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
         }
       }
       // Variant C - RSA Key Transport
       else if (key instanceof PIVKeyObjectRSA && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
         return generalAuthenticateCase1C((PIVKeyObjectRSA) key, challengeOffset, challengeLength);
       } else if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+        failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
       // Variant D - Symmetric Internal Authentication
       else if (key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE)) {
         if (key instanceof PIVKeyObjectSYM) {
           return generalAuthenticateCase1D((PIVKeyObjectSYM) key, challengeOffset, challengeLength);
         } else {
-          authenticateReset();
-          PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-          ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+          failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
         }
       }
       // Invalid case
       else {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        failAuthentication(ISO7816.SW_WRONG_DATA);
       }
     } // Continued below
 
@@ -288,9 +289,7 @@ final class PIVAuthenticationCommandHandler {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase2((PIVKeyObjectSYM) key);
       } else {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+        failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
     } // Continued below
 
@@ -311,9 +310,7 @@ final class PIVAuthenticationCommandHandler {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase3((PIVKeyObjectSYM) key, responseOffset, responseLength);
       } else {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+        failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
     } // Continued below
 
@@ -332,9 +329,7 @@ final class PIVAuthenticationCommandHandler {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase4((PIVKeyObjectSYM) key);
       } else {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+        failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
     } // Continued below
 
@@ -359,9 +354,7 @@ final class PIVAuthenticationCommandHandler {
         return generalAuthenticateCase5(
             (PIVKeyObjectSYM) key, witnessOffset, witnessLength, challengeOffset, challengeLength);
       } else {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+        failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
     }
 
@@ -380,18 +373,14 @@ final class PIVAuthenticationCommandHandler {
         return generalAuthenticateCase6(
             (PIVKeyObjectECC) key, exponentiationOffset, exponentiationLength);
       } else {
-        authenticateReset();
-        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
+        failAuthentication(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
     } // Continued below
 
     // If any other tag combination is present in the first element of data, it is an invalid case.
     //
     else {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      failAuthentication(ISO7816.SW_WRONG_DATA);
     }
 
     // Done
@@ -444,10 +433,9 @@ final class PIVAuthenticationCommandHandler {
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offIdH, (short) 8);
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offQeh, pointLen);
 
-    if (!key.validatePublicPoint(smResponse, offQeh, pointLen, smResponse, offZ)) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-
+    // SP 800-73-5 Part 2 Section 4.1, step C4 is enforced by the single canonical validator
+    // inside keyAgreement(). Keeping validation there prevents OPACITY and generic ECDH from
+    // drifting into different curve checks.
     key.keyAgreement(smResponse, offQeh, pointLen, smResponse, offZ, ecPointValidator); // C5
     PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
 
@@ -563,58 +551,25 @@ final class PIVAuthenticationCommandHandler {
       maximumResponseLength = (short) ((short) (challengeLength * (short) 2) + (short) 8);
     }
 
-    // Construct the TLV response and RESPONSE tag
     TLVWriter writer = TLVWriter.getInstance();
-    writer.init(
-        scratch,
-        ZERO,
-        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, maximumResponseLength),
-        CONST_TAG_AUTH_TEMPLATE);
-    writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
-
-    short offset = writer.getOffset();
-    if (challengeLength <= TLV.LENGTH_1BYTE_MAX) {
-      // Single-byte form
-      offset += TLV.LENGTH_1BYTE;
-    } else if (challengeLength <= TLV.LENGTH_2BYTE_MAX) {
-      // Double-byte form
-      offset += TLV.LENGTH_2BYTE;
-    } else {
-      // Triple-byte form
-      offset += TLV.LENGTH_3BYTE;
-    }
+    short offset = beginChallengeResponse(writer, maximumResponseLength);
 
     // Sign the CHALLENGE data to the location specified by 'offset'
     short length;
     try {
       length = key.sign(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (RuntimeException e) {
+    } catch (ISOException e) {
       authenticateReset();
-      // Presume that we have a problem with the input data, instead of throwing 6F00.
+      throw e;
+    } catch (CryptoException e) {
+      authenticateReset();
+      // A provider-level failure means the supplied cryptogram cannot be processed. Deliberate
+      // ISOException status words from the key implementation are preserved by the prior catch.
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return ZERO; // Keep static analyser happy
     }
 
-    //
-    // The writer object is still pointing to where the length needs to be written, so
-    // we can write the length
-    //
-
-    writer.writeLength(length);
-
-    // Sanity check that the writer offset is now at the same point we wrote our data. If not,
-    // something went wrong in our length estimation! This shouldn't happen.
-    if (writer.getOffset() != offset) {
-      authenticateReset();
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      return ZERO; // Keep static analyser happy
-    }
-
-    // Now we can move past the signature data
-    writer.move(length);
-
-    // Finalise the TLV object and get the entire data object length
-    length = writer.finish();
+    length = finishChallengeResponse(writer, offset, length);
 
     // Set up the outgoing command chain
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
@@ -640,64 +595,19 @@ final class PIVAuthenticationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    //
-    // IMPLEMENTATION NOTE:
-    //
-    // Since our input and output data is structured the same way, we make use of the same
-    // scratch buffer and perform the cipher in-place. This saves us from using the APDU
-    // buffer as a temporary working space and performing an extra copy.
-    // We don't know the exact length of the data until we do it. Since we could be writing
-    // a short-form length (ECC) or long-form (RSA), the TLV header could be either 4 or 8 bytes
-    // long.
-    //
-    // The approach is to leave 8 bytes free for the long-form header, then once we know what
-    // the actual length is, we go back by the right length to write the header.
-    //
-    // NOTE:
-    // You might be thinking "but if you know the algorithm and key size, you know the length!".
-    // You would be right, but unfortunately some implementations put a leading '00' byte in front
-    // of their signature data and some don't, so we just wait until we know exactly. It might
-    // seem like a pain but it does save an array copy and prevents use of the APDU buffer, so
-    // we think it's worth it.
-    //
-
-    //
-    // MECHANISM CASES:
-    // RSA1024 - Challenge block is 128 bytes and Signature is 128 bytes (double-byte length)
-    // RSA2048 - Challenge block is 256 bytes and Signature is 256 bytes (triple-byte length)
-    //
-    // NOTES:
-    // - In all cases, the challenge length must be equal to the key/block length
-    // - ECC keys are not valid for this case
-
-    // Construct the TLV response and RESPONSE tag
+    // The raw RSA result is written in place after reserving its exact BER length field.
     TLVWriter writer = TLVWriter.getInstance();
-    writer.init(
-        scratch,
-        ZERO,
-        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, challengeLength),
-        CONST_TAG_AUTH_TEMPLATE);
-    writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
-
-    short offset = writer.getOffset();
-    if (challengeLength <= TLV.LENGTH_1BYTE_MAX) {
-      // Single-byte form
-      offset += TLV.LENGTH_1BYTE;
-    } else if (challengeLength <= TLV.LENGTH_2BYTE_MAX) {
-      // Double-byte form
-      offset += TLV.LENGTH_2BYTE;
-    } else {
-      // Triple-byte form
-      offset += TLV.LENGTH_3BYTE;
-    }
+    short offset = beginChallengeResponse(writer, challengeLength);
 
     // Decrypt the CHALLENGE data
     short length;
     try {
       length = key.keyAgreement(scratch, challengeOffset, challengeLength, scratch, offset, null);
-    } catch (Exception e) {
+    } catch (ISOException e) {
       authenticateReset();
-      // Presume that we have a problem with the input data, instead of throwing 6F00.
+      throw e;
+    } catch (CryptoException e) {
+      authenticateReset();
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return ZERO; // Keep static analyser happy
     }
@@ -708,31 +618,43 @@ final class PIVAuthenticationCommandHandler {
       return ZERO; // Keep static analyser happy
     }
 
-    //
-    // The writer object is still pointing to where the length needs to be written, so
-    // we can write the length
-    //
-    writer.writeLength(length);
-
-    // Sanity check that the writer offset is now at the same point we wrote our data. If not,
-    // something went wrong in our length estimation! This shouldn't happen.
-    if (writer.getOffset() != offset) {
-      authenticateReset();
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      return ZERO; // Keep static analyser happy
-    }
-
-    // Now we can move past the decrypted data
-    writer.move(length);
-
-    // Finalise the TLV object and get the entire data object length
-    length = writer.finish();
+    length = finishChallengeResponse(writer, offset, length);
 
     // Set up the outgoing command chain
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
     // Done, return the length of data we are sending
     return length;
+  }
+
+  /** Starts a dynamic-authentication response and reserves its BER length field. */
+  private short beginChallengeResponse(TLVWriter writer, short maximumValueLength) {
+    writer.init(
+        scratch,
+        ZERO,
+        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, maximumValueLength),
+        CONST_TAG_AUTH_TEMPLATE);
+    writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
+    short valueOffset = writer.getOffset();
+    if (maximumValueLength <= TLV.LENGTH_1BYTE_MAX) {
+      return (short) (valueOffset + TLV.LENGTH_1BYTE);
+    }
+    if (maximumValueLength <= TLV.LENGTH_2BYTE_MAX) {
+      return (short) (valueOffset + TLV.LENGTH_2BYTE);
+    }
+    return (short) (valueOffset + TLV.LENGTH_3BYTE);
+  }
+
+  /** Writes the actual value length and closes the dynamic-authentication template. */
+  private short finishChallengeResponse(TLVWriter writer, short valueOffset, short valueLength) {
+    writer.writeLength(valueLength);
+    if (writer.getOffset() != valueOffset) {
+      authenticateReset();
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return ZERO;
+    }
+    writer.move(valueLength);
+    return writer.finish();
   }
 
   private boolean isAllZero(byte[] buffer, short offset, short length) {
@@ -789,10 +711,11 @@ final class PIVAuthenticationCommandHandler {
     short offset = writer.getOffset();
     try {
       offset += key.encrypt(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (RuntimeException e) {
+    } catch (ISOException e) {
       authenticateReset();
-
-      // Presume that we have a problem with the input data, instead of throwing 6F00.
+      throw e;
+    } catch (CryptoException e) {
+      authenticateReset();
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -828,9 +751,7 @@ final class PIVAuthenticationCommandHandler {
 
     // PRE-CONDITION 1 - The key must have the AUTHENTICATE role
     if (!key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE)) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // PRE-CONDITION 2 - The key MUST have the PERMIT EXTERNAL attribute set
@@ -863,12 +784,12 @@ final class PIVAuthenticationCommandHandler {
       offset +=
           key.encrypt(
               scratch, offset, length, authenticationContext.buffer(), OFFSET_AUTH_CHALLENGE);
-    } catch (Exception e) {
+    } catch (ISOException e) {
       authenticateReset();
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-
-      // Presume that we have a problem with the input data, instead of throwing 6F00.
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      throw e;
+    } catch (CryptoException e) {
+      failAuthentication(ISO7816.SW_WRONG_DATA);
     }
 
     // Update the TLV offset value
@@ -905,25 +826,19 @@ final class PIVAuthenticationCommandHandler {
     // PRE-CONDITION 1 - This operation is only valid if the authentication state is EXTERNAL
     if (authenticationContext.buffer()[OFFSET_AUTH_STATE] != AUTH_STATE_EXTERNAL) {
       // Invalid state for this command
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // PRE-CONDITION 2 - This operation is only valid if the key and mechanism have not changed
     if (authenticationContext.buffer()[OFFSET_AUTH_ID] != key.getId()
         || authenticationContext.buffer()[OFFSET_AUTH_MECHANISM] != key.getMechanism()) {
       // Invalid state for this command
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // PRE-CONDITION 3 - The RESPONSE tag length must be the same as our block length
     if (responseLength != key.getBlockLength()) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      failAuthentication(ISO7816.SW_WRONG_DATA);
     }
 
     // Compare the authentication statuses
@@ -933,9 +848,7 @@ final class PIVAuthenticationCommandHandler {
         authenticationContext.buffer(),
         OFFSET_AUTH_CHALLENGE,
         responseLength)) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // We are now authenticated. Set the key's security status
@@ -1045,32 +958,24 @@ final class PIVAuthenticationCommandHandler {
     // PRE-CONDITION 1 - This operation is only valid if the authentication state is MUTUAL
     if (authenticationContext.buffer()[OFFSET_AUTH_STATE] != AUTH_STATE_MUTUAL) {
       // Invalid state for this command
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // PRE-CONDITION 2 - This operation is only valid if the key and mechanism have not changed
     if (authenticationContext.buffer()[OFFSET_AUTH_ID] != key.getId()
         || authenticationContext.buffer()[OFFSET_AUTH_MECHANISM] != key.getMechanism()) {
       // Invalid state for this command
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // PRE-CONDITION 3 - The WITNESS tag length must be the same as our block length
     if (witnessLength != key.getBlockLength()) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      failAuthentication(ISO7816.SW_WRONG_DATA);
     }
 
     // PRE-CONDITION 4 - The CHALLENGE tag length must be equal to the witness length
     if (challengeLength != witnessLength) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      failAuthentication(ISO7816.SW_WRONG_DATA);
     }
 
     // Compare the authentication statuses
@@ -1080,9 +985,7 @@ final class PIVAuthenticationCommandHandler {
         authenticationContext.buffer(),
         OFFSET_AUTH_CHALLENGE,
         witnessLength)) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // NOTE: The WITNESS is now verified, on to the CHALLENGE
@@ -1155,9 +1058,7 @@ final class PIVAuthenticationCommandHandler {
     // TODO: Should put this into the PIVKeyObjectECC class
     short length = (short) (key.getBlockLength() * (short) 2 + (short) 1);
     if (exponentiationLength != length) {
-      authenticateReset();
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      failAuthentication(ISO7816.SW_WRONG_DATA);
     }
 
     // Write out the response TLV, passing through the block length as an indicative maximum
@@ -1298,8 +1199,7 @@ final class PIVAuthenticationCommandHandler {
     }
 
     // PRE-CONDITION 6 - The access rules must be satisfied for administrative access
-    if (!cspPIV.checkAccessModeAdmin(
-        key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
+    if (!cspPIV.checkAccessModeAdmin(key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 

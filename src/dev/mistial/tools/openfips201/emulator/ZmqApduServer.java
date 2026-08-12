@@ -27,6 +27,8 @@ package dev.mistial.tools.openfips201.emulator;
 
 import apdu4j.core.BIBO;
 import com.makina.security.openfips201.OpenFIPS201;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ZmqProtocol;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -73,8 +75,6 @@ public final class ZmqApduServer implements AutoCloseable {
   static final String REPLY_ERR = ZmqProtocol.REPLY_ERR;
 
   private static final byte[] PACKAGE_AID_BYTES = hex("A00000030800001000");
-  private static final byte[] APPLET_AID_BYTES = hex("A000000308000010000100");
-  private static final byte[] ISD_AID_BYTES = hex("A000000151000000");
 
   /** Receive poll interval; bounds how quickly stop() is observed. */
   private static final int RECEIVE_TIMEOUT_MS = 250;
@@ -201,7 +201,8 @@ public final class ZmqApduServer implements AutoCloseable {
   private void registerAppletClass() {
     engine.loadApplet(
         new AID(PACKAGE_AID_BYTES, (short) 0, (byte) PACKAGE_AID_BYTES.length),
-        new AID(APPLET_AID_BYTES, (short) 0, (byte) APPLET_AID_BYTES.length),
+        new AID(
+            GlobalPlatformSession.PIV_AID, (short) 0, (byte) GlobalPlatformSession.PIV_AID.length),
         OpenFIPS201.class);
   }
 
@@ -215,10 +216,6 @@ public final class ZmqApduServer implements AutoCloseable {
   }
 
   private static byte[] hex(String value) {
-    byte[] bytes = new byte[value.length() / 2];
-    for (int i = 0; i < bytes.length; i++) {
-      bytes[i] = (byte) Integer.parseInt(value.substring(i * 2, i * 2 + 2), 16);
-    }
-    return bytes;
+    return HexUtil.parse(value);
   }
 }

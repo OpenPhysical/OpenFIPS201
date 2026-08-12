@@ -12,12 +12,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  style:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-java@v5
         with:
@@ -28,30 +30,100 @@ jobs:
         run: |
           java -jar tools/google-java-format-1.15.0-all-deps.jar \
             --dry-run --set-exit-if-changed \
-            $(find src build/tools -name '*.java' -type f | sort)
+            $(git ls-files 'src/**/*.java' 'build/tools/*.java' | sort)
 
-      - name: Build and verify CAP files
+      - name: Check shell syntax
+        run: git ls-files -z '*.sh' | xargs -0 -r -n1 bash -n
+
+  test:
+    name: Eight-profile test matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            build/ivy
+            build/ivy2
+            build/lib
+          key: ivy-${{ runner.os }}-jdk17-${{ hashFiles('build/ivy.xml', 'build/ivysettings.xml') }}
+
+      - name: Run CAP verification and complete test matrix
         env:
           SOURCE_DATE_EPOCH: "0"
           TZ: UTC
           LC_ALL: C.UTF-8
-        run: tools/ant/bin/ant -f build/build.xml compile
-
-      - name: Run unit and simulator tests
         run: tools/ant/bin/ant -f build/build.xml test-all
-
-      - name: Enforce coverage ratchet
-        run: tools/ant/bin/ant -f build/build.xml coverage
 
       - name: Upload verification artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: verification-reports
+          name: matrix-verification-reports
           path: |
-            build/test-reports/
             build/matrix/*/build.log
             build/matrix/*/reports/
-            build/coverage/
-            build/bin/*.cap
+            build/matrix/*/bin/*.cap
+            build/sp800-85b-personalization/
           if-no-files-found: ignore
+
+  coverage:
+    name: Coverage ratchet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            build/ivy
+            build/ivy2
+            build/lib
+          key: ivy-${{ runner.os }}-jdk17-${{ hashFiles('build/ivy.xml', 'build/ivysettings.xml') }}
+
+      - name: Enforce 80 percent applet line coverage
+        run: tools/ant/bin/ant -f build/build.xml coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: build/coverage/
+          if-no-files-found: error
+
+  verify:
+    name: Required quality gate
+    if: always()
+    needs: [style, test, coverage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every independent gate
+        env:
+          STYLE_RESULT: ${{ needs.style.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        run: |
+          test "$STYLE_RESULT" = success
+          test "$TEST_RESULT" = success
+          test "$COVERAGE_RESULT" = success

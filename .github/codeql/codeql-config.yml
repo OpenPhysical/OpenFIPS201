@@ -1,0 +1,5 @@
+name: OpenFIPS201 Java analysis
+
+paths-ignore:
+  - build/vendor/**
+  - build/**

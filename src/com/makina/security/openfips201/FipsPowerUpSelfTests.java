@@ -62,15 +62,10 @@ final class FipsPowerUpSelfTests {
     Util.arrayFillNonAtomic(scratch, (short) 0, (short) 64, (byte) 0);
     aesKey.setKey(scratch, (short) 0);
     short length =
-        PIVCrypto.doAesEcbEncrypt(
-            aesKey, scratch, (short) 0, (short) 16, scratch, (short) 16);
+        PIVCrypto.doAesEcbEncrypt(aesKey, scratch, (short) 0, (short) 16, scratch, (short) 16);
     if (length != PIVCrypto.LENGTH_BLOCK_AES
         || !PIVSecurityProvider.arrayEqualsConstantTime(
-            scratch,
-            (short) 16,
-            AES_ENCRYPT_ZERO,
-            (short) 0,
-            (short) AES_ENCRYPT_ZERO.length))
+            scratch, (short) 16, AES_ENCRYPT_ZERO, (short) 0, (short) AES_ENCRYPT_ZERO.length))
       return false;
 
     // FIPS 140-3 IG 10.3.A Resolution 1 requires separate encryption and decryption CASTs.
@@ -88,11 +83,8 @@ final class FipsPowerUpSelfTests {
             (short) 32);
     if (length != PIVCrypto.LENGTH_BLOCK_AES
         || !PIVSecurityProvider.arrayEqualsConstantTime(
-            scratch,
-            (short) 32,
-            AES_DECRYPT_PLAINTEXT,
-            (short) 0,
-            PIVCrypto.LENGTH_BLOCK_AES)) return false;
+            scratch, (short) 32, AES_DECRYPT_PLAINTEXT, (short) 0, PIVCrypto.LENGTH_BLOCK_AES))
+      return false;
 
     length = PIVCrypto.doAesCmac(aesKey, scratch, (short) 0, (short) 0, scratch, (short) 16);
     if (length != PIVCrypto.LENGTH_BLOCK_AES

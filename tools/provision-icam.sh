@@ -9,7 +9,7 @@
 # Prerequisites:
 #   - ant -f build/build.xml tool-compile
 #   - emulator already serving:
-#       java -cp "build/tool-bin:tools/jcard-v26.07.13.jar:build/lib/*" \
+#       java -cp "build/tool-bin:tools/jcard-v26.08.10.jar:build/lib/*" \
 #         dev.mistial.tools.openfips201.OpenFips201Tool emulator serve
 #
 # The jCardEngine emulator registers the applet class but does not make it selectable until a GP
@@ -44,7 +44,7 @@ if [[ ! -d "${ICAM_DIR}" ]]; then
   exit 1
 fi
 
-CP="${ROOT}/build/tool-bin:${ROOT}/tools/jcard-v26.07.13.jar"
+CP="${ROOT}/build/tool-bin:${ROOT}/tools/jcard-v26.08.10.jar"
 if [[ -d "${ROOT}/build/lib" ]]; then
   for jar in "${ROOT}/build/lib"/*.jar; do
     CP="${CP}:${jar}"

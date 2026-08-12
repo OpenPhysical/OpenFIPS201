@@ -4,15 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.util.concurrent.TimeUnit;
-import javacard.framework.APDU;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
-import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 /**
  * SP 800-73-5 conformance assertions.
@@ -145,19 +141,17 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
         updateConfigOverMockedScp(hex("68 05 A0 03 83 01 FF")),
         "Enable contactless PIN change");
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
 
-      ResponseAPDU response =
-          transmit(0x00, 0x24, 0x00, 0x80, hex("313233343536FFFFFF363534333231FFFFFF"));
-      assertSw(
-          0x6982,
-          response,
-          "Contactless CHANGE REFERENCE DATA for key ref 80 requires VCI, not plaintext");
-    }
+          ResponseAPDU response =
+              transmit(0x00, 0x24, 0x00, 0x80, hex("313233343536FFFFFF363534333231FFFFFF"));
+          assertSw(
+              0x6982,
+              response,
+              "Contactless CHANGE REFERENCE DATA for key ref 80 requires VCI, not plaintext");
+        });
   }
 
   @Test
@@ -168,20 +162,18 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
         updateConfigOverMockedScp(hex("68 05 A0 03 83 01 FF")),
         "Enable contactless PIN use");
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      assertSw(
-          0x6982,
-          transmit(0x00, 0x20, 0x00, 0x80),
-          "Contactless VERIFY status must require VCI");
-      assertSw(
-          0x6982,
-          transmit(0x00, 0x20, 0xFF, 0x80),
-          "Contactless VERIFY reset must require VCI");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          assertSw(
+              0x6982,
+              transmit(0x00, 0x20, 0x00, 0x80),
+              "Contactless VERIFY status must require VCI");
+          assertSw(
+              0x6982,
+              transmit(0x00, 0x20, 0xFF, 0x80),
+              "Contactless VERIFY reset must require VCI");
+        });
   }
 
   @Test
@@ -205,20 +197,18 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
   @Test
   void strictContactlessPutDataAndGenerateKeyAreUnsupported() {
     assumeTrue(FIPS_MODE, "Strict command availability is enforced by the FIPS profile");
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      assertSw(
-          0x6A81,
-          transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025300")),
-          "Strict contactless PUT DATA must be unsupported");
-      assertSw(
-          0x6A81,
-          transmit(0x00, 0x47, 0x00, 0x9A, hex("AC03800111")),
-          "Strict contactless GENERATE KEY must be unsupported");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          assertSw(
+              0x6A81,
+              transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025300")),
+              "Strict contactless PUT DATA must be unsupported");
+          assertSw(
+              0x6A81,
+              transmit(0x00, 0x47, 0x00, 0x9A, hex("AC03800111")),
+              "Strict contactless GENERATE KEY must be unsupported");
+        });
   }
 
   @Test
@@ -246,21 +236,14 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
         updateConfigOverMockedScp(hex("68 05 A1 03 81 01 FF")),
         "Enable the relaxed-profile contactless PUK extension");
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      assertSw(
-          FIPS_MODE ? 0x6A81 : 0x9000,
-          transmit(
-              0x00,
-              0x24,
-              0x00,
-              0x81,
-              hex("31323334353637383837363534333231")),
-          "Strict mode must not expose contactless PUK change");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          assertSw(
+              FIPS_MODE ? 0x6A81 : 0x9000,
+              transmit(0x00, 0x24, 0x00, 0x81, hex("31323334353637383837363534333231")),
+              "Strict mode must not expose contactless PUK change");
+        });
   }
 
   @Test
@@ -271,44 +254,28 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
         updateConfigOverMockedScp(hex("680AA0038301FFA1038101FF")),
         "Enable the relaxed-profile contactless PIN and PUK extensions");
 
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless");
-      assertSw(
-          FIPS_MODE ? 0x6A81 : 0x9000,
-          transmit(
-              0x00,
-              0x2C,
-              0x00,
-              0x80,
-              hex("3132333435363738363534333231FFFF")),
-          "Strict mode must not expose contactless retry reset");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless");
+          assertSw(
+              FIPS_MODE ? 0x6A81 : 0x9000,
+              transmit(0x00, 0x2C, 0x00, 0x80, hex("3132333435363738363534333231FFFF")),
+              "Strict mode must not expose contactless retry reset");
+        });
   }
 
   private ResponseAPDU updateConfigOverMockedScp(byte[] payload) {
-    try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
-      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
-      SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
+    return withMockedScp(
+        () -> {
+          byte[] apdu = new byte[5 + payload.length];
+          apdu[0] = (byte) 0x84; // GlobalPlatform secure-messaging CLA
+          apdu[1] = (byte) 0xDB; // PUT DATA
+          apdu[2] = (byte) 0x3F; // P1
+          apdu[3] = (byte) 0x00; // P2 admin path
+          apdu[4] = (byte) payload.length;
+          System.arraycopy(payload, 0, apdu, 5, payload.length);
 
-      Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
-      Mockito.when(secureChannel.getSecurityLevel()).thenReturn(SC_MASK);
-      Mockito.when(
-              secureChannel.unwrap(
-                  Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-          .thenAnswer(invocation -> (short) invocation.getArgument(2));
-
-      byte[] apdu = new byte[5 + payload.length];
-      apdu[0] = (byte) 0x84; // GlobalPlatform secure-messaging CLA
-      apdu[1] = (byte) 0xDB; // PUT DATA
-      apdu[2] = (byte) 0x3F; // P1
-      apdu[3] = (byte) 0x00; // P2 admin path
-      apdu[4] = (byte) payload.length;
-      System.arraycopy(payload, 0, apdu, 5, payload.length);
-
-      return transmit(new CommandAPDU(apdu));
-    }
+          return transmit(new CommandAPDU(apdu));
+        });
   }
 }

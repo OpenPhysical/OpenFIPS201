@@ -33,6 +33,7 @@ import javacard.security.AESKey;
 import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
+import javacard.security.Key;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
@@ -572,26 +573,7 @@ final class PIVCrypto {
       short inLength,
       byte[] outBuffer,
       short outOffset) {
-    //
-    // IMPLEMENTATION NOTE:
-    // If you think the operation below looks insane, that's OK. This requires explanation.
-    // The PIV standard implements RSA digital signatures in a way that does not force you
-    // to choose a specific padding scheme (though they recomend PKCS#1.5 or OAEP). This means
-    // the client does not send the data to be signed, or even just the hash value. Instead,
-    // it sends a fully-formatted block including the hash and all padding.
-    //
-    // The problem here is that the Javacard Signature object can only sign in two ways.
-    // 1) Pass all data to update() and/or sign() which generates the hash, pads and encrypts.
-    // 2) Pass the hash to signPreComputedHash() which validates the length, pads and encrypts.
-    //
-    // Neither of the above is suited to taking a fully-formed block, so we are left with the
-    // only remaining option, which is to perform a private key encryption operation, which makes
-    // us feel awkward and wrong.
-    //
-    // Yep, that's it.
-    //
-    cspRSA.init(theKey, Cipher.MODE_ENCRYPT);
-    return cspRSA.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return doRsaPrivateOperation(theKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   /**
@@ -612,25 +594,19 @@ final class PIVCrypto {
       short inLength,
       byte[] outBuffer,
       short outOffset) {
-    //
-    // IMPLEMENTATION NOTE:
-    // If you think the operation below looks insane, that's OK. This requires explanation.
-    // The PIV standard implements RSA digital signatures in a way that does not force you
-    // to choose a specific padding scheme (though they recomend PKCS#1.5 or OAEP). This means
-    // the client does not send the data to be signed, or even just the hash value. Instead,
-    // it sends a fully-formatted block including the hash and all padding.
-    //
-    // The problem here is that the Javacard Signature object can only sign in two ways.
-    // 1) Pass all data to update() and/or sign() which generates the hash, pads and encrypts.
-    // 2) Pass the hash to signPreComputedHash() which validates the length, pads and encrypts.
-    //
-    // Neither of the above is suited to taking a fully-formed block, so we are left with the
-    // only remaining option, which is to perform a private key encryption operation, which makes
-    // us feel awkward and wrong.
-    //
-    // Yep, that's it.
-    //
-    cspRSA.init(theKey, Cipher.MODE_ENCRYPT);
+    return doRsaPrivateOperation(theKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  /**
+   * Applies raw RSA with either supported private-key representation.
+   *
+   * <p>PIV supplies the complete encoded message representative, so Java Card signature primitives
+   * would hash or pad data that is already formatted. Raw private-key RSA is the required operation
+   * for both CRT and modulus/exponent key objects.
+   */
+  private static short doRsaPrivateOperation(
+      Key key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    cspRSA.init(key, Cipher.MODE_ENCRYPT);
     return cspRSA.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 

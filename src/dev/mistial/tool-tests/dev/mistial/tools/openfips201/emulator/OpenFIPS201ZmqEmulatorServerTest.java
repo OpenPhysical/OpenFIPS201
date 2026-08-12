@@ -19,6 +19,7 @@ import java.util.EnumSet;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.zeromq.SocketType;
@@ -34,6 +35,7 @@ import pro.javacard.gp.keys.PlaintextKeys;
  * the OpenPhysical .NET stack) will do.
  */
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
+@Tag("transport-integration")
 class OpenFIPS201ZmqEmulatorServerTest {
   private static final byte[] TEST_SCP03_KEY = PlaintextKeys.DEFAULT_KEY();
   private static final byte[] OPENFIPS201_AID_BYTES = {

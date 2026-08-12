@@ -44,7 +44,7 @@ import org.junit.jupiter.api.TestFactory;
  * (cards 2, 5, 16) captures.
  */
 @Tag("slow")
-class OpenFIPS201VciV2VectorTest {
+class OpenFIPS201VciV2VectorTest extends VciVectorTestSupport {
 
   private static final byte[] TRANSPORT_SW = Hex.decode("9000");
 
@@ -174,7 +174,7 @@ class OpenFIPS201VciV2VectorTest {
           // use). The compact sm.opacity block publishes keys for the *last* establishment only,
           // so restrict replay to SM exchanges after that establishment exchange id.
           int lastOpacityId = lastOpacityExchangeId(doc);
-          List<Exchange> exchanges = mergeTransportChains(loadSmExchanges(doc, lastOpacityId));
+          List<Exchange> exchanges = reassembleTransportChains(loadSmExchanges(doc, lastOpacityId));
           assertTrue(
               exchanges.size() >= 5,
               name
@@ -191,44 +191,41 @@ class OpenFIPS201VciV2VectorTest {
                 ex.command[0] & 0xFF,
                 name + " [" + ex.description + "]: CLA 0x0C after transport merge");
 
-            if (ex.plainCommand != null && ex.plainCommand.length >= 4) {
-              if (ex.stateBefore != null) {
-                assertArrayEquals(
-                    ex.stateBefore.counter,
-                    session.encCounter,
-                    name + " [" + ex.description + "]: counter before");
-                assertArrayEquals(
-                    ex.stateBefore.cmdMcv,
-                    session.commandMcv,
-                    name + " [" + ex.description + "]: cmd MCV before");
-                assertArrayEquals(
-                    ex.stateBefore.respMcv,
-                    session.responseMcv,
-                    name + " [" + ex.description + "]: resp MCV before");
-              }
-              Object[] parsed = VciSupport.parsePlainCommand(ex.plainCommand);
-              byte[] wrappedCmd =
-                  VciSupport.wrapCommand(
-                      session,
-                      (Byte) parsed[0],
-                      (Byte) parsed[1],
-                      (Byte) parsed[2],
-                      (byte[]) parsed[3],
-                      (Boolean) parsed[4]);
+            assertTrue(
+                ex.plainCommand != null && ex.plainCommand.length >= 4,
+                name + " [" + ex.description + "]: reassembled SM command lacks plaintext");
+            if (ex.stateBefore != null) {
               assertArrayEquals(
-                  ex.command, wrappedCmd, name + " [" + ex.description + "]: re-wrapped command");
-              if (ex.stateAfterWrap != null) {
-                assertArrayEquals(
-                    ex.stateAfterWrap.cmdMcv,
-                    session.commandMcv,
-                    name + " [" + ex.description + "]: cmd MCV after wrap");
-              }
-              wrapped++;
-            } else {
-              session.lastCla = (byte) 0x0C;
-              session.lastIns = ex.command[1];
-              advanceCommandMcvFromCaptured(session, ex.command);
+                  ex.stateBefore.counter,
+                  session.encCounter,
+                  name + " [" + ex.description + "]: counter before");
+              assertArrayEquals(
+                  ex.stateBefore.cmdMcv,
+                  session.commandMcv,
+                  name + " [" + ex.description + "]: cmd MCV before");
+              assertArrayEquals(
+                  ex.stateBefore.respMcv,
+                  session.responseMcv,
+                  name + " [" + ex.description + "]: resp MCV before");
             }
+            Object[] parsed = VciSupport.parsePlainCommand(ex.plainCommand);
+            byte[] wrappedCmd =
+                VciSupport.wrapCommand(
+                    session,
+                    (Byte) parsed[0],
+                    (Byte) parsed[1],
+                    (Byte) parsed[2],
+                    (byte[]) parsed[3],
+                    (Boolean) parsed[4]);
+            assertArrayEquals(
+                ex.command, wrappedCmd, name + " [" + ex.description + "]: re-wrapped command");
+            if (ex.stateAfterWrap != null) {
+              assertArrayEquals(
+                  ex.stateAfterWrap.cmdMcv,
+                  session.commandMcv,
+                  name + " [" + ex.description + "]: cmd MCV after wrap");
+            }
+            wrapped++;
 
             if (ex.response != null && ex.response.length > 0) {
               // v2 captures embed the transport SW (usually 9000) in the response field and put the
@@ -480,123 +477,6 @@ class OpenFIPS201VciV2VectorTest {
     return new SmState(hexField(s, "counter"), hexField(s, "cmd_mcv"), hexField(s, "resp_mcv"));
   }
 
-  private static List<Exchange> mergeTransportChains(List<Exchange> exchanges) {
-    List<Exchange> merged = new ArrayList<>();
-    List<byte[]> pending = new ArrayList<>();
-    for (Exchange ex : exchanges) {
-      int cla = ex.command[0] & 0xFF;
-      if (cla == 0x1C) {
-        int lc = ex.command[4] & 0xFF;
-        pending.add(Arrays.copyOfRange(ex.command, 5, 5 + lc));
-        continue;
-      }
-      if (!pending.isEmpty() && cla == 0x0C) {
-        byte[] cmd = ex.command;
-        byte ins = cmd[1];
-        byte p1 = cmd[2];
-        byte p2 = cmd[3];
-        int lc = cmd[4] & 0xFF;
-        byte[] finalData = Arrays.copyOfRange(cmd, 5, 5 + lc);
-        byte[] trailingLe = Arrays.copyOfRange(cmd, 5 + lc, cmd.length);
-        int total = finalData.length;
-        for (byte[] c : pending) {
-          total += c.length;
-        }
-        byte[] full = new byte[total];
-        int off = 0;
-        for (byte[] c : pending) {
-          System.arraycopy(c, 0, full, off, c.length);
-          off += c.length;
-        }
-        System.arraycopy(finalData, 0, full, off, finalData.length);
-        byte[] reassembled;
-        if (full.length <= 255) {
-          reassembled =
-              concat(
-                  new byte[] {0x0C, ins, p1, p2, (byte) full.length},
-                  full,
-                  trailingLe.length > 0 ? trailingLe : new byte[] {0x00});
-        } else {
-          byte[] le = trailingLe.length >= 2 ? trailingLe : new byte[] {0x01, 0x00};
-          reassembled =
-              concat(
-                  new byte[] {
-                    0x0C,
-                    ins,
-                    p1,
-                    p2,
-                    0x00,
-                    (byte) ((full.length >> 8) & 0xFF),
-                    (byte) (full.length & 0xFF)
-                  },
-                  full,
-                  le);
-        }
-        merged.add(
-            new Exchange(
-                ex.description + " (reassembled)",
-                reassembled,
-                ex.response,
-                ex.sw,
-                ex.plainCommand,
-                ex.plainResponse,
-                ex.stateBefore,
-                ex.stateAfterWrap,
-                ex.stateAfterUnwrap));
-        pending.clear();
-      } else {
-        pending.clear();
-        merged.add(ex);
-      }
-    }
-    return merged;
-  }
-
-  private static void advanceCommandMcvFromCaptured(VciSupport.SmSession session, byte[] command) {
-    int lc;
-    byte[] dataField;
-    if ((command[4] & 0xFF) == 0x00 && command.length > 7) {
-      lc = ((command[5] & 0xFF) << 8) | (command[6] & 0xFF);
-      dataField = Arrays.copyOfRange(command, 7, 7 + lc);
-    } else {
-      lc = command[4] & 0xFF;
-      dataField = Arrays.copyOfRange(command, 5, 5 + lc);
-    }
-    java.io.ByteArrayOutputStream macInput = new java.io.ByteArrayOutputStream();
-    macInput.write(session.commandMcv, 0, 16);
-    byte[] header = new byte[16];
-    header[0] = 0x0C;
-    header[1] = command[1];
-    header[2] = command[2];
-    header[3] = command[3];
-    header[4] = (byte) 0x80;
-    macInput.write(header, 0, 16);
-    int cursor = 0;
-    while (cursor < dataField.length) {
-      int tag = dataField[cursor] & 0xFF;
-      int hdr = cursor;
-      cursor++;
-      int lengthByte = dataField[cursor++] & 0xFF;
-      int length;
-      if (lengthByte < 0x80) {
-        length = lengthByte;
-      } else if (lengthByte == 0x81) {
-        length = dataField[cursor++] & 0xFF;
-      } else if (lengthByte == 0x82) {
-        length = ((dataField[cursor++] & 0xFF) << 8) | (dataField[cursor++] & 0xFF);
-      } else {
-        throw new IllegalStateException("Unsupported TLV length");
-      }
-      int next = cursor + length;
-      if (tag == 0x87 || tag == 0x97) {
-        macInput.write(dataField, hdr, next - hdr);
-      }
-      cursor = next;
-    }
-    byte[] fullMac = VciSupport.aesCmac(session.skMac, macInput.toByteArray());
-    System.arraycopy(fullMac, 0, session.commandMcv, 0, 16);
-  }
-
   /**
    * OtherInfo = algId(5) || PartyU(…|| T16) || PartyV(08 || idSicc || nLen || nIcc || 01 || cb).
    * Locate idSicc and extract the following length-prefixed nonce.
@@ -671,50 +551,5 @@ class OpenFIPS201VciV2VectorTest {
       off += a.length;
     }
     return out;
-  }
-
-  private static final class SmState {
-    final byte[] counter;
-    final byte[] cmdMcv;
-    final byte[] respMcv;
-
-    SmState(byte[] counter, byte[] cmdMcv, byte[] respMcv) {
-      this.counter = counter;
-      this.cmdMcv = cmdMcv;
-      this.respMcv = respMcv;
-    }
-  }
-
-  private static final class Exchange {
-    final String description;
-    final byte[] command;
-    final byte[] response;
-    final int sw;
-    final byte[] plainCommand;
-    final byte[] plainResponse;
-    final SmState stateBefore;
-    final SmState stateAfterWrap;
-    final SmState stateAfterUnwrap;
-
-    Exchange(
-        String description,
-        byte[] command,
-        byte[] response,
-        int sw,
-        byte[] plainCommand,
-        byte[] plainResponse,
-        SmState stateBefore,
-        SmState stateAfterWrap,
-        SmState stateAfterUnwrap) {
-      this.description = description;
-      this.command = command;
-      this.response = response;
-      this.sw = sw;
-      this.plainCommand = plainCommand;
-      this.plainResponse = plainResponse;
-      this.stateBefore = stateBefore;
-      this.stateAfterWrap = stateAfterWrap;
-      this.stateAfterUnwrap = stateAfterUnwrap;
-    }
   }
 }

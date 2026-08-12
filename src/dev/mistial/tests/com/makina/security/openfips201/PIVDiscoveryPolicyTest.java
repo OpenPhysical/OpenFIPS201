@@ -1,7 +1,7 @@
 package com.makina.security.openfips201;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -16,10 +16,7 @@ class PIVDiscoveryPolicyTest {
   void dataObjectAllocationInitializesAndClearsReusableStorage() {
     PIVDataObject object =
         new PIVDataObject(
-            (byte) 0x01,
-            PIVObject.ACCESS_MODE_ALWAYS,
-            PIVObject.ACCESS_MODE_ALWAYS,
-            (byte) 0x9B);
+            (byte) 0x01, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS, (byte) 0x9B);
 
     object.allocate((short) 8);
     object.content[0] = (byte) 0x7F;
@@ -28,17 +25,13 @@ class PIVDiscoveryPolicyTest {
     assertTrue(object.isInitialised());
     assertEquals(4, object.getLength());
     assertEquals(0, object.content[0]);
-
   }
 
   @Test
   void dataObjectAllocationRejectsNonPositiveLengths() {
     PIVDataObject object =
         new PIVDataObject(
-            (byte) 0x01,
-            PIVObject.ACCESS_MODE_ALWAYS,
-            PIVObject.ACCESS_MODE_ALWAYS,
-            (byte) 0x9B);
+            (byte) 0x01, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS, (byte) 0x9B);
 
     assertThrows(ISOException.class, () -> object.allocate((short) 0));
     assertThrows(ISOException.class, () -> object.allocate((short) -1));
@@ -183,7 +176,8 @@ class PIVDiscoveryPolicyTest {
 
     discovery.content = hex("7E124F0BA0000003080000100001005F2F022000");
     when(discovery.getLength()).thenReturn((short) discovery.content.length);
-    assertEquals(-1, handler.getDiscoveryPolicy(), "The mandatory local-PIN policy bit must be set");
+    assertEquals(
+        -1, handler.getDiscoveryPolicy(), "The mandatory local-PIN policy bit must be set");
   }
 
   @Test

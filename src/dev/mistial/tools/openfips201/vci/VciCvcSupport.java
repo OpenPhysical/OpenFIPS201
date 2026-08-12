@@ -25,6 +25,9 @@
 
 package dev.mistial.tools.openfips201.vci;
 
+import dev.mistial.tools.openfips201.common.BerTlvReader;
+import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.crypto.CryptoProviders;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.security.KeyFactory;
@@ -42,7 +45,6 @@ import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.jce.ECNamedCurveTable;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
 import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.math.ec.ECPoint;
@@ -72,9 +74,7 @@ final class VciCvcSupport {
   static final int TAG_CERT_INFO = 0x71;
 
   static {
-    if (java.security.Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-      java.security.Security.addProvider(new BouncyCastleProvider());
-    }
+    CryptoProviders.ensureBouncyCastle();
   }
 
   private VciCvcSupport() {}
@@ -440,7 +440,8 @@ final class VciCvcSupport {
       verifier.update(tbs);
       return verifier.verify(signature);
     } catch (Exception e) {
-      return false;
+      throw new IllegalArgumentException(
+          "unable to verify CVC signature using algorithm OID " + algorithmOid, e);
     }
   }
 
@@ -448,7 +449,7 @@ final class VciCvcSupport {
   // Internals
   // ---------------------------------------------------------------------------------------------
 
-  private static final class SignatureParts {
+  static final class SignatureParts {
     final String algorithmOid;
     final byte[] signature;
 
@@ -458,7 +459,7 @@ final class VciCvcSupport {
     }
   }
 
-  private static SignatureParts parseSignatureField(byte[] signatureField) {
+  static SignatureParts parseSignatureField(byte[] signatureField) {
     try {
       ASN1Primitive parsed = ASN1Primitive.fromByteArray(signatureField);
       if (parsed instanceof ASN1Sequence) {
@@ -557,10 +558,6 @@ final class VciCvcSupport {
   }
 
   static String toHex(byte[] data) {
-    StringBuilder sb = new StringBuilder(data.length * 2);
-    for (byte b : data) {
-      sb.append(String.format("%02X", b & 0xFF));
-    }
-    return sb.toString();
+    return HexUtil.format(data);
   }
 }

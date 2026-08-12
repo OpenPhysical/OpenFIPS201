@@ -13,7 +13,7 @@ import javax.smartcardio.Card;
 import javax.smartcardio.CardTerminal;
 import javax.smartcardio.TerminalFactory;
 
-public final class CardTarget {
+public final class CardTarget implements CardConnectionFactory {
   private static final int DEFAULT_TIMEOUT_MS = 10_000;
 
   private final String scheme;
@@ -52,8 +52,13 @@ public final class CardTarget {
     return new SmartCardBibo(card);
   }
 
+  @Override
+  public BIBO open() throws Exception {
+    return openBibo();
+  }
+
   public CardTransport openTransport() throws Exception {
-    return new CardTransport(openBibo());
+    return CardTransport.own(openBibo());
   }
 
   public boolean isZmq() {

@@ -237,12 +237,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
     byte[] newPin = hex("363534333231FFFF");
     assertSw(
         0x9000,
-        transmit(
-            0x00,
-            INS_RESET_RETRY_COUNTER,
-            0x00,
-            LOCAL_PIN_REFERENCE,
-            concat(puk, newPin)),
+        transmit(0x00, INS_RESET_RETRY_COUNTER, 0x00, LOCAL_PIN_REFERENCE, concat(puk, newPin)),
         "Six-digit policy must still use two eight-byte command fields");
     assertSw(
         0x9000,
@@ -265,11 +260,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
     assertSw(
         0x9000,
         transmit(
-            0x00,
-            INS_RESET_RETRY_COUNTER,
-            0x00,
-            LOCAL_PIN_REFERENCE,
-            concat(puk, NEW_PIN_VALID)),
+            0x00, INS_RESET_RETRY_COUNTER, 0x00, LOCAL_PIN_REFERENCE, concat(puk, NEW_PIN_VALID)),
         "RESET RETRY COUNTER should succeed");
     assertSw(
         0x9000,

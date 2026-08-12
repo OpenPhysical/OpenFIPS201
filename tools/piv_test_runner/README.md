@@ -87,9 +87,10 @@ OpenFIPS201-specific configuration and key material.
 
 The repo includes a small Java harness under
 `src/dev/mistial/tools/openfips201/nist/`. It uses NIST's installed test-vector
-classes directly and supplies the card through an adapter. The current adapter
-target is the in-process OpenFIPS201 jCard emulator (`tools/jcard-v26.07.13.jar`),
-exposed as a SmartcardIO terminal so NIST's PC/SC wrapper can use it unchanged.
+classes directly and supplies the card through an adapter. It supports the
+in-process OpenFIPS201 jCard emulator (`tools/jcard-v26.08.10.jar`) and physical
+cards through PC/SC. The emulator is exposed as a SmartcardIO terminal so
+NIST's PC/SC wrapper can use it unchanged.
 
 Install the NIST runner first, then list the vectors visible through a config:
 
@@ -116,6 +117,7 @@ that same image:
 tools/piv_test_runner/run-nist-harness.sh \
   --fips --target emulator \
   --icam test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV \
+  --provision \
   --config tools/piv_test_runner/config/OpenFIPS201-RSA2048.xml \
   --test GetDataCommand:1
 ```
@@ -127,6 +129,7 @@ on-card CS2 or CS7 secure-messaging credential before running the vector:
 tools/piv_test_runner/run-nist-harness.sh \
   --fips --target emulator \
   --icam test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV \
+  --provision \
   --vci cs2 --pairing-code 12345678 \
   --test SelectCommand:1
 ```
@@ -175,7 +178,18 @@ Useful selectors:
 | ------ | ------- |
 | `--list-tests` | Print `Subsystem:Id` entries from the NIST configuration |
 | `--fips` | Compile and install the FIPS_MODE applet |
-| `--icam DIR` | Provision a GSA ICAM folder before running vectors |
+| `--target emulator\|pcsc` | Select the in-process emulator or a physical PC/SC card |
+| `--reader NAME` | Select the physical reader used with `--target pcsc` |
+| `--icam DIR` | Load expected GSA ICAM personalization metadata |
+| `--provision` | Apply the selected profile before running vectors |
+| `--yes` | Confirm destructive physical-card provisioning |
+| `--reinstall-cap FILE` | Reinstall a fresh physical applet before each isolated vector |
+| `--scp 02\|03` | Select the GlobalPlatform secure-channel protocol for provisioning |
+| `--scp-key-version N` | Select the card's SCP key version |
+| `--scp-key HEX` | Use one shared SCP ENC/MAC/DEK key |
+| `--scp-enc-key HEX` | Set the first of three distinct SCP keys |
+| `--scp-mac-key HEX` | Set the second of three distinct SCP keys |
+| `--scp-dek-key HEX` | Set the third of three distinct SCP keys |
 | `--vci cs2\|cs7` | Re-sign and provision a native Part 1 VCI profile |
 | `--pairing-code 12345678` | Set the eight-digit test-card pairing code |
 | `--test SelectCommand:1` | Run one vector |
@@ -186,11 +200,14 @@ Useful selectors:
 | `--shared-card` | Keep one provisioned image across vectors instead of the safe fresh-image default |
 | `--limit N` | Stop after N selected vectors |
 
-The emulator starts with a freshly installed applet. Without `--icam`, use
-`SelectCommand:1` as the bare-card smoke test. With `--icam`, provisioning and
-both interface transports share one persistent emulator image. Run destructive
-PIN/PUK vectors safely: multi-vector `--icam` runs provision a fresh image for
-each vector by default. Use `--shared-card` only for an intentional stateful sequence.
+The emulator starts with a freshly installed applet. Without `--provision`, use
+`SelectCommand:1` as the bare-card smoke test. With `--icam --provision`, provisioning and
+both interface transports share one persistent emulator image. On a physical card, `--icam`
+is metadata-only by default: the harness verifies public objects and the declared management-key
+capability without consuming PIN retries. Physical mutation requires both `--provision` and
+`--yes`; use `--reinstall-cap` when isolated destructive vectors need a fresh applet instance.
+Multi-vector runs use a fresh image by default. Use `--shared-card` only for an intentional
+stateful sequence.
 
 At launch, the harness creates a local class-only compatibility overlay for four
 NIST 5.0.1 classes that call BouncyCastle 1.56 APIs removed from the emulator's

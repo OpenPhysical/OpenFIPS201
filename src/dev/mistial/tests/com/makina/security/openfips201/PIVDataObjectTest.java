@@ -51,10 +51,11 @@ class PIVDataObjectTest {
       aborted[1] = 9;
       object.abortUpdate();
       assertEquals(3, object.getLength());
-      assertArrayEquals(new byte[] {1, 2, 3}, new byte[] {object.content[0], object.content[1], object.content[2]});
+      assertArrayEquals(
+          new byte[] {1, 2, 3},
+          new byte[] {object.content[0], object.content[1], object.content[2]});
 
-      ISOException error =
-          assertThrows(ISOException.class, () -> object.beginUpdate((short) 5));
+      ISOException error = assertThrows(ISOException.class, () -> object.beginUpdate((short) 5));
       assertEquals(0x6A84, error.getReason() & 0xFFFF);
       assertEquals(3, object.getLength());
 

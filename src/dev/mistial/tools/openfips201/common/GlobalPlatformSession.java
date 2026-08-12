@@ -55,11 +55,14 @@ public final class GlobalPlatformSession implements CardSession {
   }
 
   private static GlobalPlatformSession open(
-      CardTransport transport, byte[] aid, ScpConfig config, boolean ownsTransport)
+      CardTransport transport, byte[] targetAid, ScpConfig config, boolean ownsTransport)
       throws Exception {
     BIBO bibo = transport.acquireSession();
     try {
-      GPSession gp = GPSession.connect(bibo, new AID(aid));
+      // The OpenFIPS201 applet forwards INITIALIZE UPDATE and EXTERNAL AUTHENTICATE to the card's
+      // GlobalPlatform SecureChannel. Opening the channel while the target applet is selected keeps
+      // that authenticated context visible to its administrative command dispatcher.
+      GPSession gp = GPSession.connect(bibo, new AID(targetAid));
       gp.openSecureChannel(
           config.toPlaintextKeys(),
           toSecureChannelVersion(config.mode),

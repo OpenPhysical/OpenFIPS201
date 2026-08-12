@@ -28,6 +28,7 @@ run_suite() {
     --fips \
     --config "$CONFIG" \
     --icam "$ICAM" \
+    --provision \
     --vci "$suite" \
     --pairing-code 12345678 \
     --suite "card-$interface" \

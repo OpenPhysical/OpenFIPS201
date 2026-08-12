@@ -8,13 +8,10 @@
 package dev.mistial.tools.openfips201;
 
 import com.google.gson.Gson;
-import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
-import dev.mistial.tools.openfips201.applet.AppletInstallService;
 import dev.mistial.tools.openfips201.cardstock.CardstockPreparationService;
 import dev.mistial.tools.openfips201.cardstock.CardstockReceipt;
 import dev.mistial.tools.openfips201.cardstock.CardstockReceiptPrinter;
 import dev.mistial.tools.openfips201.common.CardTarget;
-import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.crypto.PemSigningKey;
@@ -34,9 +31,6 @@ import dev.mistial.tools.openfips201.producer.CardProductionService;
 import dev.mistial.tools.openfips201.producer.ProducerSetupService;
 import dev.mistial.tools.openfips201.profiles.IssuerProfile;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
-import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
-import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
-import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
@@ -53,23 +47,22 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
-import pro.javacard.gp.keys.PlaintextKeys;
 
 @Command(
     name = "openfips201",
     mixinStandardHelpOptions = true,
     description = "OpenFIPS201 issuer tooling.",
     subcommands = {
-      OpenFips201Tool.Cards.class,
-      OpenFips201Tool.Emulator.class,
-      OpenFips201Tool.Applet.class,
-      OpenFips201Tool.Crypto.class,
+      CardsCommand.class,
+      EmulatorCommand.class,
+      AppletCommand.class,
+      CryptoCommand.class,
       OpenFips201Tool.Gp.class,
       OpenFips201Tool.Cardstock.class,
       OpenFips201Tool.Producer.class,
       OpenFips201Tool.Batch.class,
       OpenFips201Tool.Card.class,
-      OpenFips201Tool.Provision.class,
+      ProvisionCommand.class,
       OpenFips201Tool.Interactive.class
     })
 public final class OpenFips201Tool implements Callable<Integer> {
@@ -90,237 +83,6 @@ public final class OpenFips201Tool implements Callable<Integer> {
   public Integer call() {
     CommandLine.usage(this, System.err);
     return 2;
-  }
-
-  @Command(name = "cards", mixinStandardHelpOptions = true, subcommands = Cards.ListReaders.class)
-  static final class Cards implements Callable<Integer> {
-    @Override
-    public Integer call() {
-      CommandLine.usage(this, System.err);
-      return 2;
-    }
-
-    @Command(
-        name = "list",
-        mixinStandardHelpOptions = true,
-        description = "List PC/SC reader names.")
-    static final class ListReaders implements Callable<Integer> {
-      @Override
-      public Integer call() throws Exception {
-        CardTarget.listPcscReaders();
-        return 0;
-      }
-    }
-  }
-
-  @Command(
-      name = "provision",
-      mixinStandardHelpOptions = true,
-      description =
-          "Provision OpenFIPS201 from a GSA ICAM card folder (native) over SCP03. "
-              + "Example: openfips201 provision --icam .../46_Golden_FIPS_201-2_PIV "
-              + "--target zmq:tcp://127.0.0.1:5555")
-  static final class Provision implements Callable<Integer> {
-    @Option(
-        names = "--icam",
-        required = true,
-        description =
-            "Path to a GSA ICAM card-builder card folder "
-                + "(e.g. .../ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV).")
-    Path icam;
-
-    @Option(
-        names = "--target",
-        required = true,
-        description = "Card target: zmq:tcp://host:port or pcsc:<reader>.")
-    String target;
-
-    @Option(
-        names = "--scp-key",
-        description = "SCP03 master key hex; defaults to the GlobalPlatform test key.")
-    String scpKey;
-
-    @Option(
-        names = "--p12-password",
-        description =
-            "PKCS#12 password for ICAM .p12 files; defaults to empty (GSA ICAM corpus).")
-    String p12Password;
-
-    @Option(
-        names = "--certification-profile",
-        description = "Validate SP 800-73-5 Part 1, provision, then irreversibly personalize.")
-    boolean certificationProfile;
-
-    @Option(names = "--government-email", description = "Require the conditional 9C/9D objects and keys.")
-    boolean governmentEmail;
-
-    @Option(names = "--vci", description = "Require a Discovery policy that advertises VCI.")
-    boolean vci;
-
-    @Option(names = "--pairing-required", description = "Require the Discovery VCI pairing-code policy.")
-    boolean pairingRequired;
-
-    @Override
-    public Integer call() throws Exception {
-      char[] password =
-          p12Password == null ? IcamCardFolder.DEFAULT_P12_PASSWORD : p12Password.toCharArray();
-      ConformancePackage pkg = IcamCardFolder.load(icam, password);
-      System.out.println(
-          "Loaded ICAM folder "
-              + pkg.credentialId
-              + ": "
-              + pkg.dataObjects.size()
-              + " objects, "
-              + pkg.keys.size()
-              + " keys");
-      ScpConfig scp =
-          scpKey == null
-              ? ScpConfig.defaultTestScp03()
-              : ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 0, HexUtil.parse(scpKey));
-      ConformanceProvisioner.ProvisionReport report;
-      if (certificationProfile) {
-        report =
-            ConformanceProvisioner.provisionCertificationProfile(
-                CardTarget.parse(target),
-                scp,
-                pkg,
-                new dev.mistial.tools.openfips201.provisioning.CertificationProfileValidator.Claims(
-                    governmentEmail, vci, pairingRequired),
-                System.out);
-        System.out.println("Personalized validated certification profile");
-      } else {
-        report = ConformanceProvisioner.provision(CardTarget.parse(target), scp, pkg, System.out);
-      }
-      System.out.println(
-          "Done: "
-              + report.objectsCreated
-              + " objects, "
-              + report.keysImported
-              + " keys ("
-              + report.credentialId
-              + ")");
-      return 0;
-    }
-  }
-
-  @Command(name = "emulator", mixinStandardHelpOptions = true, subcommands = Emulator.Serve.class)
-  static final class Emulator implements Callable<Integer> {
-    @Override
-    public Integer call() {
-      CommandLine.usage(this, System.err);
-      return 2;
-    }
-
-    @Command(
-        name = "serve",
-        mixinStandardHelpOptions = true,
-        description = "Serve an OpenFIPS201 emulator over ZeroMQ.")
-    static final class Serve implements Callable<Integer> {
-      @Option(names = "--endpoint", defaultValue = ZmqApduServer.DEFAULT_ENDPOINT)
-      String endpoint;
-
-      @Option(names = "--scp03-key", description = "SCP03 master key hex; defaults to GP test key.")
-      String scp03Key;
-
-      @Override
-      public Integer call() {
-        byte[] key = scp03Key == null ? PlaintextKeys.DEFAULT_KEY() : HexUtil.parse(scp03Key);
-        try (ZmqApduServer server = new ZmqApduServer(key)) {
-          server.run(
-              endpoint,
-              bound -> {
-                System.out.println("OpenFIPS201 emulator serving on " + bound);
-                Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
-              });
-        }
-        return 0;
-      }
-    }
-  }
-
-  @Command(name = "applet", mixinStandardHelpOptions = true, subcommands = Applet.Install.class)
-  static final class Applet implements Callable<Integer> {
-    @Override
-    public Integer call() {
-      CommandLine.usage(this, System.err);
-      return 2;
-    }
-
-    @Command(
-        name = "install",
-        mixinStandardHelpOptions = true,
-        description = "Load and install the OpenFIPS201 CAP.")
-    static final class Install extends ScpOptions implements Callable<Integer> {
-      @Option(names = "--cap", required = true)
-      Path cap;
-
-      @Option(names = "--package-aid", defaultValue = "A00000030800001000")
-      String packageAid;
-
-      @Option(names = "--applet-aid", defaultValue = "A000000308000010000100")
-      String appletAid;
-
-      @Option(names = "--instance-aid", defaultValue = "A000000308000010000100")
-      String instanceAid;
-
-      @Option(names = "--delete-existing")
-      boolean deleteExisting;
-
-      @Option(
-          names = "--skip-load",
-          description = "Skip GP CAP LOAD and only install/select an already registered package.")
-      boolean skipLoad;
-
-      @Override
-      public Integer call() throws Exception {
-        AppletInstallRequest request = new AppletInstallRequest();
-        request.capPath = cap;
-        request.packageAid = packageAid;
-        request.appletAid = appletAid;
-        request.instanceAid = instanceAid;
-        request.loadCap = !skipLoad;
-        request.deleteExisting = deleteExisting;
-        try (GlobalPlatformSession session =
-            GlobalPlatformSession.open(
-                CardTarget.parse(target), GlobalPlatformSession.ISD_AID, scp())) {
-          new AppletInstallService().install(session, request);
-        }
-        System.out.println("Applet installed.");
-        return 0;
-      }
-    }
-  }
-
-  @Command(name = "crypto", mixinStandardHelpOptions = true, subcommands = Crypto.Pkcs11.class)
-  static final class Crypto implements Callable<Integer> {
-    @Override
-    public Integer call() {
-      CommandLine.usage(this, System.err);
-      return 2;
-    }
-
-    @Command(name = "pkcs11", mixinStandardHelpOptions = true, subcommands = Pkcs11.List.class)
-    static final class Pkcs11 implements Callable<Integer> {
-      @Override
-      public Integer call() {
-        CommandLine.usage(this, System.err);
-        return 2;
-      }
-
-      @Command(
-          name = "list",
-          mixinStandardHelpOptions = true,
-          description = "Validate a PKCS#11 token/key selection.")
-      static final class List extends Pkcs11Options implements Callable<Integer> {
-        @Override
-        public Integer call() throws Exception {
-          SigningKey key = new Pkcs11SigningKey(pkcs11());
-          System.out.println("Selected " + key.description());
-          System.out.println(key.publicKey().getAlgorithm() + " public key available");
-          return 0;
-        }
-      }
-    }
   }
 
   @Command(
@@ -966,86 +728,6 @@ public final class OpenFips201Tool implements Callable<Integer> {
               .prepare(CardTarget.parse(target), profile, signingKey, yes);
       printCardstockReceipt(out, "Cardstock prepared.", receiptPath);
       return 0;
-    }
-  }
-
-  static class ScpOptions {
-    @Option(names = "--target", required = true)
-    String target;
-
-    @Option(names = "--scp", defaultValue = "auto")
-    String scp;
-
-    @Option(names = "--scp-key-version", defaultValue = "0")
-    int scpKeyVersion;
-
-    @Option(names = "--scp-key")
-    String scpKey;
-
-    @Option(names = "--scp-enc-key")
-    String scpEncKey;
-
-    @Option(names = "--scp-mac-key")
-    String scpMacKey;
-
-    @Option(names = "--scp-dek-key")
-    String scpDekKey;
-
-    ScpConfig scp() {
-      if (scpKey != null) {
-        return ScpConfig.fromMaster(ScpConfig.parseMode(scp), scpKeyVersion, HexUtil.parse(scpKey));
-      }
-      if (scpEncKey != null && scpMacKey != null && scpDekKey != null) {
-        return new ScpConfig(
-            ScpConfig.parseMode(scp),
-            scpKeyVersion,
-            HexUtil.parse(scpEncKey),
-            HexUtil.parse(scpMacKey),
-            HexUtil.parse(scpDekKey));
-      }
-      throw new IllegalArgumentException("Provide --scp-key or all split SCP keys");
-    }
-  }
-
-  static class Pkcs11Options {
-    @Option(names = "--pkcs11-module")
-    String module;
-
-    @Option(names = "--pkcs11-token-label")
-    String tokenLabel;
-
-    @Option(names = "--pkcs11-slot")
-    Integer slot;
-
-    @Option(names = "--pkcs11-key-alias")
-    String keyAlias;
-
-    @Option(names = "--pkcs11-key-id")
-    String keyId;
-
-    @Option(names = "--pkcs11-pin-env")
-    String pinEnv;
-
-    @Option(names = "--pkcs11-pin-file")
-    String pinFile;
-
-    @Option(names = "--softhsm-config")
-    String softhsmConfig;
-
-    Pkcs11Config pkcs11() {
-      Pkcs11Config config = new Pkcs11Config();
-      config.module = module;
-      config.tokenLabel = tokenLabel;
-      config.slot = slot;
-      config.keyAlias = keyAlias;
-      config.keyId = keyId;
-      config.pinEnv = pinEnv;
-      config.pinFile = pinFile;
-      config.softhsmConfig = softhsmConfig;
-      if (config.module == null || config.module.isEmpty()) {
-        throw new IllegalArgumentException("--pkcs11-module is required");
-      }
-      return config;
     }
   }
 

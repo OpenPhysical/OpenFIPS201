@@ -69,22 +69,22 @@ class ChainBufferObjectTest {
       assertEquals(
           0x9000,
           assertThrows(
-                  ISOException.class,
-                  () ->
-                      chain.processIncomingObject(
-                          first, (short) 5, (short) 2, ChainBuffer.PROTECTION_SCP))
-              .getReason()
+                      ISOException.class,
+                      () ->
+                          chain.processIncomingObject(
+                              first, (short) 5, (short) 2, ChainBuffer.PROTECTION_SCP))
+                  .getReason()
               & 0xFFFF);
 
       byte[] last = {0x00, (byte) 0xDB, 0x3F, 0x00, 0x02, 0x33, 0x44};
       assertEquals(
           0x6982,
           assertThrows(
-                  ISOException.class,
-                  () ->
-                      chain.processIncomingObject(
-                          last, (short) 5, (short) 2, ChainBuffer.PROTECTION_PLAIN))
-              .getReason()
+                      ISOException.class,
+                      () ->
+                          chain.processIncomingObject(
+                              last, (short) 5, (short) 2, ChainBuffer.PROTECTION_PLAIN))
+                  .getReason()
               & 0xFFFF);
     }
   }

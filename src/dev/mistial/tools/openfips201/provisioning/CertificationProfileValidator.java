@@ -7,6 +7,7 @@
 
 package dev.mistial.tools.openfips201.provisioning;
 
+import dev.mistial.tools.openfips201.common.HexUtil;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
@@ -24,8 +25,8 @@ import org.bouncycastle.asn1.icao.LDSSecurityObject;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
 import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cms.CMSSignedData;
 import org.bouncycastle.cms.CMSProcessableByteArray;
+import org.bouncycastle.cms.CMSSignedData;
 import org.bouncycastle.cms.SignerInformation;
 import org.bouncycastle.cms.jcajce.JcaSimpleSignerInfoVerifierBuilder;
 
@@ -125,11 +126,17 @@ public final class CertificationProfileValidator {
       String id = hex(object.id);
       byte contact = ACCESS_ALWAYS;
       byte contactless = ACCESS_VCI;
-      if (id.equals("5FC102") || id.equals("5FC101") || id.equals("7E") || id.equals("7F61")
+      if (id.equals("5FC102")
+          || id.equals("5FC101")
+          || id.equals("7E")
+          || id.equals("7F61")
           || id.equals("5FC122")) {
         contactless = ACCESS_ALWAYS;
-      } else if (id.equals("5FC103") || id.equals("5FC108") || id.equals("5FC109")
-          || id.equals("5FC121") || id.equals("5FC123")) {
+      } else if (id.equals("5FC103")
+          || id.equals("5FC108")
+          || id.equals("5FC109")
+          || id.equals("5FC121")
+          || id.equals("5FC123")) {
         contact = ACCESS_PIN;
         contactless = (byte) (ACCESS_VCI | ACCESS_PIN);
       }
@@ -195,17 +202,20 @@ public final class CertificationProfileValidator {
       if (containerId == null) continue;
       if (key.privateKey == null || key.certificate == null) {
         throw new IllegalArgumentException(
-            String.format("key %02X requires private key and certificate material", key.slot & 0xFF));
+            String.format(
+                "key %02X requires private key and certificate material", key.slot & 0xFF));
       }
       ConformancePackage.DataObject object = objects.get(containerId);
       if (object == null) {
         throw new IllegalArgumentException(
-            String.format("key %02X requires certificate container %s", key.slot & 0xFF, containerId));
+            String.format(
+                "key %02X requires certificate container %s", key.slot & 0xFF, containerId));
       }
       byte[] encodedCertificate = certificateValue(object.payload, containerId);
       if (!Arrays.equals(key.certificate.getEncoded(), encodedCertificate)) {
         throw new IllegalArgumentException(
-            String.format("key %02X certificate does not match container %s", key.slot & 0xFF, containerId));
+            String.format(
+                "key %02X certificate does not match container %s", key.slot & 0xFF, containerId));
       }
 
       X509CertificateHolder certificateHolder =
@@ -214,13 +224,15 @@ public final class CertificationProfileValidator {
           certificateHolder.getExtension(Extension.subjectKeyIdentifier);
       if (subjectKeyIdentifier != null) {
         byte[] declaredIdentifier =
-            SubjectKeyIdentifier.getInstance(subjectKeyIdentifier.getParsedValue()).getKeyIdentifier();
+            SubjectKeyIdentifier.getInstance(subjectKeyIdentifier.getParsedValue())
+                .getKeyIdentifier();
         byte[] computedIdentifier =
             MessageDigest.getInstance("SHA-1")
                 .digest(certificateHolder.getSubjectPublicKeyInfo().getPublicKeyData().getBytes());
         if (!Arrays.equals(declaredIdentifier, computedIdentifier)) {
           throw new IllegalArgumentException(
-              String.format("key %02X certificate subject key identifier is invalid", key.slot & 0xFF));
+              String.format(
+                  "key %02X certificate subject key identifier is invalid", key.slot & 0xFF));
         }
       }
 
@@ -243,13 +255,15 @@ public final class CertificationProfileValidator {
         proof.update(new byte[] {(byte) 0x4F, (byte) 0x46, key.slot});
         if (!proof.verify(signature)) {
           throw new IllegalArgumentException(
-              String.format("key %02X private key does not match its certificate", key.slot & 0xFF));
+              String.format(
+                  "key %02X private key does not match its certificate", key.slot & 0xFF));
         }
       } catch (IllegalArgumentException e) {
         throw e;
       } catch (Exception e) {
         throw new IllegalArgumentException(
-            String.format("key %02X private key does not match its certificate", key.slot & 0xFF), e);
+            String.format("key %02X private key does not match its certificate", key.slot & 0xFF),
+            e);
       }
     }
   }
@@ -622,8 +636,7 @@ public final class CertificationProfileValidator {
     if (!cms.getCertificates().getMatches(null).isEmpty()) {
       throw new IllegalArgumentException("Security Object BB must omit signer certificates");
     }
-    X509CertificateHolder contentSigner =
-        validateChuidSignature(objects.get("5FC102").payload);
+    X509CertificateHolder contentSigner = validateChuidSignature(objects.get("5FC102").payload);
     verifyCmsSigner(cms, contentSigner, "Security Object");
     byte[] ldsBytes = (byte[]) cms.getSignedContent().getContent();
     LDSSecurityObject lds = LDSSecurityObject.getInstance(ASN1Primitive.fromByteArray(ldsBytes));
@@ -679,9 +692,7 @@ public final class CertificationProfileValidator {
         AdminTlv.concat(
             Arrays.copyOf(payload, signedContentLength),
             Arrays.copyOfRange(payload, signature.end, payload.length));
-    CMSSignedData cms =
-        new CMSSignedData(
-            new CMSProcessableByteArray(signedContent), cmsBytes);
+    CMSSignedData cms = new CMSSignedData(new CMSProcessableByteArray(signedContent), cmsBytes);
     if (cms.getSignerInfos().size() != 1 || cms.getCertificates().getMatches(null).size() != 1) {
       throw new IllegalArgumentException(
           "CHUID signature must contain one signer and one content-signing certificate");
@@ -834,15 +845,10 @@ public final class CertificationProfileValidator {
   }
 
   private static String hex(byte[] value) {
-    StringBuilder out = new StringBuilder();
-    for (byte item : value) out.append(String.format("%02X", item & 0xFF));
-    return out.toString();
+    return HexUtil.format(value);
   }
 
   private static byte[] hexBytes(String value) {
-    byte[] result = new byte[value.length() / 2];
-    for (int i = 0; i < value.length(); i += 2)
-      result[i / 2] = (byte) Integer.parseInt(value.substring(i, i + 2), 16);
-    return result;
+    return HexUtil.parse(value);
   }
 }

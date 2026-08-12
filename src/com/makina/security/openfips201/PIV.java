@@ -517,7 +517,8 @@ final class PIV {
         buffer, insertOffset, buffer, (short) (insertOffset + 3), (short) (end - insertOffset));
     buffer[insertOffset++] = (byte) 0x80;
     buffer[insertOffset++] = (byte) 0x01;
-    // SP 800-73-5 Part 1 Appendix C.3: advertise exactly one of 0x27 or 0x2E.
+    // NIST SP 800-73-5 Part 2, Section 3.1.1 and Table 5: advertise 0x27 or 0x2E
+    // only when the application possesses an initialized SM key for that cipher suite.
     buffer[insertOffset] = smKey.getMechanism();
 
     buffer[(short) (offset + 2)] += (byte) 3;
@@ -600,8 +601,7 @@ final class PIV {
   static boolean isPairingCodeReferenceEnabled(byte vciMode, short policy) {
     if (vciMode != Config.VCI_MODE_PAIRING_CODE || policy < (short) 0) return false;
     byte pinUsagePolicy = (byte) (policy >> 8);
-    return (pinUsagePolicy & (byte) 0x08) != (byte) 0
-        && (pinUsagePolicy & (byte) 0x04) == (byte) 0;
+    return (pinUsagePolicy & (byte) 0x08) != (byte) 0 && (pinUsagePolicy & (byte) 0x04) == (byte) 0;
   }
 
   boolean isPairingCodeVerified() {

@@ -7,7 +7,7 @@ NIST_JARS="$INSTALL_DIR/TestRunnerFiles/jars"
 HARNESS_SRC="$ROOT/src/dev/mistial/tools/openfips201/nist"
 HARNESS_CLASSES="$ROOT/tools/piv_test_runner/local/harness/classes"
 NIST_COMPAT_JAR="$ROOT/tools/piv_test_runner/local/harness/nist-bc-compat.jar"
-JCARD_JAR="$ROOT/tools/jcard-v26.07.13.jar"
+JCARD_JAR="$ROOT/tools/jcard-v26.08.10.jar"
 JC_API_JAR="$ROOT/tools/sdk/jc310/lib/api_classic-3.0.5.jar"
 
 if [[ ! -d "$NIST_JARS" ]]; then
@@ -49,7 +49,7 @@ mkdir -p "$HARNESS_CLASSES"
 # - NIST Test Runner jars
 # - Ivy test deps not already supplied by NIST
 #
-# Do NOT put the GP export stub jar (tools/sdk/gp211/*.jar) on the runtime
+# Do NOT put the GP export stub jar (tools/sdk/gp221/*.jar) on the runtime
 # classpath; it shadows jCard's functional org.globalplatform implementation.
 CP="$ROOT/build/test-bin"
 if [[ -d "$ROOT/build/tool-bin" ]]; then

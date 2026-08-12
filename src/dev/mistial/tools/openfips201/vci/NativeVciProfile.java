@@ -7,7 +7,11 @@
 
 package dev.mistial.tools.openfips201.vci;
 
+import static dev.mistial.tools.openfips201.common.ByteArrays.concat;
+
 import apdu4j.core.BIBO;
+import dev.mistial.tools.openfips201.common.BerTlvReader;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.provisioning.CertificationProfileValidator;
 import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
 import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
@@ -40,17 +44,16 @@ public final class NativeVciProfile {
   private static final byte ACCESS_PIN = (byte) 0x01;
   private static final byte ACCESS_VCI = (byte) 0x08;
   private static final byte ACCESS_ALWAYS = (byte) 0x7F;
-  private static final byte[] ID_CHUID = hex("5FC102");
-  private static final byte[] ID_SECURITY_OBJECT = hex("5FC106");
-  private static final byte[] ID_DISCOVERY = hex("7E");
-  private static final byte[] ID_SM_SIGNER = hex("5FC122");
-  private static final byte[] ID_PAIRING = hex("5FC123");
+  private static final byte[] ID_CHUID = HexUtil.parse("5FC102");
+  private static final byte[] ID_SECURITY_OBJECT = HexUtil.parse("5FC106");
+  private static final byte[] ID_DISCOVERY = HexUtil.parse("7E");
+  private static final byte[] ID_SM_SIGNER = HexUtil.parse("5FC122");
+  private static final byte[] ID_PAIRING = HexUtil.parse("5FC123");
 
   private NativeVciProfile() {}
 
   public static Material build(
-      Path icamDirectory, String caOutPrefix, String pairingCode, byte suite)
-      throws Exception {
+      Path icamDirectory, String caOutPrefix, String pairingCode, byte suite) throws Exception {
     VciProvisioning.ensureProvider();
     ConformancePackage base = IcamCardFolder.load(icamDirectory);
     VciProvisioning.CaMaterial signer =
@@ -59,11 +62,7 @@ public final class NativeVciProfile {
     CertificationProfileValidator.validate(
         profile, new CertificationProfileValidator.Claims(true, true, true));
     return new Material(
-        profile,
-        caOutPrefix + ".crt",
-        caOutPrefix + ".key",
-        signer.certificate,
-        suite);
+        profile, caOutPrefix + ".crt", caOutPrefix + ".key", signer.certificate, suite);
   }
 
   public static final class Material {
@@ -93,11 +92,7 @@ public final class NativeVciProfile {
       throw new IllegalArgumentException("transport and native profile material are required");
     }
     VciProvisioning.provisionSmCredentialOnly(
-        bibo,
-        material.signerCertificatePath,
-        material.signerKeyPath,
-        null,
-        material.suite);
+        bibo, material.signerCertificatePath, material.signerKeyPath, null, material.suite);
   }
 
   private static ConformancePackage augment(
@@ -109,11 +104,10 @@ public final class NativeVciProfile {
     if (pairingCode == null || !pairingCode.matches("[0-9]{8}")) {
       throw new IllegalArgumentException("pairing code must be exactly eight decimal digits");
     }
-    List<ConformancePackage.DataObject> objects =
-        new ArrayList<ConformancePackage.DataObject>();
+    List<ConformancePackage.DataObject> objects = new ArrayList<ConformancePackage.DataObject>();
     ConformancePackage.DataObject oldChuid = null;
     for (ConformancePackage.DataObject object : base.dataObjects) {
-      String id = hex(object.id);
+      String id = HexUtil.format(object.id);
       if (id.equals("5FC102")) oldChuid = object;
       if (!id.equals("5FC102") && !id.equals("5FC106") && !id.equals("7E")) {
         objects.add(object);
@@ -128,7 +122,7 @@ public final class NativeVciProfile {
             ACCESS_ALWAYS,
             ACCESS_ALWAYS,
             ConformancePackage.PutForm.DISCOVERY,
-            hex("7E124F0BA0000003080000100001005F2F024800")));
+            HexUtil.parse("7E124F0BA0000003080000100001005F2F024800")));
     objects.add(
         data(
             ID_SM_SIGNER,
@@ -175,22 +169,21 @@ public final class NativeVciProfile {
         base.sourceDirectory,
         base.pin,
         base.puk,
-        base.adminKeyAlg,
-        base.adminKey,
+        base.managementKey,
         objects,
         base.keys);
   }
 
-  private static byte[] resignChuid(
-      byte[] oldPayload, PrivateKey key, X509Certificate certificate) throws Exception {
+  private static byte[] resignChuid(byte[] oldPayload, PrivateKey key, X509Certificate certificate)
+      throws Exception {
     ByteArrayOutputStream content = new ByteArrayOutputStream();
     int offset = 0;
     while (offset < oldPayload.length) {
-      Tlv item = read(oldPayload, offset);
+      BerTlvReader.Tlv item = BerTlvReader.read(oldPayload, offset);
       if (item.tag != 0x32 && item.tag != 0x3E && item.tag != 0xFE) {
-        content.write(oldPayload, offset, item.end - offset);
+        content.write(oldPayload, offset, item.nextOffset - offset);
       }
-      offset = item.end;
+      offset = item.nextOffset;
     }
     content.write(VciSupport.tlv(0xFE, new byte[0]));
     byte[] signedContent = content.toByteArray();
@@ -202,9 +195,7 @@ public final class NativeVciProfile {
   }
 
   private static byte[] buildSecurityObject(
-      List<ConformancePackage.DataObject> objects,
-      PrivateKey key,
-      X509Certificate certificate)
+      List<ConformancePackage.DataObject> objects, PrivateKey key, X509Certificate certificate)
       throws Exception {
     String[][] required = {
       {"5FC107", "DB00"}, {"5FC109", "3001"}, {"7E", "6050"}, {"5FC123", "1018"}
@@ -223,9 +214,7 @@ public final class NativeVciProfile {
       byte[] hashInput = object.payload;
       if (entry[0].equals("7E")) {
         BerTlvReader.Tlv discovery = BerTlvReader.read(object.payload, 0);
-        hashInput =
-            Arrays.copyOfRange(
-                object.payload, discovery.valueOffset, discovery.nextOffset);
+        hashInput = Arrays.copyOfRange(object.payload, discovery.valueOffset, discovery.nextOffset);
       }
       hashes.add(new DataGroupHash(dg, new DEROctetString(sha256.digest(hashInput))));
       dg++;
@@ -258,15 +247,14 @@ public final class NativeVciProfile {
     if (includeCertificate) {
       generator.addCertificates(new JcaCertStore(Arrays.asList(certificate)));
     }
-    CMSSignedData signed =
-        generator.generate(new CMSProcessableByteArray(content), encapsulate);
+    CMSSignedData signed = generator.generate(new CMSProcessableByteArray(content), encapsulate);
     return signed.getEncoded();
   }
 
   private static ConformancePackage.DataObject find(
       List<ConformancePackage.DataObject> objects, String id) {
     for (ConformancePackage.DataObject object : objects) {
-      if (hex(object.id).equals(id)) return object;
+      if (HexUtil.format(object.id).equals(id)) return object;
     }
     return null;
   }
@@ -279,56 +267,5 @@ public final class NativeVciProfile {
       ConformancePackage.PutForm form,
       byte[] payload) {
     return new ConformancePackage.DataObject(id, label, contact, contactless, form, payload);
-  }
-
-  private static byte[] concat(byte[]... values) {
-    int length = 0;
-    for (byte[] value : values) length += value.length;
-    byte[] result = new byte[length];
-    int offset = 0;
-    for (byte[] value : values) {
-      System.arraycopy(value, 0, result, offset, value.length);
-      offset += value.length;
-    }
-    return result;
-  }
-
-  private static Tlv read(byte[] value, int offset) {
-    int start = offset;
-    int tag = value[offset++] & 0xFF;
-    if ((tag & 0x1F) == 0x1F) tag = (tag << 8) | (value[offset++] & 0xFF);
-    int length = value[offset++] & 0xFF;
-    if ((length & 0x80) != 0) {
-      int count = length & 0x7F;
-      length = 0;
-      while (count-- > 0) length = (length << 8) | (value[offset++] & 0xFF);
-    }
-    int end = offset + length;
-    if (end > value.length || start >= end) throw new IllegalArgumentException("invalid CHUID TLV");
-    return new Tlv(tag, end);
-  }
-
-  private static final class Tlv {
-    final int tag;
-    final int end;
-
-    Tlv(int tag, int end) {
-      this.tag = tag;
-      this.end = end;
-    }
-  }
-
-  private static String hex(byte[] value) {
-    StringBuilder out = new StringBuilder(value.length * 2);
-    for (byte item : value) out.append(String.format("%02X", item & 0xFF));
-    return out.toString();
-  }
-
-  private static byte[] hex(String value) {
-    byte[] result = new byte[value.length() / 2];
-    for (int index = 0; index < value.length(); index += 2) {
-      result[index / 2] = (byte) Integer.parseInt(value.substring(index, index + 2), 16);
-    }
-    return result;
   }
 }

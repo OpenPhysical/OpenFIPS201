@@ -3,8 +3,8 @@ package dev.mistial.tools.openfips201.nist;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import apdu4j.core.BIBO;
 import com.makina.security.openfips201.OpenFIPS201;
@@ -62,13 +62,13 @@ class GsaIcam46HeadlessSmokeTest {
     JavaCardEngine engine = JavaCardEngine.create();
     AID aid = new AID(PIV_AID, (short) 0, (byte) PIV_AID.length);
     engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
-    try (BIBO bibo = engine.connect("T=1", true)) {
-      ConformanceProvisioner.ProvisionReport report =
-          ConformanceProvisioner.provision(
-              bibo, ScpConfig.defaultTestScp03(), profile, null);
-      assertEquals(11, report.objectsCreated);
-      assertEquals(4, report.keysImported);
+    ConformanceProvisioner.ProvisionReport report =
+        ConformanceProvisioner.provision(
+            () -> engine.connect("T=1", true), ScpConfig.defaultTestScp03(), profile, null);
+    assertEquals(11, report.objectsCreated);
+    assertEquals(4, report.keysImported);
 
+    try (BIBO bibo = engine.connect("T=1", true)) {
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256)));
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0x20, 0x00, 0x80, profile.pin)));
 
@@ -89,12 +89,12 @@ class GsaIcam46HeadlessSmokeTest {
       JavaCardEngine engine = JavaCardEngine.create();
       AID aid = new AID(PIV_AID, (short) 0, (byte) PIV_AID.length);
       engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
+      ConformanceProvisioner.ProvisionReport report =
+          ConformanceProvisioner.provision(
+              () -> engine.connect("T=1", true), ScpConfig.defaultTestScp03(), profile, null);
+      assertEquals(profile.dataObjects.size(), report.objectsCreated, card);
+      assertEquals(profile.keys.size(), report.keysImported, card);
       try (BIBO bibo = engine.connect("T=1", true)) {
-        ConformanceProvisioner.ProvisionReport report =
-            ConformanceProvisioner.provision(
-                bibo, ScpConfig.defaultTestScp03(), profile, null);
-        assertEquals(profile.dataObjects.size(), report.objectsCreated, card);
-        assertEquals(profile.keys.size(), report.keysImported, card);
         assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256)));
         assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0x20, 0x00, 0x80, profile.pin)));
         assertObjectReadable(bibo, "5FC107");
@@ -118,11 +118,12 @@ class GsaIcam46HeadlessSmokeTest {
     JavaCardEngine engine = JavaCardEngine.create();
     AID aid = new AID(PIV_AID, (short) 0, (byte) PIV_AID.length);
     engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
+    ConformanceProvisioner.ProvisionReport report =
+        ConformanceProvisioner.provision(
+            () -> engine.connect("T=1", true), ScpConfig.defaultTestScp03(), profile, null);
+    assertEquals(profile.dataObjects.size(), report.objectsCreated, card);
+    assertEquals(profile.keys.size(), report.keysImported, card);
     try (BIBO bibo = engine.connect("T=1", true)) {
-      ConformanceProvisioner.ProvisionReport report =
-          ConformanceProvisioner.provision(bibo, ScpConfig.defaultTestScp03(), profile, null);
-      assertEquals(profile.dataObjects.size(), report.objectsCreated, card);
-      assertEquals(profile.keys.size(), report.keysImported, card);
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256)));
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0x20, 0x00, 0x80, profile.pin)));
       assertObjectReadable(bibo, "5FC107");
@@ -159,9 +160,7 @@ class GsaIcam46HeadlessSmokeTest {
     byte[] first = Arrays.copyOfRange(request, 0, 200);
     byte[] last = Arrays.copyOfRange(request, 200, request.length);
 
-    assertSw(
-        0x9000,
-        transmit(bibo, new CommandAPDU(0x10, 0x87, 0x07, 0x9E, first)));
+    assertSw(0x9000, transmit(bibo, new CommandAPDU(0x10, 0x87, 0x07, 0x9E, first)));
     byte[] response =
         collect(
             bibo,
@@ -173,7 +172,8 @@ class GsaIcam46HeadlessSmokeTest {
             new BigInteger(1, signature)
                 .modPow(publicKey.getPublicExponent(), publicKey.getModulus()),
             blockLength);
-    assertArrayEquals(representative, recovered, "9E signature must verify with the ICAM certificate");
+    assertArrayEquals(
+        representative, recovered, "9E signature must verify with the ICAM certificate");
   }
 
   private static ConformancePackage.KeyMaterial findKey(ConformancePackage profile, byte slot) {

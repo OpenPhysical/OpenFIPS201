@@ -105,6 +105,7 @@ run_image() {
       --target emulator \
       --config "$CONFIG" \
       --icam "$image_dir" \
+      --provision \
       --suite "$suite" \
       --out "$destination" >"$log" 2>&1
     status=$?

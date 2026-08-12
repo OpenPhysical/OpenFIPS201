@@ -25,6 +25,8 @@
 
 package dev.mistial.tools.openfips201.provisioning;
 
+import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.crypto.CryptoProviders;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,7 +36,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.PrivateKey;
-import java.security.Security;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPrivateKey;
@@ -46,7 +47,6 @@ import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 /**
  * Loads a GSA ICAM card-builder card folder natively into a {@link ConformancePackage}.
@@ -291,15 +291,15 @@ public final class IcamCardFolder {
     }
 
     String credentialId = root.getFileName().toString();
-    ConformancePackage result = new ConformancePackage(
-        credentialId,
-        root,
-        StandardCardProfile.PIN,
-        StandardCardProfile.PUK,
-        StandardCardProfile.ADMIN_KEY_ALG,
-        StandardCardProfile.ADMIN_KEY,
-        objects,
-        keys);
+    ConformancePackage result =
+        new ConformancePackage(
+            credentialId,
+            root,
+            StandardCardProfile.PIN,
+            StandardCardProfile.PUK,
+            null,
+            objects,
+            keys);
 
     // The Security Object signs hashes of the exact container bytes written to the card.
     // Reject any reconstruction mismatch before provisioning mutates a card.
@@ -314,9 +314,7 @@ public final class IcamCardFolder {
   }
 
   private static String toHex(byte[] value) {
-    StringBuilder result = new StringBuilder(value.length * 2);
-    for (byte element : value) result.append(String.format("%02X", element & 0xFF));
-    return result.toString();
+    return HexUtil.format(value);
   }
 
   private static void addRawObject(
@@ -339,7 +337,9 @@ public final class IcamCardFolder {
     if (payload.length == 0) {
       throw new IllegalArgumentException("Empty required ICAM object: " + file);
     }
-    objects.add(new ConformancePackage.DataObject(id, label, modeContact, modeContactless, putForm, payload));
+    objects.add(
+        new ConformancePackage.DataObject(
+            id, label, modeContact, modeContactless, putForm, payload));
   }
 
   private static void addOptionalRawObject(
@@ -456,7 +456,8 @@ public final class IcamCardFolder {
       if (fieldBits == 384) {
         return ALG_ECC_P384;
       }
-      throw new IllegalArgumentException("Unsupported ECC field size for OpenFIPS201 import: " + fieldBits);
+      throw new IllegalArgumentException(
+          "Unsupported ECC field size for OpenFIPS201 import: " + fieldBits);
     }
     throw new IllegalArgumentException(
         "Unsupported private key type: " + privateKey.getClass().getName());
@@ -495,13 +496,19 @@ public final class IcamCardFolder {
         new Comparator<Path>() {
           @Override
           public int compare(Path left, Path right) {
-            return left.getFileName().toString().compareToIgnoreCase(right.getFileName().toString());
+            return left.getFileName()
+                .toString()
+                .compareToIgnoreCase(right.getFileName().toString());
           }
         });
     if (preferredTokens != null) {
       for (String token : preferredTokens) {
         for (Path candidate : matches) {
-          if (candidate.getFileName().toString().toLowerCase(Locale.ROOT).contains(token.toLowerCase(Locale.ROOT))) {
+          if (candidate
+              .getFileName()
+              .toString()
+              .toLowerCase(Locale.ROOT)
+              .contains(token.toLowerCase(Locale.ROOT))) {
             return candidate;
           }
         }
@@ -542,7 +549,8 @@ public final class IcamCardFolder {
       if (!store.isKeyEntry(alias)) {
         continue;
       }
-      PrivateKey privateKey = (PrivateKey) store.getKey(alias, password == null ? new char[0] : password);
+      PrivateKey privateKey =
+          (PrivateKey) store.getKey(alias, password == null ? new char[0] : password);
       java.security.cert.Certificate cert = store.getCertificate(alias);
       if (privateKey != null && cert instanceof X509Certificate) {
         return new Pkcs12Entry(privateKey, (X509Certificate) cert);
@@ -552,9 +560,7 @@ public final class IcamCardFolder {
   }
 
   static void ensureProvider() {
-    if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-      Security.addProvider(new BouncyCastleProvider());
-    }
+    CryptoProviders.ensureBouncyCastle();
   }
 
   static final class Pkcs12Entry {

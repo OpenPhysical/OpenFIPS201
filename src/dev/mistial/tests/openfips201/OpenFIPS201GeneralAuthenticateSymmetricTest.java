@@ -1,7 +1,7 @@
 package dev.mistial.tests.openfips201;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -76,11 +76,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
     ResponseAPDU witnessResponse =
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C028000"));
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028000"));
     assertSw(0x9000, witnessResponse, "Mutual authentication witness request");
 
     byte[] encodedWitness = witnessResponse.getData();
@@ -97,8 +93,9 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
             TEST_ALGORITHM & 0xFF,
             KEY_REF_CARD_MANAGEMENT & 0xFF,
             concat(
-                new byte[] {(byte) 0x7C, (byte) (4 + 2 * blockLength), (byte) 0x80,
-                    (byte) blockLength},
+                new byte[] {
+                  (byte) 0x7C, (byte) (4 + 2 * blockLength), (byte) 0x80, (byte) blockLength
+                },
                 witness,
                 new byte[] {(byte) 0x81, (byte) blockLength},
                 hostChallenge));
@@ -119,11 +116,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
     ResponseAPDU response =
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C0480008100"));
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C0480008100"));
 
     assertSw(0x9000, response, "An empty Witness selects SP 800-73-5 Part 2 Case 4");
     assertEquals((byte) 0x80, response.getData()[2], "Mutual authentication returns a Witness");
@@ -148,11 +141,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
     assertSw(
         0x6A86,
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_SECURE_MESSAGING & 0xFF,
-            hex("7C028100")),
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_SECURE_MESSAGING & 0xFF, hex("7C028100")),
         "Key reference 04 must reject a non-SM mechanism");
     assertSw(
         0x6A86,
@@ -165,14 +154,14 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
         "An SM mechanism must reject a non-04 key reference");
   }
 
-  /** SP 800-73-5 Part 2 Section 3.2.4 requires 6A88 for an unsupported key reference. */
+  /** SP 800-73-5 Part 2 Section 3.2.4 requires 6A86 for an unsupported key reference. */
   @Test
-  void unsupportedKeyReferenceReturns6A88() {
+  void unsupportedKeyReferenceReturns6A86() {
     assertSw(0x9000, selectApplet(), "SELECT before unsupported-key validation");
     assertSw(
-        0x6A88,
+        0x6A86,
         transmit(0x00, 0x87, TEST_ALGORITHM & 0xFF, 0x01, hex("7C028100")),
-        "GENERAL AUTHENTICATE must hide nonexistent key material behind 6A88");
+        "GENERAL AUTHENTICATE must reject an unsupported P2 with 6A86");
   }
 
   /**
@@ -194,11 +183,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
     assertSw(
         0x6A86,
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C028100")),
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
         "An uninitialised key must not enter an authentication exchange");
   }
 
@@ -210,21 +195,12 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
     assertSw(
         0x6A80,
-        transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C00")),
+        transmit(0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C00")),
         "An empty Dynamic Authentication Template selects no valid operation");
     assertSw(
         0x6A80,
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C028500")),
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028500")),
         "An unknown element alone selects no valid operation");
   }
 
@@ -250,11 +226,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
     assertSw(
         0x9000,
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C028100")),
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
         "External-authentication challenge request");
     assertSw(
         0x6A80,
@@ -275,11 +247,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
     assertSw(
         0x6982,
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C028000")),
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028000")),
         "GENERAL AUTHENTICATE must require ATTR_PERMIT_MUTUAL");
   }
 
@@ -396,8 +364,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
               0x01,
               KEY_REF_CARD_MANAGEMENT & 0xFF,
               concat(
-                  new byte[] {(byte) 0x80, (byte) 0x01, TEST_ALGORITHM},
-                  keyUpdateData(keyBytes))),
+                  new byte[] {(byte) 0x80, (byte) 0x01, TEST_ALGORITHM}, keyUpdateData(keyBytes))),
           "SCP initial key import for 9B should succeed");
     }
   }
@@ -405,19 +372,13 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
   private ResponseAPDU requestWitness() {
     ResponseAPDU response =
         transmit(
-            0x00,
-            0x87,
-            TEST_ALGORITHM & 0xFF,
-            KEY_REF_CARD_MANAGEMENT & 0xFF,
-            hex("7C028000"));
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028000"));
     assertSw(0x9000, response, "Mutual-authentication witness request");
     return response;
   }
 
   private static byte[] mutualResponse(byte[] witness, byte[] challenge) {
-    return tlv(
-        (byte) 0x7C,
-        concat(tlv((byte) 0x80, witness), tlv((byte) 0x81, challenge)));
+    return tlv((byte) 0x7C, concat(tlv((byte) 0x80, witness), tlv((byte) 0x81, challenge)));
   }
 
   private static byte[] managementKeyDefinition(byte attributes) {

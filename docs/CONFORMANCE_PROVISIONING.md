@@ -55,7 +55,7 @@ ant -f build/build.xml tool-compile
 Start the ZeroMQ emulator (registers the applet class and serves APDUs):
 
 ```bash
-java -cp "build/tool-bin:tools/jcard-v26.07.13.jar:build/lib/*" \
+java -cp "build/tool-bin:tools/jcard-v26.08.10.jar:build/lib/*" \
   dev.mistial.tools.openfips201.OpenFips201Tool \
   emulator serve --endpoint tcp://127.0.0.1:5555
 ```
@@ -69,13 +69,13 @@ tools/provision-icam.sh \
 
 # or explicitly:
 CAP=build/matrix/standard-CS2-attestation/bin/OpenFIPS201-*.cap
-java -cp "build/tool-bin:tools/jcard-v26.07.13.jar:build/lib/*" \
+java -cp "build/tool-bin:tools/jcard-v26.08.10.jar:build/lib/*" \
   dev.mistial.tools.openfips201.OpenFips201Tool \
   applet install --cap "$CAP" --skip-load \
   --target zmq:tcp://127.0.0.1:5555 \
   --scp-key 404142434445464748494A4B4C4D4E4F
 
-java -cp "build/tool-bin:tools/jcard-v26.07.13.jar:build/lib/*" \
+java -cp "build/tool-bin:tools/jcard-v26.08.10.jar:build/lib/*" \
   dev.mistial.tools.openfips201.OpenFips201Tool \
   provision \
   --icam /path/to/.../46_Golden_FIPS_201-2_PIV \
@@ -83,6 +83,20 @@ java -cp "build/tool-bin:tools/jcard-v26.07.13.jar:build/lib/*" \
 ```
 
 Verified end-to-end against card 46: 11 objects + 4 RSA-2048 keys (9A/9C/9D/9E) import successfully.
+
+For cards with distinct SCP03 ENC, MAC, and DEK keys, pass the complete split key set:
+
+```bash
+ant -f build/build.xml openfips201-tool -Dargs='provision \
+  --icam /path/to/.../46_Golden_FIPS_201-2_PIV \
+  --target pcsc:Reader \
+  --scp-enc-key <enc-hex> \
+  --scp-mac-key <mac-hex> \
+  --scp-dek-key <dek-hex>'
+```
+
+Use `--scp-key <hex>` when all three SCP03 keys are identical. Do not combine the shared and split
+forms.
 
 ## piv-conformance (OpenPhysical fork)
 
@@ -92,6 +106,12 @@ After provisioning:
 export OPENFIPS201_EMULATOR_ENDPOINT=tcp://127.0.0.1:5555
 # run CCT / cardlib smoke against reader name "OpenFIPS201 Emulator"
 ```
+
+The provisioner uses separate card connections for issuer administration and verification. PIN,
+key, and object mutations run under GP SCP03. It then closes that connection, selects PIV on a
+fresh plain connection, verifies the PIN, and reassembles each object with ISO 7816-4 `00 C0` GET
+RESPONSE commands before comparing the exact bytes. Certification personalization occurs only
+after every readback succeeds.
 
 Expected MVP checks after load:
 

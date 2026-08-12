@@ -12,10 +12,10 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
 import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
-import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.Mockito;
 
 /**
@@ -188,7 +188,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
     provisionManagementKeyOverScp(managementKey);
     createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
-    authenticateManagementKey(managementKey);
+    authenticateCardManagementKey(ALG_AES_128, managementKey);
 
     // PUT DATA for a standard object:
     // 5C 03 5F C1 <id>   (tag list)
@@ -290,7 +290,9 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     ResponseAPDU discovery = getDataDiscovery();
     assertSw(0x9000, discovery, "GET DATA discovery should succeed after PUT DATA");
     assertArrayEquals(
-        hex("7E03010203"), discovery.getData(), "GET DATA must return the issuer's stored Discovery");
+        hex("7E03010203"),
+        discovery.getData(),
+        "GET DATA must return the issuer's stored Discovery");
   }
 
   @Test
@@ -513,19 +515,12 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     assertSw(PIV_SW_REFERENCE_NOT_FOUND, response, "Biometric PUT DATA requires reference 7F61");
   }
 
-  @Test
-  void putDataRejectsWrongP1() {
-    assertSw(0x9000, selectApplet(), "SELECT before PUT DATA P1 validation");
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x00, 0xFF, hex("5C035FC102530101"));
-    assertSw(ISO7816.SW_INCORRECT_P1P2, response, "PUT DATA requires P1=0x3F");
-  }
-
-  @Test
-  void putDataRejectsWrongP2() {
-    assertSw(0x9000, selectApplet(), "SELECT before PUT DATA P2 validation");
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFE, hex("5C035FC102530101"));
-    assertSw(
-        ISO7816.SW_INCORRECT_P1P2, response, "PUT DATA requires P2=0xFF (or 0x00 for admin path)");
+  @ParameterizedTest(name = "PUT DATA rejects P1={0}, P2={1}")
+  @CsvSource({"0, 255", "63, 254"})
+  void putDataRejectsInvalidParameters(int p1, int p2) {
+    assertSw(0x9000, selectApplet(), "SELECT before PUT DATA parameter validation");
+    ResponseAPDU response = transmit(0x00, 0xDB, p1, p2, hex("5C035FC102530101"));
+    assertSw(ISO7816.SW_INCORRECT_P1P2, response, "PUT DATA rejects invalid P1/P2");
   }
 
   @Test
@@ -568,21 +563,12 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertSw(0x9000, selectApplet(), "SELECT before capacity validation");
           assertSw(
               ISO7816.SW_WRONG_DATA,
-              transmit(
-                  0x84,
-                  0xDB,
-                  0x3F,
-                  0x00,
-                  hex("640E8B035FC1078C017F8D010891019B")),
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("640E8B035FC1078C017F8D010891019B")),
               "CREATE OBJECT requires a fixed capacity");
           assertSw(
               ISO7816.SW_WRONG_DATA,
               transmit(
-                  0x84,
-                  0xDB,
-                  0x3F,
-                  0x00,
-                  hex("64158B035FC1078C017F8D010891019B920200AA930100")),
+                  0x84, 0xDB, 0x3F, 0x00, hex("64158B035FC1078C017F8D010891019B920200AA930100")),
               "CREATE OBJECT rejects data after the capacity element");
         });
   }
@@ -808,10 +794,19 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
                     concat(
                         idTlv,
                         new byte[] {
-                          (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
-                          (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
-                          (byte) 0x91, (byte) 0x01, adminKey,
-                          (byte) 0x92, (byte) 0x02, (byte) 0x10, (byte) 0x00
+                          (byte) 0x8C,
+                          (byte) 0x01,
+                          (byte) 0x7F,
+                          (byte) 0x8D,
+                          (byte) 0x01,
+                          (byte) 0x7F,
+                          (byte) 0x91,
+                          (byte) 0x01,
+                          adminKey,
+                          (byte) 0x92,
+                          (byte) 0x02,
+                          (byte) 0x10,
+                          (byte) 0x00
                         }));
             assertSw(
                 0x9000,
@@ -822,28 +817,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   private void authenticateManagementKey(byte[] keyBytes) {
-    assertSw(0x9000, selectApplet(), "SELECT before management-key GENERAL AUTHENTICATE");
-
-    // Case 2 request for challenge (tag 0x81 with zero-length payload).
-    ResponseAPDU challengeResponse =
-        transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
-    assertSw(0x9000, challengeResponse, "GENERAL AUTHENTICATE challenge request should succeed");
-
-    byte[] challenge = extractChallenge(challengeResponse.getData(), 16);
-    byte[] encryptedChallenge = encryptAesEcbNoPadding(keyBytes, challenge);
-
-    byte[] responseData =
-        concat(
-            new byte[] {
-              (byte) 0x7C,
-              (byte) (encryptedChallenge.length + 2),
-              (byte) 0x82,
-              (byte) encryptedChallenge.length
-            },
-            encryptedChallenge);
-    ResponseAPDU verificationResponse =
-        transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, responseData);
-    assertSw(0x9000, verificationResponse, "GENERAL AUTHENTICATE verification should succeed");
+    authenticateCardManagementKey(ALG_AES_128, keyBytes);
   }
 
   private ResponseAPDU getDataNormal(byte id) {
@@ -906,30 +880,6 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     } catch (Exception e) {
       throw new IllegalStateException("Failed to encrypt challenge", e);
     }
-  }
-
-  protected void withMockedScp(Runnable action) {
-    try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
-      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
-      SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
-      Mockito.when(secureChannel.getSecurityLevel())
-          .thenReturn(
-              (byte)
-                  (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC));
-      Mockito.when(
-              secureChannel.unwrap(
-                  Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-          .thenAnswer(invocation -> (short) invocation.getArgument(2));
-      Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
-      action.run();
-    }
-  }
-
-  private static byte[] concat(byte[] prefix, byte[] suffix) {
-    byte[] output = new byte[prefix.length + suffix.length];
-    System.arraycopy(prefix, 0, output, 0, prefix.length);
-    System.arraycopy(suffix, 0, output, prefix.length, suffix.length);
-    return output;
   }
 
   private static boolean contains(byte[] value, byte[] expected) {

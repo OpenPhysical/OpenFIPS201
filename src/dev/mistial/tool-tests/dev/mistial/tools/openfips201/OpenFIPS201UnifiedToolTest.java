@@ -7,6 +7,7 @@
 
 package dev.mistial.tools.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -35,6 +36,10 @@ import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
 
 class OpenFIPS201UnifiedToolTest {
+  private static final String KEY_A = "00112233445566778899AABBCCDDEEFF";
+  private static final String KEY_B = "102132435465768798A9BACBDCEDFE0F";
+  private static final String KEY_C = "2031425364758697A8B9CADBECFD0E1F";
+
   @Test
   void rootHelpShowsIssuerWorkflowCommands() {
     CommandLine commandLine = new CommandLine(new OpenFips201Tool());
@@ -62,6 +67,59 @@ class OpenFIPS201UnifiedToolTest {
     assertTrue(help.contains("--pkcs11-module"));
     assertTrue(help.contains("--pkcs11-key-alias"));
     assertTrue(help.contains("--signer"));
+  }
+
+  @Test
+  void provisionHelpExposesSharedAndSplitScpKeys() {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    commandLine.setOut(new PrintWriter(out, true));
+
+    assertEquals(0, commandLine.execute("provision", "--help"));
+    String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
+    assertTrue(help.contains("--scp-key"));
+    assertTrue(help.contains("--scp-enc-key"));
+    assertTrue(help.contains("--scp-mac-key"));
+    assertTrue(help.contains("--scp-dek-key"));
+  }
+
+  @Test
+  void provisionAcceptsSharedScpKey() {
+    ProvisionCommand provision = new ProvisionCommand();
+    provision.scpKey = KEY_A;
+
+    ScpConfig config = provision.scp();
+
+    assertArrayEquals(HexUtil.parse(KEY_A), config.encKey);
+    assertArrayEquals(config.encKey, config.macKey);
+    assertArrayEquals(config.encKey, config.dekKey);
+  }
+
+  @Test
+  void provisionAcceptsThreeDistinctScpKeys() {
+    ProvisionCommand provision = new ProvisionCommand();
+    provision.scpEncKey = KEY_A;
+    provision.scpMacKey = KEY_B;
+    provision.scpDekKey = KEY_C;
+
+    ScpConfig config = provision.scp();
+
+    assertArrayEquals(HexUtil.parse(KEY_A), config.encKey);
+    assertArrayEquals(HexUtil.parse(KEY_B), config.macKey);
+    assertArrayEquals(HexUtil.parse(KEY_C), config.dekKey);
+  }
+
+  @Test
+  void provisionRejectsMixedOrIncompleteScpKeys() {
+    ProvisionCommand mixed = new ProvisionCommand();
+    mixed.scpKey = KEY_A;
+    mixed.scpEncKey = KEY_A;
+    assertThrows(IllegalArgumentException.class, mixed::scp);
+
+    ProvisionCommand incomplete = new ProvisionCommand();
+    incomplete.scpEncKey = KEY_A;
+    incomplete.scpMacKey = KEY_B;
+    assertThrows(IllegalArgumentException.class, incomplete::scp);
   }
 
   @Test

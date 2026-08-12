@@ -12,7 +12,13 @@ import com.tvec.testrunner.gui.displays.testmanager.testdata.TestVectors;
 import com.tvec.utility.Context;
 import com.tvec.utility.configuration.Configuration;
 import com.tvec.utility.configuration.ConfigurationEntry;
+import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
+import dev.mistial.tools.openfips201.applet.AppletInstallService;
+import dev.mistial.tools.openfips201.common.CardTarget;
+import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
+import dev.mistial.tools.openfips201.common.SecureMessagingAdvertisement;
 import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
 import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
 import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
@@ -26,6 +32,12 @@ import java.security.Security;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import javax.smartcardio.Card;
+import javax.smartcardio.CardChannel;
+import javax.smartcardio.CardTerminal;
+import javax.smartcardio.CommandAPDU;
+import javax.smartcardio.ResponseAPDU;
+import javax.smartcardio.TerminalFactory;
 
 public final class NistHarnessMain {
   private static final String CONTACT = "CONTACT";
@@ -40,8 +52,23 @@ public final class NistHarnessMain {
       return;
     }
 
-    if (!"emulator".equals(options.target)) {
-      throw new IllegalArgumentException("Only --target emulator is currently implemented");
+    if (!"emulator".equals(options.target) && !"pcsc".equals(options.target)) {
+      throw new IllegalArgumentException("--target must be emulator or pcsc");
+    }
+    if ("pcsc".equals(options.target) && options.reader == null) {
+      throw new IllegalArgumentException("--target pcsc requires --reader NAME");
+    }
+    if (options.provision && options.icam == null) {
+      throw new IllegalArgumentException("--provision requires --icam");
+    }
+    if (options.vciSuite != null && !options.provision) {
+      throw new IllegalArgumentException("--vci requires --provision");
+    }
+    if ("pcsc".equals(options.target) && options.provision && !options.yes) {
+      throw new IllegalArgumentException("Physical provisioning requires --yes");
+    }
+    if (options.reinstallCap != null && (!"pcsc".equals(options.target) || !options.provision)) {
+      throw new IllegalArgumentException("--reinstall-cap requires physical --provision");
     }
 
     File configFile = new File(options.config);
@@ -73,9 +100,7 @@ public final class NistHarnessMain {
       Path materialDirectory = Paths.get(options.out, "native-vci");
       Files.createDirectories(materialDirectory);
       byte suite =
-          "cs7".equals(options.vciSuite)
-              ? NativeVciProfile.SUITE_CS7
-              : NativeVciProfile.SUITE_CS2;
+          "cs7".equals(options.vciSuite) ? NativeVciProfile.SUITE_CS7 : NativeVciProfile.SUITE_CS2;
       nativeVci =
           NativeVciProfile.build(
               Paths.get(options.icam),
@@ -90,8 +115,23 @@ public final class NistHarnessMain {
       patchProfileConfiguration(configuration, profile, nativeVci);
     }
     List<HarnessResult> results = new ArrayList<HarnessResult>();
+    boolean secureMessagingAdvertised =
+        nativeVci != null
+            || ("pcsc".equals(options.target) && readSecureMessagingAdvertisement(options.reader));
+    selected = filterApplicableVectors(selected, secureMessagingAdvertised, results);
+    if (selected.isEmpty()) {
+      writeJUnitSummary(Paths.get(options.out, "nist-results.xml"), results);
+      return;
+    }
     int failures = 0;
-    if (profile != null && selected.size() > 1 && !options.sharedCard) {
+    if ("pcsc".equals(options.target)
+        && selected.size() > 1
+        && !options.sharedCard
+        && options.reinstallCap == null) {
+      throw new IllegalArgumentException(
+          "Multiple physical vectors require --shared-card or --reinstall-cap for isolation");
+    }
+    if (selected.size() > 1 && !options.sharedCard) {
       for (TestVector vector : selected) {
         failures +=
             runOnCard(
@@ -99,10 +139,11 @@ public final class NistHarnessMain {
                 java.util.Collections.singletonList(vector),
                 profile,
                 nativeVci,
-                results);
+                results,
+                options);
       }
     } else {
-      failures = runOnCard(configuration, selected, profile, nativeVci, results);
+      failures = runOnCard(configuration, selected, profile, nativeVci, results, options);
     }
     writeJUnitSummary(Paths.get(options.out, "nist-results.xml"), results);
     if (failures != 0) {
@@ -115,25 +156,53 @@ public final class NistHarnessMain {
       List<TestVector> selected,
       ConformancePackage profile,
       NativeVciProfile.Material nativeVci,
-      List<HarnessResult> results)
+      List<HarnessResult> results,
+      Options options)
       throws Exception {
+    if ("pcsc".equals(options.target)) {
+      CardTarget target = CardTarget.parse("pcsc:" + options.reader);
+      if (profile != null) {
+        if (options.provision) {
+          if (options.reinstallCap != null) {
+            installPhysicalApplet(target, options);
+          }
+          ConformanceProvisioner.provision(target, options.scp(), profile, System.out);
+        } else {
+          ConformanceProvisioner.verifyPublicProfile(target, profile);
+          System.out.println("Verified physical card matches profile " + profile.credentialId);
+        }
+      }
+      return runTests(configuration, selected, results, false);
+    }
     try (JCardEngineNistCardTransport.SharedCard card = JCardEngineNistCardTransport.createCard();
         NistCardTransport contact = new JCardEngineNistCardTransport(card, "T=1");
         NistCardTransport contactless = new JCardEngineNistCardTransport(card, "T=CL")) {
-      if (profile != null) {
+      if (profile != null && options.provision) {
         ConformanceProvisioner.provision(
-            card.openBibo("T=1"), ScpConfig.defaultTestScp03(), profile, System.out);
+            () -> card.openBibo("T=1"), ScpConfig.defaultTestScp03(), profile, System.out);
       }
       if (nativeVci != null) {
         NativeVciProfile.provisionSmCredential(card.openBibo("T=1"), nativeVci);
       }
       installProvider(contact, contactless);
-      return runTests(configuration, selected, results);
+      return runTests(configuration, selected, results, true);
     }
   }
 
-  private static void installProvider(
-      NistCardTransport contact, NistCardTransport contactless) {
+  private static void installPhysicalApplet(CardTarget target, Options options) throws Exception {
+    AppletInstallRequest request = new AppletInstallRequest();
+    request.capPath = Paths.get(options.reinstallCap);
+    request.packageAid = "A00000030800001000";
+    request.appletAid = "A000000308000010000100";
+    request.instanceAid = "A000000308000010000100";
+    request.deleteExisting = true;
+    try (GlobalPlatformSession session =
+        GlobalPlatformSession.open(target, GlobalPlatformSession.ISD_AID, options.scp())) {
+      new AppletInstallService().install(session, request);
+    }
+  }
+
+  private static void installProvider(NistCardTransport contact, NistCardTransport contactless) {
     OpenFips201TerminalFactorySpi.install(contact, contactless);
     if (Security.getProvider(OpenFips201NistProvider.PROVIDER_NAME) == null) {
       Security.insertProviderAt(new OpenFips201NistProvider(), 1);
@@ -143,14 +212,16 @@ public final class NistHarnessMain {
   }
 
   private static void patchConfiguration(Configuration configuration, Options options) {
-    setEntry(
-        configuration,
-        "connectivity:CONTACT_READER_NAME",
-        OpenFips201TerminalFactorySpi.CONTACT_READER);
-    setEntry(
-        configuration,
-        "connectivity:CONTACTLESS_READER_NAME",
-        OpenFips201TerminalFactorySpi.CONTACTLESS_READER);
+    String contactReader =
+        "pcsc".equals(options.target)
+            ? options.reader
+            : OpenFips201TerminalFactorySpi.CONTACT_READER;
+    String contactlessReader =
+        "pcsc".equals(options.target)
+            ? options.reader
+            : OpenFips201TerminalFactorySpi.CONTACTLESS_READER;
+    setEntry(configuration, "connectivity:CONTACT_READER_NAME", contactReader);
+    setEntry(configuration, "connectivity:CONTACTLESS_READER_NAME", contactlessReader);
     setEntry(configuration, "testing:PAIRING_CODE", options.pairingCode);
     setEntry(configuration, "testing:output:TestMainPath", options.out);
     setEntry(
@@ -170,8 +241,7 @@ public final class NistHarnessMain {
     entry.setValue(value);
   }
 
-  private static void setEntryIfPresent(
-      Configuration configuration, String name, String value) {
+  private static void setEntryIfPresent(Configuration configuration, String name, String value) {
     ConfigurationEntry entry = configuration.getEntry(name);
     if (entry != null) {
       entry.setValue(value);
@@ -181,6 +251,16 @@ public final class NistHarnessMain {
   private static void patchProfileConfiguration(
       Configuration configuration, ConformancePackage profile, NativeVciProfile.Material nativeVci)
       throws Exception {
+    // Baseline files contain broad development fixtures. A selected personalization profile is
+    // authoritative, so absent mechanisms must be cleared rather than inherited accidentally.
+    setEntry(configuration, "testing:KEY_ALGORITHMS_AUTHENTICATION", "");
+    setEntry(configuration, "testing:GENERAL_AUTH_ALGORITHM_PIV_AUTHENTICATION_KEY", "");
+    setEntry(configuration, "testing:KEY_ALGORITHMS_DIGITAL_SIGNATURE", "");
+    setEntry(configuration, "testing:KEY_ALGORITHMS_KEY_MANAGEMENT", "");
+    setEntry(configuration, "testing:KEY_ALGORITHMS_CARD_AUTHENTICATION", "");
+    setEntry(configuration, "testing:KEY_ALGORITHMS_CARD_AUTHENTICATION_SYMMETRIC", "");
+    setEntry(configuration, "testing:KEY_ALGORITHMS_CARD_MANAGEMENT", "");
+    setEntry(configuration, "testing:KEY_ALGORITHMS_SECURE_MESSAGING", "");
     for (ConformancePackage.KeyMaterial key : profile.keys) {
       String algorithm = String.format("%02X", key.algorithm & 0xFF);
       if (key.slot == (byte) 0x9A) {
@@ -204,6 +284,14 @@ public final class NistHarnessMain {
                 + algorithm,
             pemCertificate(key.certificate.getEncoded()));
       }
+    }
+    if (profile.managementKey != null) {
+      String algorithm = String.format("%02X", profile.managementKey.algorithm & 0xFF);
+      setEntry(configuration, "testing:KEY_ALGORITHMS_CARD_MANAGEMENT", algorithm);
+      setEntry(
+          configuration,
+          "testing:keytypealgorithmkeys:KEY_9B_" + algorithm,
+          HexUtil.format(profile.managementKey.key));
     }
     if (nativeVci != null) {
       setEntry(
@@ -275,8 +363,75 @@ public final class NistHarnessMain {
     return vector.getSubsystemName().equalsIgnoreCase(suite);
   }
 
+  private static List<TestVector> filterApplicableVectors(
+      List<TestVector> vectors, boolean secureMessagingAdvertised, List<HarnessResult> results) {
+    List<TestVector> applicable = new ArrayList<TestVector>();
+    for (TestVector vector : vectors) {
+      if (requiresSecureMessaging(vector) && !secureMessagingAdvertised) {
+        String name = testName(vector);
+        // NIST SP 800-73-5 Part 2, Section 3.1.1 ties 0x27/0x2E advertisement to possession of the
+        // corresponding SM key. Running an SM-only vector without that advertisement tests a
+        // feature the personalized card does not claim, so report N/A rather than a product pass
+        // or failure. This is especially important for legacy GSA images such as card 46, which
+        // contain PIV authentication keys and objects but no PIV Secure Messaging credential.
+        String reason = "card does not advertise secure messaging in the SELECT APT";
+        System.out.println("SKIP " + name + " " + reason);
+        results.add(HarnessResult.skipped(name, reason));
+      } else {
+        applicable.add(vector);
+      }
+    }
+    return applicable;
+  }
+
+  private static boolean requiresSecureMessaging(TestVector vector) {
+    // SecureMessagingErrorHandling is labeled CONTACT/CONTACTLESS by the NIST corpus because that
+    // is its transport, even though the test establishes and exercises PIV secure messaging.
+    // Interface-only filtering would therefore incorrectly run it on a non-SM personalization.
+    String testInterface = testInterface(vector);
+    return "SECURE_MESSAGING".equalsIgnoreCase(testInterface)
+        || "VIRTUAL_CONTACT".equalsIgnoreCase(testInterface)
+        || "SecureMessagingErrorHandling".equalsIgnoreCase(vector.getSubsystemName());
+  }
+
+  private static boolean readSecureMessagingAdvertisement(String readerName) throws Exception {
+    CardTerminal selected = null;
+    for (CardTerminal terminal : TerminalFactory.getDefault().terminals().list()) {
+      if (terminal.getName().equals(readerName)) {
+        selected = terminal;
+        break;
+      }
+    }
+    if (selected == null) {
+      throw new IllegalArgumentException("PC/SC reader not found: " + readerName);
+    }
+    Card card = selected.connect("*");
+    try {
+      CardChannel channel = card.getBasicChannel();
+      ResponseAPDU response =
+          channel.transmit(new CommandAPDU(hex("00A404000BA00000030800001000010000")));
+      if (response.getSW() != 0x9000) {
+        throw new IllegalStateException(
+            String.format("PIV SELECT preflight failed with SW %04X", response.getSW()));
+      }
+      // Use the card's live APT as the authority for physical-card applicability. A build profile
+      // name such as "CS2" expresses capability, while Section 3.1.1 permits advertisement only
+      // after the matching per-card SM key exists.
+      return SecureMessagingAdvertisement.isPresent(response.getData());
+    } finally {
+      card.disconnect(false);
+    }
+  }
+
+  private static byte[] hex(String value) {
+    return HexUtil.parse(value);
+  }
+
   private static int runTests(
-      Configuration configuration, List<TestVector> selected, List<HarnessResult> results) {
+      Configuration configuration,
+      List<TestVector> selected,
+      List<HarnessResult> results,
+      boolean resetEmulator) {
     int failures = 0;
     TestClassFactory factory = new TestClassFactory();
     for (int index = 0; index < selected.size(); index++) {
@@ -292,7 +447,9 @@ public final class NistHarnessMain {
       String failure = null;
       try {
         System.out.println("RUN " + (index + 1) + "/" + selected.size() + " " + name);
-        OpenFips201TerminalFactorySpi.reset(testInterface(vector));
+        if (resetEmulator) {
+          OpenFips201TerminalFactorySpi.reset(testInterface(vector));
+        }
         test.setupTest();
         result = test.runTest();
         String resultText = result == null ? "error" : result.getResultCodeText();
@@ -330,19 +487,27 @@ public final class NistHarnessMain {
     int failures = 0;
     StringBuilder xml = new StringBuilder();
     for (HarnessResult result : results) {
-      if (!result.passed) failures++;
+      if (!result.passed && !result.skipped) failures++;
     }
     xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    int skipped = 0;
+    for (HarnessResult result : results) {
+      if (result.skipped) skipped++;
+    }
     xml.append("<testsuite name=\"OpenFIPS201 NIST\" tests=\"")
         .append(results.size())
         .append("\" failures=\"")
         .append(failures)
+        .append("\" skipped=\"")
+        .append(skipped)
         .append("\">\n");
     for (HarnessResult result : results) {
       xml.append("  <testcase classname=\"nist.card\" name=\"")
           .append(xmlEscape(result.name))
           .append("\">");
-      if (!result.passed) {
+      if (result.skipped) {
+        xml.append("<skipped message=\"").append(xmlEscape(result.failure)).append("\"/>");
+      } else if (!result.passed) {
         xml.append("<failure message=\"")
             .append(xmlEscape(result.failure == null ? "failed" : result.failure))
             .append("\"/>");
@@ -355,7 +520,8 @@ public final class NistHarnessMain {
   }
 
   private static String xmlEscape(String value) {
-    return value.replace("&", "&amp;")
+    return value
+        .replace("&", "&amp;")
         .replace("\"", "&quot;")
         .replace("<", "&lt;")
         .replace(">", "&gt;");
@@ -364,12 +530,22 @@ public final class NistHarnessMain {
   private static final class HarnessResult {
     final String name;
     final boolean passed;
+    final boolean skipped;
     final String failure;
 
     HarnessResult(String name, boolean passed, String failure) {
+      this(name, passed, false, failure);
+    }
+
+    HarnessResult(String name, boolean passed, boolean skipped, String failure) {
       this.name = name;
       this.passed = passed;
+      this.skipped = skipped;
       this.failure = failure;
+    }
+
+    static HarnessResult skipped(String name, String reason) {
+      return new HarnessResult(name, false, true, reason);
     }
   }
 
@@ -390,8 +566,7 @@ public final class NistHarnessMain {
   }
 
   private static boolean isPassingResult(String resultText) {
-    return "pass".equalsIgnoreCase(resultText)
-        || "true".equalsIgnoreCase(resultText);
+    return "pass".equalsIgnoreCase(resultText) || "true".equalsIgnoreCase(resultText);
   }
 
   private static String testName(TestVector vector) {
@@ -409,6 +584,7 @@ public final class NistHarnessMain {
 
   private static final class Options {
     String target = "emulator";
+    String reader;
     String config = "tools/piv_test_runner/config/OpenFIPS201.xml";
     String out = "tools/piv_test_runner/piv_tests/harness";
     String suite;
@@ -420,6 +596,15 @@ public final class NistHarnessMain {
     boolean listTests;
     boolean fips;
     boolean sharedCard;
+    boolean provision;
+    boolean yes;
+    String reinstallCap;
+    String scpMode = "03";
+    int scpKeyVersion;
+    String scpKey;
+    String scpEncKey;
+    String scpMacKey;
+    String scpDekKey;
     boolean help;
 
     static Options parse(String[] args) {
@@ -434,8 +619,28 @@ public final class NistHarnessMain {
           options.fips = true;
         } else if ("--shared-card".equals(arg)) {
           options.sharedCard = true;
+        } else if ("--provision".equals(arg)) {
+          options.provision = true;
+        } else if ("--yes".equals(arg)) {
+          options.yes = true;
+        } else if ("--reinstall-cap".equals(arg)) {
+          options.reinstallCap = requireValue(args, ++i, arg);
+        } else if ("--scp".equals(arg)) {
+          options.scpMode = requireValue(args, ++i, arg);
+        } else if ("--scp-key-version".equals(arg)) {
+          options.scpKeyVersion = Integer.decode(requireValue(args, ++i, arg));
+        } else if ("--scp-key".equals(arg)) {
+          options.scpKey = requireValue(args, ++i, arg);
+        } else if ("--scp-enc-key".equals(arg)) {
+          options.scpEncKey = requireValue(args, ++i, arg);
+        } else if ("--scp-mac-key".equals(arg)) {
+          options.scpMacKey = requireValue(args, ++i, arg);
+        } else if ("--scp-dek-key".equals(arg)) {
+          options.scpDekKey = requireValue(args, ++i, arg);
         } else if ("--target".equals(arg)) {
           options.target = requireValue(args, ++i, arg);
+        } else if ("--reader".equals(arg)) {
+          options.reader = requireValue(args, ++i, arg);
         } else if ("--config".equals(arg)) {
           options.config = requireValue(args, ++i, arg);
         } else if ("--out".equals(arg)) {
@@ -459,10 +664,22 @@ public final class NistHarnessMain {
           throw new IllegalArgumentException("Unknown option: " + arg);
         }
       }
-      if (!options.listTests && options.suite == null && options.test == null) {
+      if (!options.help && !options.listTests && options.suite == null && options.test == null) {
         throw new IllegalArgumentException("Select tests with --suite, --test, or --list-tests");
       }
       return options;
+    }
+
+    ScpConfig scp() {
+      if ("emulator".equals(target)
+          && scpKey == null
+          && scpEncKey == null
+          && scpMacKey == null
+          && scpDekKey == null) {
+        return ScpConfig.defaultTestScp03();
+      }
+      return ScpConfig.fromCliKeys(
+          ScpConfig.parseMode(scpMode), scpKeyVersion, scpKey, scpEncKey, scpMacKey, scpDekKey);
     }
 
     private static String requireValue(String[] args, int index, String option) {
@@ -475,18 +692,29 @@ public final class NistHarnessMain {
     static void printUsage() {
       System.out.println("Usage: run-nist-harness.sh [options]");
       System.out.println(
-          "  --target emulator        Use the in-process OpenFIPS201 JCardEngine target");
+          "  --target emulator|pcsc   Use the in-process emulator or a physical PC/SC card");
+      System.out.println("  --reader NAME            PC/SC reader name for --target pcsc");
       System.out.println("  --config FILE            NIST Test Runner configuration XML");
       System.out.println("  --out DIR                Local output directory");
-      System.out.println("  --fips                   Compile and test the FIPS_MODE applet profile");
+      System.out.println(
+          "  --fips                   Compile and test the FIPS_MODE applet profile");
       System.out.println("  --list-tests             List available NIST vectors");
       System.out.println(
           "  --suite contact          Run an interface, card-<interface>, all, or subsystem");
       System.out.println("  --test Subsystem:Id      Run one vector, for example SelectCommand:1");
-      System.out.println("  --icam DIR               Provision a GSA ICAM card folder before testing");
+      System.out.println(
+          "  --icam DIR               Load expected GSA ICAM personalization metadata");
+      System.out.println("  --provision              Apply --icam before testing");
+      System.out.println("  --yes                    Confirm physical-card mutation");
+      System.out.println("  --reinstall-cap FILE     Reinstall a fresh physical applet per vector");
+      System.out.println("  --scp-key HEX            Shared SCP key for physical provisioning");
+      System.out.println("  --scp-enc-key HEX        Split SCP ENC key");
+      System.out.println("  --scp-mac-key HEX        Split SCP MAC key");
+      System.out.println("  --scp-dek-key HEX        Split SCP DEK key");
       System.out.println("  --vci cs2|cs7           Build a signed native Part 1 VCI profile");
       System.out.println("  --pairing-code 12345678 Eight-digit test-card pairing code");
-      System.out.println("  --shared-card            Preserve one ICAM image across multiple vectors");
+      System.out.println(
+          "  --shared-card            Preserve one ICAM image across multiple vectors");
       System.out.println("  --limit N                Stop after N selected vectors");
     }
   }

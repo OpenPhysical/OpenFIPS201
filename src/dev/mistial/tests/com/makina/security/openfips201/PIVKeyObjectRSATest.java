@@ -1,8 +1,8 @@
 package com.makina.security.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Method;
@@ -38,7 +38,8 @@ class PIVKeyObjectRSATest {
       ISOException wrongLength =
           assertThrows(
               ISOException.class,
-              () -> key.setPublicExponent(new byte[] {0x00, 0x01, 0x00, 0x01}, (short) 0, (short) 4));
+              () ->
+                  key.setPublicExponent(new byte[] {0x00, 0x01, 0x00, 0x01}, (short) 0, (short) 4));
       assertEquals(ISO7816.SW_WRONG_DATA, wrongLength.getReason());
     }
   }

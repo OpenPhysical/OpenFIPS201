@@ -25,77 +25,28 @@
 
 package dev.mistial.tools.openfips201.provisioning;
 
-import java.io.ByteArrayOutputStream;
+import dev.mistial.tools.openfips201.common.BerTlvWriter;
+import dev.mistial.tools.openfips201.common.ByteArrays;
 import java.math.BigInteger;
-import java.util.Arrays;
 
 /** Minimal BER-TLV helpers shared by conformance provisioning APDU builders. */
 public final class AdminTlv {
   private AdminTlv() {}
 
   public static byte[] tlv(int tag, byte[] value) {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    writeTag(out, tag);
-    writeLength(out, value.length);
-    out.write(value, 0, value.length);
-    return out.toByteArray();
+    return BerTlvWriter.encode(tag, value);
   }
 
   public static byte[] concat(byte[]... parts) {
-    int total = 0;
-    for (byte[] part : parts) {
-      total += part.length;
-    }
-    byte[] out = new byte[total];
-    int offset = 0;
-    for (byte[] part : parts) {
-      System.arraycopy(part, 0, out, offset, part.length);
-      offset += part.length;
-    }
-    return out;
+    return ByteArrays.concat(parts);
   }
 
   /** Unsigned fixed-width encoding of a BigInteger (big-endian, zero-padded or trimmed). */
   public static byte[] fixed(BigInteger value, int length) {
-    byte[] raw = value.toByteArray();
-    if (raw.length == length) {
-      return raw;
-    }
-    byte[] out = new byte[length];
-    if (raw.length > length) {
-      System.arraycopy(raw, raw.length - length, out, 0, length);
-    } else {
-      System.arraycopy(raw, 0, out, length - raw.length, raw.length);
-    }
-    return out;
+    return ByteArrays.unsignedFixed(value, length);
   }
 
   public static byte[] copyOf(byte[] value) {
-    return value == null ? null : Arrays.copyOf(value, value.length);
-  }
-
-  private static void writeTag(ByteArrayOutputStream out, int tag) {
-    if (tag > 0xFFFF) {
-      throw new IllegalArgumentException("Unsupported TLV tag: " + Integer.toHexString(tag));
-    }
-    if (tag > 0xFF) {
-      out.write((tag >> 8) & 0xFF);
-    }
-    out.write(tag & 0xFF);
-  }
-
-  private static void writeLength(ByteArrayOutputStream out, int length) {
-    if (length < 0x80) {
-      out.write(length);
-    } else if (length <= 0xFF) {
-      out.write(0x81);
-      out.write(length);
-    } else if (length <= 0xFFFF) {
-      out.write(0x82);
-      out.write((length >> 8) & 0xFF);
-      out.write(length & 0xFF);
-    } else {
-      throw new IllegalArgumentException("TLV value too large: " + length);
-    }
+    return ByteArrays.copyOfNullable(value);
   }
 }

@@ -52,8 +52,9 @@ public final class ConformancePackage {
   public final Path sourceDirectory;
   public final byte[] pin;
   public final byte[] puk;
-  public final byte adminKeyAlg;
-  public final byte[] adminKey;
+  /** Optional PIV card-application management key. Absence means administration requires SCP. */
+  public final ManagementKeyMaterial managementKey;
+
   public final List<DataObject> dataObjects;
   public final List<KeyMaterial> keys;
 
@@ -62,18 +63,30 @@ public final class ConformancePackage {
       Path sourceDirectory,
       byte[] pin,
       byte[] puk,
-      byte adminKeyAlg,
-      byte[] adminKey,
+      ManagementKeyMaterial managementKey,
       List<DataObject> dataObjects,
       List<KeyMaterial> keys) {
     this.credentialId = credentialId;
     this.sourceDirectory = sourceDirectory;
     this.pin = AdminTlv.copyOf(pin);
     this.puk = AdminTlv.copyOf(puk);
-    this.adminKeyAlg = adminKeyAlg;
-    this.adminKey = AdminTlv.copyOf(adminKey);
+    this.managementKey = managementKey;
     this.dataObjects = Collections.unmodifiableList(new ArrayList<DataObject>(dataObjects));
     this.keys = Collections.unmodifiableList(new ArrayList<KeyMaterial>(keys));
+  }
+
+  /** Explicit 9B mechanism and key bytes. This must never be inferred from loader defaults. */
+  public static final class ManagementKeyMaterial {
+    public final byte algorithm;
+    public final byte[] key;
+
+    public ManagementKeyMaterial(byte algorithm, byte[] key) {
+      if (key == null || key.length == 0) {
+        throw new IllegalArgumentException("management key bytes are required");
+      }
+      this.algorithm = algorithm;
+      this.key = AdminTlv.copyOf(key);
+    }
   }
 
   /** A PIV data object ready to create and write. */

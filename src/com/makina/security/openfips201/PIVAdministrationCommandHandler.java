@@ -62,6 +62,43 @@ final class PIVAdministrationCommandHandler {
     }
   }
 
+  /** Reads the required contact and contactless access modes and advances past both tags. */
+  private short readAccessModes(TLVReader reader) {
+    if (!reader.match(CONST_TAG_MODE_CONTACT)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_MISSING);
+    }
+    if (reader.getLength() != (short) 1) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH);
+    }
+    byte contact = reader.toByte();
+    owner.rejectUnsupportedOccAccessMode(contact);
+    reader.moveNext();
+
+    if (!reader.match(CONST_TAG_MODE_CONTACTLESS)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_MISSING);
+    }
+    if (reader.getLength() != (short) 1) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH);
+    }
+    byte contactless = reader.toByte();
+    owner.rejectUnsupportedOccAccessMode(contactless);
+    reader.moveNext();
+    return (short) (((short) (contact & 0xFF) << 8) | (short) (contactless & 0xFF));
+  }
+
+  /** Reads the optional administrative-key reference and advances when present. */
+  private byte readOptionalAdminKey(TLVReader reader) {
+    if (!reader.match(CONST_TAG_ADMIN_KEY)) {
+      return (byte) 0;
+    }
+    if (reader.getLength() != (short) 1) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH);
+    }
+    byte adminKey = reader.toByte();
+    reader.moveNext();
+    return adminKey;
+  }
+
   private void processPersonalizeAppletRequest(short requestLength) {
     if (requestLength != (short) 0
         || GPSystem.getCardContentState() != GPSystem.APPLICATION_SELECTABLE) {
@@ -102,51 +139,10 @@ final class PIVAdministrationCommandHandler {
     short idOffset = reader.getDataOffset();
     reader.moveNext();
 
-    // PRE-CONDITION 3 - The 'MODE CONTACT' tag MUST be present
-    if (!reader.match(CONST_TAG_MODE_CONTACT)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 4 - The 'MODE CONTACT' tag MUST be length 1
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH);
-      return;
-    }
-
-    byte modeContact = reader.toByte();
-    owner.rejectUnsupportedOccAccessMode(modeContact);
-    reader.moveNext();
-
-    // PRE-CONDITION 5 - The 'MODE CONTACTLESS' tag MUST be present
-    if (!reader.match(CONST_TAG_MODE_CONTACTLESS)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 6 - The 'MODE CONTACTLESS' tag MUST be length 1
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH);
-      return;
-    }
-
-    byte modeContactless = reader.toByte();
-    owner.rejectUnsupportedOccAccessMode(modeContactless);
-    reader.moveNext();
-
-    // PRE-CONDITION 7 - The 'ADMIN KEY' tag MAY be present
-    byte adminKey = (byte) 0;
-    if (reader.match(CONST_TAG_ADMIN_KEY)) {
-
-      // PRE-CONDITION 8 - If the 'ADMIN KEY' tag is present, it MUST be length 1
-      if (reader.getLength() != (short) 1) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH);
-        return;
-      }
-
-      adminKey = reader.toByte();
-      reader.moveNext();
-    }
+    short accessModes = readAccessModes(reader);
+    byte modeContact = (byte) (accessModes >> 8);
+    byte modeContactless = (byte) accessModes;
+    byte adminKey = readOptionalAdminKey(reader);
 
     short capacity = (short) 0;
     if (reader.match(CONST_TAG_CAPACITY)) {
@@ -222,51 +218,10 @@ final class PIVAdministrationCommandHandler {
     byte id = reader.toByte();
     reader.moveNext();
 
-    // PRE-CONDITION 3 - The 'MODE CONTACT' tag MUST be present
-    if (!reader.match(CONST_TAG_MODE_CONTACT)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 4 - The 'MODE CONTACT' tag MUST be length 1
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH);
-      return;
-    }
-
-    byte modeContact = reader.toByte();
-    owner.rejectUnsupportedOccAccessMode(modeContact);
-    reader.moveNext();
-
-    // PRE-CONDITION 5 - The 'MODE CONTACTLESS' tag MUST be present
-    if (!reader.match(CONST_TAG_MODE_CONTACTLESS)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 6 - The 'MODE CONTACTLESS' tag MUST be length 1
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH);
-      return;
-    }
-
-    byte modeContactless = reader.toByte();
-    owner.rejectUnsupportedOccAccessMode(modeContactless);
-    reader.moveNext();
-
-    // PRE-CONDITION 7 - The 'ADMIN KEY' tag MAY be present
-    byte adminKey = (byte) 0;
-    if (reader.match(CONST_TAG_ADMIN_KEY)) {
-
-      // PRE-CONDITION 8 - If the 'ADMIN KEY' tag is present, it MUST be length 1
-      if (reader.getLength() != (short) 1) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH);
-        return;
-      }
-
-      adminKey = reader.toByte();
-      reader.moveNext();
-    }
+    short accessModes = readAccessModes(reader);
+    byte modeContact = (byte) (accessModes >> 8);
+    byte modeContactless = (byte) accessModes;
+    byte adminKey = readOptionalAdminKey(reader);
 
     // PRE-CONDITION 9 - The 'KEY MECHANISM' tag MUST be present
     if (!reader.match(CONST_TAG_KEY_MECHANISM)) {
@@ -797,8 +752,7 @@ final class PIVAdministrationCommandHandler {
                 key.clear();
                 ISOException.throwIt(ISO7816.SW_FILE_INVALID);
               }
-              if (!importedKey.hasPendingImportedParts()
-                  && importedKey.hasPrivateMaterial()) {
+              if (!importedKey.hasPendingImportedParts() && importedKey.hasPrivateMaterial()) {
                 importedKey.markImportedPairReady();
               }
             }

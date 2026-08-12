@@ -25,7 +25,11 @@
 
 package dev.mistial.tools.openfips201.attestation;
 
-import java.io.ByteArrayOutputStream;
+import static dev.mistial.tools.openfips201.common.ByteArrays.concat;
+
+import dev.mistial.tools.openfips201.common.BerTlvWriter;
+import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.crypto.CryptoProviders;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.security.GeneralSecurityException;
@@ -34,7 +38,6 @@ import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
-import java.security.Security;
 import java.security.Signature;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateExpiredException;
@@ -61,8 +64,6 @@ import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.bouncycastle.pkcs.PKCS10CertificationRequest;
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
-import org.bouncycastle.util.encoders.Hex;
-import pro.javacard.gp.GPUtils;
 
 final class AttestationSupport {
   static final byte F9_AUTHORITY = (byte) 0xF9;
@@ -78,15 +79,12 @@ final class AttestationSupport {
   static final byte ACCESS_ALWAYS = (byte) 0x7F;
   static final byte ATTR_IMPORTABLE = (byte) 0x10;
   static final String DEFAULT_ISSUER_OBJECT_ID_HEX = "5FFF01";
-  static final byte[] PIV_AID = hex("A000000308000010000100");
-  static final byte[] DEFAULT_ISSUER_OBJECT_ID = hex(DEFAULT_ISSUER_OBJECT_ID_HEX);
+  static final byte[] DEFAULT_ISSUER_OBJECT_ID = HexUtil.parse(DEFAULT_ISSUER_OBJECT_ID_HEX);
 
   private AttestationSupport() {}
 
   static void ensureProvider() {
-    if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-      Security.addProvider(new BouncyCastleProvider());
-    }
+    CryptoProviders.ensureBouncyCastle();
   }
 
   static byte[] createF9KeyDefinition() {
@@ -221,7 +219,7 @@ final class AttestationSupport {
     if (certificate.getBasicConstraints() < 0) {
       throw new GeneralSecurityException("F9 issuer certificate must be a CA certificate");
     }
-    byte[] challenge = hex("4639206174746573746174696F6E2070726F6F66");
+    byte[] challenge = HexUtil.parse("4639206174746573746174696F6E2070726F6F66");
     Signature signer = Signature.getInstance("SHA256withECDSA");
     signer.initSign(privateKey);
     signer.update(challenge);
@@ -303,47 +301,12 @@ final class AttestationSupport {
   }
 
   static byte[] tlv(int tag, byte[] value) {
-    ByteArrayOutputStream output = new ByteArrayOutputStream();
-    output.write(tag & 0xFF);
-    writeLength(output, value.length);
-    output.write(value, 0, value.length);
-    return output.toByteArray();
-  }
-
-  static byte[] concat(byte[]... arrays) {
-    return GPUtils.concatenate(arrays);
-  }
-
-  static byte[] hex(String value) {
-    try {
-      return Hex.decode(value.replace(" ", "").replace("\n", "").replace("\t", ""));
-    } catch (RuntimeException e) {
-      throw new IllegalArgumentException("Invalid hex: " + value, e);
-    }
-  }
-
-  static String toHex(byte[] bytes) {
-    return Hex.toHexString(bytes).toUpperCase();
+    return BerTlvWriter.encode(tag, value);
   }
 
   static void clear(byte[] bytes) {
     if (bytes != null) {
       Arrays.fill(bytes, (byte) 0x00);
-    }
-  }
-
-  private static void writeLength(ByteArrayOutputStream output, int length) {
-    if (length < 0x80) {
-      output.write(length);
-    } else if (length <= 0xFF) {
-      output.write(0x81);
-      output.write(length);
-    } else if (length <= 0xFFFF) {
-      output.write(0x82);
-      output.write((length >>> 8) & 0xFF);
-      output.write(length & 0xFF);
-    } else {
-      throw new IllegalArgumentException("TLV value too large");
     }
   }
 

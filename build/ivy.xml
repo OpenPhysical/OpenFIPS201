@@ -10,6 +10,7 @@
 
   <dependencies>
     <dependency org="org.junit.jupiter" name="junit-jupiter-api" rev="6.1.0" conf="test-compile->default"/>
+    <dependency org="org.junit.jupiter" name="junit-jupiter-params" rev="6.1.0" conf="test-compile->default"/>
     <dependency org="org.mockito" name="mockito-core" rev="5.23.0" conf="test-compile->default"/>
     <dependency org="com.google.code.gson" name="gson" rev="2.11.0" conf="test-compile,test-runtime->default"/>
     <dependency org="org.bouncycastle" name="bcpkix-jdk18on" rev="1.84" conf="test-compile,tool-compile->default"/>

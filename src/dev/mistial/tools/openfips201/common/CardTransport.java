@@ -12,13 +12,35 @@ import apdu4j.core.BIBO;
 /** Workflow-scoped card transport with sequential session ownership. */
 public final class CardTransport implements AutoCloseable {
   private final BIBO bibo;
+  private final boolean ownsConnection;
   private final Thread ownerThread;
   private boolean open = true;
   private boolean sessionActive;
 
   CardTransport(BIBO bibo) {
+    this(bibo, true);
+  }
+
+  private CardTransport(BIBO bibo, boolean ownsConnection) {
     this.bibo = bibo;
+    this.ownsConnection = ownsConnection;
     this.ownerThread = Thread.currentThread();
+  }
+
+  /** Takes ownership of an already-open card connection. */
+  public static CardTransport own(BIBO bibo) {
+    if (bibo == null) {
+      throw new IllegalArgumentException("card connection is required");
+    }
+    return new CardTransport(bibo, true);
+  }
+
+  /** Borrows an already-open card connection without closing it when this wrapper closes. */
+  public static CardTransport borrow(BIBO bibo) {
+    if (bibo == null) {
+      throw new IllegalArgumentException("card connection is required");
+    }
+    return new CardTransport(bibo, false);
   }
 
   public BIBO bibo() {
@@ -45,7 +67,9 @@ public final class CardTransport implements AutoCloseable {
       throw new IllegalStateException("Cannot close a card transport with an active session");
     }
     open = false;
-    bibo.close();
+    if (ownsConnection) {
+      bibo.close();
+    }
   }
 
   BIBO acquireSession() {

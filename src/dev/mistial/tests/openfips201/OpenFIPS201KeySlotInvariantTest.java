@@ -121,11 +121,7 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
               "Key Management must have the key-establishment role");
           assertSw(
               0x9000,
-              createKey(
-                  SLOT_KEY_MANAGEMENT,
-                  ALG_ECC_P256,
-                  ROLE_KEY_ESTABLISH,
-                  ATTR_IMPORTABLE),
+              createKey(SLOT_KEY_MANAGEMENT, ALG_ECC_P256, ROLE_KEY_ESTABLISH, ATTR_IMPORTABLE),
               "A valid Table 10 Key Management definition should succeed");
         });
   }
@@ -137,19 +133,11 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
           assertSw(0x9000, selectApplet(), "SELECT before strict management policy tests");
           assertSw(
               0x6A80,
-              createKey(
-                  SLOT_MANAGEMENT,
-                  ALG_AES_128,
-                  ROLE_ADMIN,
-                  ATTR_IMPORTABLE_PERMIT_INTERNAL),
+              createKey(SLOT_MANAGEMENT, ALG_AES_128, ROLE_ADMIN, ATTR_IMPORTABLE_PERMIT_INTERNAL),
               "The management key must not expose INTERNAL AUTHENTICATE");
           assertSw(
               0x6A80,
-              createKey(
-                  SLOT_SECURE_MESSAGING,
-                  ALG_ECC_P256,
-                  ROLE_KEY_ESTABLISH,
-                  ATTR_IMPORTABLE),
+              createKey(SLOT_SECURE_MESSAGING, ALG_ECC_P256, ROLE_KEY_ESTABLISH, ATTR_IMPORTABLE),
               "Secure Messaging must use the compiled cipher-suite identifier");
         });
   }

@@ -107,17 +107,14 @@ class OpenFIPS201VciEndToEndTest {
     NativeVciProfile.Material material =
         NativeVciProfile.build(GSA_CARD_46, caPrefix, "12345678", suite);
 
-    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
-      ConformanceProvisioner.provision(
-          bibo, ScpConfig.defaultTestScp03(), material.profile, System.out);
-    }
+    ConformanceProvisioner.provision(
+        () -> new ZmqBibo(endpoint, 10_000),
+        ScpConfig.defaultTestScp03(),
+        material.profile,
+        System.out);
     try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
       VciProvisioning.provisionSmCredentialOnly(
-          bibo,
-          material.signerCertificatePath,
-          material.signerKeyPath,
-          null,
-          material.suite);
+          bibo, material.signerCertificatePath, material.signerKeyPath, null, material.suite);
     }
     try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
       VciProvisioning.EstablishedSession established =

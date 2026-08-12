@@ -16,8 +16,17 @@ final class PIVDataCommandHandler {
   private static final short ZERO = (short) 0;
   private static final short INVALID_DISCOVERY_POLICY = (short) -1;
   private static final byte[] PIV_AID = {
-    (byte) 0xA0, (byte) 0x00, (byte) 0x00, (byte) 0x03, (byte) 0x08, (byte) 0x00,
-    (byte) 0x00, (byte) 0x10, (byte) 0x00, (byte) 0x01, (byte) 0x00
+    (byte) 0xA0,
+    (byte) 0x00,
+    (byte) 0x00,
+    (byte) 0x03,
+    (byte) 0x08,
+    (byte) 0x00,
+    (byte) 0x00,
+    (byte) 0x10,
+    (byte) 0x00,
+    (byte) 0x01,
+    (byte) 0x00
   };
 
   private final Config config;
@@ -40,11 +49,7 @@ final class PIVDataCommandHandler {
   }
 
   short getData(
-      byte[] buffer,
-      short offset,
-      short length,
-      boolean vciSatisfied,
-      boolean vciAdvertised) {
+      byte[] buffer, short offset, short length, boolean vciSatisfied, boolean vciAdvertised) {
     if (buffer[offset++] != (byte) 0x5C) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
@@ -95,7 +100,10 @@ final class PIVDataCommandHandler {
     return policy != INVALID_DISCOVERY_POLICY && (((byte) (policy >> 8) & (byte) 0x20) != (byte) 0);
   }
 
-  /** Returns the validated PIN Usage Policy, or -1 when the stored Discovery Object is absent or invalid. */
+  /**
+   * Returns the validated PIN Usage Policy, or -1 when the stored Discovery Object is absent or
+   * invalid.
+   */
   short getDiscoveryPolicy() {
     PIVDataObject discovery = dataStore.findSingleByte(PIV.ID_DATA_DISCOVERY);
     if (discovery == null || !discovery.isInitialised()) return INVALID_DISCOVERY_POLICY;
@@ -151,12 +159,7 @@ final class PIVDataCommandHandler {
     return true;
   }
 
-  void putData(
-      byte[] buffer,
-      short offset,
-      short length,
-      boolean vciSatisfied,
-      byte protection) {
+  void putData(byte[] buffer, short offset, short length, boolean vciSatisfied, byte protection) {
     final short initialOffset = offset;
     final short end = (short) (offset + length);
     if (length <= ZERO || end < offset || end > (short) buffer.length) {
@@ -266,8 +269,7 @@ final class PIVDataCommandHandler {
     return length;
   }
 
-  private static boolean isDiscoveryDataObject(
-      byte[] idBuffer, short idOffset, short idLength) {
+  private static boolean isDiscoveryDataObject(byte[] idBuffer, short idOffset, short idLength) {
     if (idLength < (short) 1 || idLength > (short) 3) return false;
     short leading = (short) (idLength - (short) 1);
     for (short index = ZERO; index < leading; index++) {

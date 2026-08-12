@@ -7,6 +7,7 @@
 
 package dev.mistial.tools.openfips201.attestation;
 
+import dev.mistial.tools.openfips201.common.ApduSupport;
 import dev.mistial.tools.openfips201.common.CardSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.crypto.PemFiles;
@@ -205,15 +206,7 @@ public final class AttestationAuthorityService {
   }
 
   private static void sendChainedPutData(CardSession session, byte[] payload) {
-    int offset = 0;
-    while (offset < payload.length) {
-      int chunkLength = Math.min(0xEF, payload.length - offset);
-      byte[] chunk = new byte[chunkLength];
-      System.arraycopy(payload, offset, chunk, 0, chunkLength);
-      offset += chunkLength;
-      int cla = offset < payload.length ? 0x10 : 0x00;
-      transmitExpect(session, new apdu4j.core.CommandAPDU(cla, 0xDB, 0x3F, 0xFF, chunk), false);
-    }
+    ApduSupport.sendChained(session::transmit, 0x00, 0xDB, 0x3F, 0xFF, payload, 0xEF, "PUT DATA");
   }
 
   static void transmitExpect(

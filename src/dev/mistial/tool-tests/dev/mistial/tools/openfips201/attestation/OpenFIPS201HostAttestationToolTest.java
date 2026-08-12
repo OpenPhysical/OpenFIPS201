@@ -493,7 +493,7 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   private static byte[] hex(String value) {
-    return AttestationSupport.hex(value);
+    return dev.mistial.tools.openfips201.common.HexUtil.parse(value);
   }
 
   private static final class RecordingSession implements CardSession {

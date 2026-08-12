@@ -3,6 +3,7 @@ package dev.mistial.tests.openfips201;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.Test;
 
@@ -126,12 +127,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         () ->
             assertSw(
                 0x9000,
-                transmit(
-                    0x84,
-                    0xDB,
-                    0x3F,
-                    0xFF,
-                    hex("7E124F0BA0000003080000100001005F2F024800")),
+                transmit(0x84, 0xDB, 0x3F, 0xFF, hex("7E124F0BA0000003080000100001005F2F024800")),
                 "Store pairing-required Discovery policy"));
 
     pairingRequired = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"));
@@ -149,12 +145,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                 "Enable VCI without pairing code");
             assertSw(
                 0x9000,
-                transmit(
-                    0x84,
-                    0xDB,
-                    0x3F,
-                    0xFF,
-                    hex("7E124F0BA0000003080000100001005F2F024C00")),
+                transmit(0x84, 0xDB, 0x3F, 0xFF, hex("7E124F0BA0000003080000100001005F2F024C00")),
                 "Store no-pairing Discovery policy");
           }
         });
@@ -245,14 +236,13 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
     configureVciMode((byte) 0x02);
     createVciKeyOverScp(ATTR_NONE, activeAlgorithm());
 
-    ResponseAPDU secondSuite =
-        createVciKeyOverScpForResponse(ATTR_NONE, inactiveAlgorithm());
+    ResponseAPDU secondSuite = createVciKeyOverScpForResponse(ATTR_NONE, inactiveAlgorithm());
     assertEquals(0x6A81, secondSuite.getSW(), "Card must not accept both SM suites");
   }
 
   /**
-   * SP 800-73-5 Part 2 Section 4.1 reserves key 04 for OPACITY establishment. Tag 85 is the
-   * generic key-management ECDH form and must never expose key 04's shared secret.
+   * SP 800-73-5 Part 2 Section 4.1 reserves key 04 for OPACITY establishment. Tag 85 is the generic
+   * key-management ECDH form and must never expose key 04's shared secret.
    */
   @Test
   void secureMessagingKeyRejectsGenericEcdh() {
@@ -286,12 +276,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
           assertSw(0x9000, selectApplet(), "SELECT before stored Discovery policy");
           assertSw(
               0x9000,
-              transmit(
-                  0x84,
-                  0xDB,
-                  0x3F,
-                  0xFF,
-                  hex("7E124F0BA0000003080000100001005F2F024800")),
+              transmit(0x84, 0xDB, 0x3F, 0xFF, hex("7E124F0BA0000003080000100001005F2F024800")),
               "Store pairing-required Discovery policy");
         });
 

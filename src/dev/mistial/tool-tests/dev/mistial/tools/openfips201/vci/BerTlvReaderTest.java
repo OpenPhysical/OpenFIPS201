@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import dev.mistial.tools.openfips201.common.BerTlvReader;
 import org.junit.jupiter.api.Test;
 
 class BerTlvReaderTest {

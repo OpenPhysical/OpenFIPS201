@@ -80,8 +80,8 @@ final class PIVOpacity {
   /**
    * Runs the compiled suite's SP 800-56C one-step KDA known-answer test.
    *
-   * <p>FIPS 140-3 IG 10.3.A Resolution 8 requires a CAST for an implemented KDA. This exercises
-   * the complete OPACITY FixedInfo construction, counter processing, suite hash and truncation.
+   * <p>FIPS 140-3 IG 10.3.A Resolution 8 requires a CAST for an implemented KDA. This exercises the
+   * complete OPACITY FixedInfo construction, counter processing, suite hash and truncation.
    */
   boolean runCryptographicAlgorithmSelfTest() {
     // #if VCI_CS2
@@ -108,8 +108,7 @@ final class PIVOpacity {
     try {
       fillSequence(workspace, idHOffset, (short) 8, (byte) 0x10);
       workspace[pointOffset] = (byte) 0x04;
-      fillSequence(
-          workspace, (short) (pointOffset + 1), (short) (pointLength - 1), (byte) 0x21);
+      fillSequence(workspace, (short) (pointOffset + 1), (short) (pointLength - 1), (byte) 0x21);
       fillSequence(workspace, zOffset, fieldLength, (byte) 0x40);
       fillSequence(workspace, nonceOffset, nonceLength, (byte) 0x70);
       fillSequence(workspace, idSiccOffset, (short) 8, (byte) 0x30);
@@ -133,8 +132,7 @@ final class PIVOpacity {
     }
   }
 
-  private static void fillSequence(
-      byte[] buffer, short offset, short length, byte firstValue) {
+  private static void fillSequence(byte[] buffer, short offset, short length, byte firstValue) {
     for (short index = ZERO; index < length; index++) {
       buffer[(short) (offset + index)] = (byte) (firstValue + (byte) index);
     }
@@ -166,8 +164,7 @@ final class PIVOpacity {
               hostIdOffset,
               hostPointOffset,
               cardIdOffset);
-      PIVCrypto.doSha(
-          hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
+      PIVCrypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
       short copyLength = hashLength;
       if ((short) (written + copyLength) > outputLength) {
         copyLength = (short) (outputLength - written);

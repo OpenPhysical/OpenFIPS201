@@ -184,8 +184,7 @@ final class PIVSecurityProvider {
       PIVPIN applicationPin, PIVPIN globalPin, boolean globalPinAuthorized) {
     // SP 800-73-5 Part 1 Section 3.3.2: Global PIN security status participates in PIV access
     // control only when the stored Discovery Object advertises Global PIN use.
-    return applicationPin.isValidated()
-        || (globalPinAuthorized && globalPin.isValidated());
+    return applicationPin.isValidated() || (globalPinAuthorized && globalPin.isValidated());
   }
 
   /**
@@ -256,9 +255,7 @@ final class PIVSecurityProvider {
 
   boolean hasUsableManagementKey() {
     PIVKeyObject key = selectKey((byte) 0x9B);
-    return key != null
-        && key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE)
-        && key.isInitialised();
+    return key != null && key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE) && key.isInitialised();
   }
 
   /**

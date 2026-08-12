@@ -7,12 +7,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
-import javacard.framework.APDU;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 /**
  * Focused tests for APDU command routing and front-door preconditions in {@code OpenFIPS201}.
@@ -34,12 +31,10 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
   @Test
   void appletSelectionAllowsContactlessByDefault() {
-    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
-      mockedApdu
-          .when(APDU::getProtocol)
-          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
-      assertSw(0x9000, selectApplet(), "SELECT over contactless should succeed by default");
-    }
+    withContactless(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT over contactless should succeed by default");
+        });
   }
 
   @Test
@@ -207,10 +202,9 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   void generalAuthenticateRejectsInvalidKeyReference() {
     assertSw(0x9000, selectApplet(), "SELECT before GENERAL AUTHENTICATE checks");
 
-    // SP 800-73-4 Part 2, 3.2.4: any key reference value not supported by the card shall return
-    // status word '6A 88'.
+    // SP 800-73-5 Part 2, Section 3.2.4 lists 6A86 for an incorrect P1 or P2.
     ResponseAPDU response = transmit(0x00, 0x87, 0x11, 0x01, hex("7C00"));
-    assertSw(0x6A88, response, "GENERAL AUTHENTICATE with invalid key reference must return 6A88");
+    assertSw(0x6A86, response, "GENERAL AUTHENTICATE with invalid P2 must return 6A86");
   }
 
   @Test
@@ -225,10 +219,10 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   void generalAuthenticateTreatsAttestationAuthorityAsNotFound() {
     assertSw(0x9000, selectApplet(), "SELECT before GENERAL AUTHENTICATE checks");
 
-    // F9 must be indistinguishable from a nonexistent key so GENERAL AUTHENTICATE does not leak
-    // whether an attestation authority is provisioned.
+    // F9 is deliberately unavailable through GENERAL AUTHENTICATE. The command-specific 6A86
+    // response also avoids leaking whether an attestation authority is provisioned.
     ResponseAPDU response = transmit(0x00, 0x87, 0x11, 0xF9, hex("7C00"));
-    assertSw(0x6A88, response, "GENERAL AUTHENTICATE with P2=F9 must look like key-not-found");
+    assertSw(0x6A86, response, "GENERAL AUTHENTICATE with P2=F9 must be unsupported");
   }
 
   @Test

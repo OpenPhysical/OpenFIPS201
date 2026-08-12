@@ -61,20 +61,46 @@ class ConfigDefaultsTest {
     update(
         config,
         new byte[] {
-          (byte) 0xA0, 0x26,
-          (byte) 0x80, 0x01, 0x01,
-          (byte) 0x81, 0x01, 0x00,
-          (byte) 0x82, 0x01, 0x00,
-          (byte) 0x83, 0x01, 0x00,
-          (byte) 0x84, 0x01, 0x06,
-          (byte) 0x85, 0x01, 0x08,
-          (byte) 0x86, 0x01, 0x06,
-          (byte) 0x87, 0x01, 0x04,
-          (byte) 0x88, 0x01, 0x00,
-          (byte) 0x89, 0x01, 0x04,
-          (byte) 0x8A, 0x01, 0x03,
-          (byte) 0x8B, 0x01, 0x04,
-          (byte) 0x8C, 0x00
+          (byte) 0xA0,
+          0x26,
+          (byte) 0x80,
+          0x01,
+          0x01,
+          (byte) 0x81,
+          0x01,
+          0x00,
+          (byte) 0x82,
+          0x01,
+          0x00,
+          (byte) 0x83,
+          0x01,
+          0x00,
+          (byte) 0x84,
+          0x01,
+          0x06,
+          (byte) 0x85,
+          0x01,
+          0x08,
+          (byte) 0x86,
+          0x01,
+          0x06,
+          (byte) 0x87,
+          0x01,
+          0x04,
+          (byte) 0x88,
+          0x01,
+          0x00,
+          (byte) 0x89,
+          0x01,
+          0x04,
+          (byte) 0x8A,
+          0x01,
+          0x03,
+          (byte) 0x8B,
+          0x01,
+          0x04,
+          (byte) 0x8C,
+          0x00
         });
     assertEquals(2, config.getIntermediatePINRetries());
     assertEquals(6, config.readValue(Config.CONFIG_PIN_MIN_LENGTH));
@@ -84,13 +110,25 @@ class ConfigDefaultsTest {
     update(
         config,
         new byte[] {
-          (byte) 0xA1, 0x11,
-          (byte) 0x80, 0x01, 0x01,
-          (byte) 0x81, 0x01, 0x00,
-          (byte) 0x82, 0x01, 0x08,
-          (byte) 0x83, 0x01, 0x08,
-          (byte) 0x84, 0x01, 0x05,
-          (byte) 0x86, 0x00
+          (byte) 0xA1,
+          0x11,
+          (byte) 0x80,
+          0x01,
+          0x01,
+          (byte) 0x81,
+          0x01,
+          0x00,
+          (byte) 0x82,
+          0x01,
+          0x08,
+          (byte) 0x83,
+          0x01,
+          0x08,
+          (byte) 0x84,
+          0x01,
+          0x05,
+          (byte) 0x86,
+          0x00
         });
     assertEquals(3, config.getIntermediatePUKRetries());
   }
@@ -98,19 +136,25 @@ class ConfigDefaultsTest {
   @Test
   void issuerCanApplyVciAndStrictInterfaceOptions() {
     Config config = new Config();
-    update(
-        config,
-        new byte[] {(byte) 0xA2, 0x05, (byte) 0x80, 0x01, 0x01, (byte) 0x81, 0x00});
+    update(config, new byte[] {(byte) 0xA2, 0x05, (byte) 0x80, 0x01, 0x01, (byte) 0x81, 0x00});
     assertEquals(Config.VCI_MODE_ENABLED, config.readValue(Config.CONFIG_VCI_MODE));
 
     update(
         config,
         new byte[] {
-          (byte) 0xA4, 0x0B,
-          (byte) 0x80, 0x01, 0x01,
-          (byte) 0x81, 0x01, 0x01,
-          (byte) 0x84, 0x01, 0x00,
-          (byte) 0x87, 0x00
+          (byte) 0xA4,
+          0x0B,
+          (byte) 0x80,
+          0x01,
+          0x01,
+          (byte) 0x81,
+          0x01,
+          0x01,
+          (byte) 0x84,
+          0x01,
+          0x00,
+          (byte) 0x87,
+          0x00
         });
     assertTrue(config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL));
     assertTrue(config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_ADMIN));
@@ -122,20 +166,10 @@ class ConfigDefaultsTest {
     Config config = new Config();
     assertThrows(
         RuntimeException.class,
-        () ->
-            update(
-                config,
-                new byte[] {
-                  (byte) 0xA0, 0x03, (byte) 0x86, 0x01, 0x03
-                }));
+        () -> update(config, new byte[] {(byte) 0xA0, 0x03, (byte) 0x86, 0x01, 0x03}));
     assertThrows(
         RuntimeException.class,
-        () ->
-            update(
-                config,
-                new byte[] {
-                  (byte) 0xA1, 0x03, (byte) 0x83, 0x01, 0x03
-                }));
+        () -> update(config, new byte[] {(byte) 0xA1, 0x03, (byte) 0x83, 0x01, 0x03}));
   }
 
   private static void update(Config config, byte[] encoded) {

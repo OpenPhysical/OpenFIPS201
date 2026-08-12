@@ -602,8 +602,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
                 && buffer[ISO7816.OFFSET_P2] == (byte) 0xFF;
 
     if (proprietary) {
-      if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF
-          || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
+      if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       }
       piv.getDataExtended(buffer, apdu.getOffsetCdata(), length);
@@ -673,8 +672,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
                 && buffer[ISO7816.OFFSET_P2] == (byte) 0xFF;
 
     if (proprietary) {
-      if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF
-          || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
+      if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       }
       if (!piv.isInterfacePermittedForAdmin()) {
@@ -869,8 +867,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     if (buffer[ISO7816.OFFSET_P1] != (byte) 0x01) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
-    piv.changeReferenceDataAdmin(
-        buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
+    piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
   }
 
   /**

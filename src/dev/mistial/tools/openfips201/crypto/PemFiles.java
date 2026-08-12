@@ -14,9 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.PrivateKey;
-import java.security.Security;
 import java.security.cert.X509Certificate;
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
@@ -37,9 +37,7 @@ public final class PemFiles {
   private PemFiles() {}
 
   public static void ensureProvider() {
-    if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-      Security.addProvider(new BouncyCastleProvider());
-    }
+    CryptoProviders.ensureBouncyCastle();
   }
 
   public static void writePrivateKey(Path path, PrivateKey privateKey, char[] passphrase)
@@ -69,6 +67,15 @@ public final class PemFiles {
   }
 
   public static PrivateKey readPrivateKey(Path path, char[] passphrase) throws Exception {
+    return readPrivateKey(path, passphrase, null);
+  }
+
+  /**
+   * Reads a private key, borrowing missing algorithm parameters from its certificate when needed.
+   * Some EC PEM encodings omit named-curve parameters and cannot be converted without this repair.
+   */
+  public static PrivateKey readPrivateKey(Path path, char[] passphrase, X509Certificate certificate)
+      throws Exception {
     ensureProvider();
     try (Reader reader = Files.newBufferedReader(path, StandardCharsets.US_ASCII);
         PEMParser parser = new PEMParser(reader)) {
@@ -76,30 +83,40 @@ public final class PemFiles {
       JcaPEMKeyConverter converter =
           new JcaPEMKeyConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME);
       if (object instanceof PEMKeyPair) {
-        return converter.getKeyPair((PEMKeyPair) object).getPrivate();
+        PEMKeyPair pair = (PEMKeyPair) object;
+        if (pair.getPublicKeyInfo() != null) {
+          return converter.getKeyPair(pair).getPrivate();
+        }
+        return converter.getPrivateKey(
+            withCertificateParameters(pair.getPrivateKeyInfo(), certificate));
       }
       if (object instanceof PrivateKeyInfo) {
-        return converter.getPrivateKey((PrivateKeyInfo) object);
+        return converter.getPrivateKey(
+            withCertificateParameters((PrivateKeyInfo) object, certificate));
       }
       if (object instanceof PEMEncryptedKeyPair) {
         requirePassphrase(passphrase, path);
-        return converter
-            .getKeyPair(
-                ((PEMEncryptedKeyPair) object)
-                    .decryptKeyPair(
-                        new JcePEMDecryptorProviderBuilder()
-                            .setProvider(BouncyCastleProvider.PROVIDER_NAME)
-                            .build(passphrase)))
-            .getPrivate();
+        PEMKeyPair pair =
+            ((PEMEncryptedKeyPair) object)
+                .decryptKeyPair(
+                    new JcePEMDecryptorProviderBuilder()
+                        .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                        .build(passphrase));
+        if (pair.getPublicKeyInfo() != null) {
+          return converter.getKeyPair(pair).getPrivate();
+        }
+        return converter.getPrivateKey(
+            withCertificateParameters(pair.getPrivateKeyInfo(), certificate));
       }
       if (object instanceof PKCS8EncryptedPrivateKeyInfo) {
         requirePassphrase(passphrase, path);
-        return converter.getPrivateKey(
+        PrivateKeyInfo privateKey =
             ((PKCS8EncryptedPrivateKeyInfo) object)
                 .decryptPrivateKeyInfo(
                     new JceOpenSSLPKCS8DecryptorProviderBuilder()
                         .setProvider(BouncyCastleProvider.PROVIDER_NAME)
-                        .build(passphrase)));
+                        .build(passphrase));
+        return converter.getPrivateKey(withCertificateParameters(privateKey, certificate));
       }
       throw new IOException("Unsupported private key PEM object in " + path);
     }
@@ -123,5 +140,15 @@ public final class PemFiles {
     if (passphrase == null || passphrase.length == 0) {
       throw new IOException("Private key is encrypted and needs a passphrase: " + path);
     }
+  }
+
+  private static PrivateKeyInfo withCertificateParameters(
+      PrivateKeyInfo privateKey, X509Certificate certificate) throws Exception {
+    if (privateKey.getPrivateKeyAlgorithm().getParameters() != null || certificate == null) {
+      return privateKey;
+    }
+    SubjectPublicKeyInfo publicKey =
+        SubjectPublicKeyInfo.getInstance(certificate.getPublicKey().getEncoded());
+    return new PrivateKeyInfo(publicKey.getAlgorithm(), privateKey.parsePrivateKey());
   }
 }

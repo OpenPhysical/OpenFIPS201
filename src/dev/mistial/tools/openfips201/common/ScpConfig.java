@@ -38,6 +38,27 @@ public final class ScpConfig {
     return fromMaster(Mode.SCP03, 0, PlaintextKeys.DEFAULT_KEY());
   }
 
+  /** Resolves the mutually exclusive shared-key and split-key CLI representations. */
+  public static ScpConfig fromCliKeys(
+      Mode mode, int keyVersion, String sharedKey, String encKey, String macKey, String dekKey) {
+    boolean shared = sharedKey != null;
+    boolean enc = encKey != null;
+    boolean mac = macKey != null;
+    boolean dek = dekKey != null;
+    boolean split = enc || mac || dek;
+    if (shared && split) {
+      throw new IllegalArgumentException("Use one shared SCP key or the three split SCP keys");
+    }
+    if (shared) {
+      return fromMaster(mode, keyVersion, HexUtil.parse(sharedKey));
+    }
+    if (enc && mac && dek) {
+      return new ScpConfig(
+          mode, keyVersion, HexUtil.parse(encKey), HexUtil.parse(macKey), HexUtil.parse(dekKey));
+    }
+    throw new IllegalArgumentException("Provide one shared SCP key or all three split SCP keys");
+  }
+
   public PlaintextKeys toPlaintextKeys() {
     PlaintextKeys keys = PlaintextKeys.fromKeys(encKey, macKey, dekKey);
     keys.setVersion(keyVersion);
