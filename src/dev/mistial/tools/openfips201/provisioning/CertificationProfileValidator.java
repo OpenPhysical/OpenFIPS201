@@ -9,6 +9,7 @@ package dev.mistial.tools.openfips201.provisioning;
 
 import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -16,10 +17,18 @@ import java.util.Set;
 import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.icao.DataGroupHash;
 import org.bouncycastle.asn1.icao.LDSSecurityObject;
+import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cms.CMSSignedData;
+import org.bouncycastle.cms.CMSProcessableByteArray;
+import org.bouncycastle.cms.SignerInformation;
+import org.bouncycastle.cms.jcajce.JcaSimpleSignerInfoVerifierBuilder;
 
 /** Preflight checks for the frozen SP 800-73-5 Part 1 certification profile. */
 public final class CertificationProfileValidator {
+  private static final byte ACCESS_PIN = (byte) 0x01;
+  private static final byte ACCESS_PIN_ALWAYS = (byte) 0x02;
+  private static final byte ACCESS_VCI = (byte) 0x08;
+  private static final byte ACCESS_ALWAYS = (byte) 0x7F;
   private static final String[] MANDATORY = {
     "5FC107", "5FC102", "5FC105", "5FC101", "5FC103", "5FC108", "5FC106"
   };
@@ -81,9 +90,9 @@ public final class CertificationProfileValidator {
   /**
    * Validates issuer inputs before the irreversible personalization transition.
    *
-   * <p>This validates the Security Object's mapping and signed LDS hash input. Signature trust is
-   * an issuer ceremony concern; SP 800-73-5 Part 1 does not require the applet to verify its own
-   * issuer signature.
+   * <p>This validates both CMS signatures using the single content-signing certificate carried in
+   * the CHUID, plus the Security Object mapping and LDS hashes. The applet does not verify issuer
+   * signatures at runtime; this host preflight does so before personalization.
    */
   public static void validate(ConformancePackage pkg, Claims claims) throws Exception {
     if (pkg == null || claims == null)
@@ -96,10 +105,57 @@ public final class CertificationProfileValidator {
     }
     validateDiscovery(objects, claims);
     validateKeys(pkg, claims);
+    validateAccessModes(pkg);
     for (Map.Entry<String, ConformancePackage.DataObject> entry : objects.entrySet()) {
       validateContainer(entry.getKey(), entry.getValue().payload);
     }
     validateSecurityObject(objects, true);
+  }
+
+  /** Rejects issuer packages whose ACRs contradict Part 1 Tables 2 and 5. */
+  static void validateAccessModes(ConformancePackage pkg) {
+    for (ConformancePackage.DataObject object : pkg.dataObjects) {
+      String id = hex(object.id);
+      byte contact = ACCESS_ALWAYS;
+      byte contactless = ACCESS_VCI;
+      if (id.equals("5FC102") || id.equals("5FC101") || id.equals("7E") || id.equals("7F61")
+          || id.equals("5FC122")) {
+        contactless = ACCESS_ALWAYS;
+      } else if (id.equals("5FC103") || id.equals("5FC108") || id.equals("5FC109")
+          || id.equals("5FC121") || id.equals("5FC123")) {
+        contact = ACCESS_PIN;
+        contactless = (byte) (ACCESS_VCI | ACCESS_PIN);
+      }
+      requireAccess(id, object.modeContact, object.modeContactless, contact, contactless);
+    }
+    for (ConformancePackage.KeyMaterial key : pkg.keys) {
+      byte contact;
+      byte contactless;
+      if ((key.slot & 0xFF) == 0x9E) {
+        contact = ACCESS_ALWAYS;
+        contactless = ACCESS_ALWAYS;
+      } else if ((key.slot & 0xFF) == 0x9C) {
+        contact = ACCESS_PIN_ALWAYS;
+        contactless = (byte) (ACCESS_VCI | ACCESS_PIN_ALWAYS);
+      } else {
+        contact = ACCESS_PIN;
+        contactless = (byte) (ACCESS_VCI | ACCESS_PIN);
+      }
+      requireAccess(
+          String.format("key %02X", key.slot & 0xFF),
+          key.modeContact,
+          key.modeContactless,
+          contact,
+          contactless);
+    }
+  }
+
+  private static void requireAccess(
+      String label, byte actualContact, byte actualContactless, byte contact, byte contactless) {
+    if (actualContact != contact || actualContactless != contactless) {
+      throw new IllegalArgumentException(
+          label + " access modes contradict SP 800-73-5 Part 1 Tables 2/5");
+    }
   }
 
   private static Map<String, ConformancePackage.DataObject> index(ConformancePackage pkg) {
@@ -464,6 +520,9 @@ public final class CertificationProfileValidator {
     if (!cms.getCertificates().getMatches(null).isEmpty()) {
       throw new IllegalArgumentException("Security Object BB must omit signer certificates");
     }
+    X509CertificateHolder contentSigner =
+        validateChuidSignature(objects.get("5FC102").payload);
+    verifyCmsSigner(cms, contentSigner, "Security Object");
     byte[] ldsBytes = (byte[]) cms.getSignedContent().getContent();
     LDSSecurityObject lds = LDSSecurityObject.getInstance(ASN1Primitive.fromByteArray(ldsBytes));
     MessageDigest digest =
@@ -483,6 +542,77 @@ public final class CertificationProfileValidator {
     if (seen.size() != byDg.size()) {
       throw new IllegalArgumentException("Security Object BA and LDS hash sets differ");
     }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static X509CertificateHolder validateChuidSignature(byte[] payload) throws Exception {
+    int offset = 0;
+    int signedContentLength = -1;
+    Tlv signature = null;
+    while (offset < payload.length) {
+      int elementStart = offset;
+      Tlv element = read(payload, offset);
+      if (element.tag == 0x3E) {
+        signedContentLength = elementStart;
+        signature = element;
+        break;
+      }
+      offset = element.end;
+    }
+    if (signature == null) {
+      throw new IllegalArgumentException("CHUID asymmetric signature field is missing");
+    }
+    byte[] cmsBytes = Arrays.copyOfRange(payload, signature.value, signature.end);
+    byte[] signedContent =
+        AdminTlv.concat(
+            Arrays.copyOf(payload, signedContentLength),
+            Arrays.copyOfRange(payload, signature.end, payload.length));
+    CMSSignedData cms =
+        new CMSSignedData(
+            new CMSProcessableByteArray(signedContent), cmsBytes);
+    if (cms.getSignerInfos().size() != 1 || cms.getCertificates().getMatches(null).size() != 1) {
+      throw new IllegalArgumentException(
+          "CHUID signature must contain one signer and one content-signing certificate");
+    }
+    SignerInformation signer = singleSigner(cms, "CHUID");
+    Collection<?> matches = cms.getCertificates().getMatches(signer.getSID());
+    if (matches.size() != 1) {
+      throw new IllegalArgumentException("CHUID signer does not match its certificate");
+    }
+    Object matched = matches.iterator().next();
+    if (!(matched instanceof X509CertificateHolder)) {
+      throw new IllegalArgumentException("CHUID signer certificate has an unsupported form");
+    }
+    X509CertificateHolder certificate = (X509CertificateHolder) matched;
+    verifyCmsSigner(cms, certificate, "CHUID");
+    return certificate;
+  }
+
+  private static void verifyCmsSigner(
+      CMSSignedData cms, X509CertificateHolder certificate, String label) throws Exception {
+    SignerInformation signer = singleSigner(cms, label);
+    try {
+      if (!signer.getSID().match(certificate)
+          || !signer.verify(
+              new JcaSimpleSignerInfoVerifierBuilder().setProvider("BC").build(certificate))) {
+        throw new IllegalArgumentException(label + " CMS signature verification failed");
+      }
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new IllegalArgumentException(label + " CMS signature verification failed", e);
+    }
+  }
+
+  private static SignerInformation singleSigner(CMSSignedData cms, String label) {
+    if (cms.getSignerInfos().size() != 1) {
+      throw new IllegalArgumentException(label + " must contain exactly one signer");
+    }
+    Object value = cms.getSignerInfos().getSigners().iterator().next();
+    if (!(value instanceof SignerInformation)) {
+      throw new IllegalArgumentException(label + " signer has an unsupported form");
+    }
+    return (SignerInformation) value;
   }
 
   static void addSecurityObjectMapping(

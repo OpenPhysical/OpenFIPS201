@@ -31,12 +31,14 @@ import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
+import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
 import pro.javacard.capfile.AID;
@@ -229,6 +231,8 @@ public final class ConformanceProvisioner {
               + " bytes)");
     }
 
+    verifyReadback(gp, pkg, out, steps);
+
     out.println(
         "Provisioning complete: "
             + objectsCreated
@@ -237,6 +241,62 @@ public final class ConformanceProvisioner {
             + " keys from "
             + pkg.credentialId);
     return new ProvisionReport(pkg.credentialId, objectsCreated, keysImported, steps);
+  }
+
+  private static void verifyReadback(
+      GPSession gp, ConformancePackage pkg, PrintStream out, List<String> steps) {
+    byte[] pinBlock = new byte[8];
+    Arrays.fill(pinBlock, (byte) 0xFF);
+    System.arraycopy(pkg.pin, 0, pinBlock, 0, Math.min(pkg.pin.length, pinBlock.length));
+    expect(
+        gp.transmit(
+            new CommandAPDU(
+                0x00, 0x20, 0x00, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pinBlock)),
+        "Verify local PIN for object readback");
+
+    for (ConformancePackage.DataObject object : pkg.dataObjects) {
+      byte[] actual = getData(gp, object.id);
+      byte[] expected =
+          object.putForm == ConformancePackage.PutForm.DISCOVERY
+              ? object.payload
+              : AdminTlv.tlv(0x53, object.payload);
+      if (!Arrays.equals(expected, actual)) {
+        throw new IllegalStateException(
+            "Readback mismatch for "
+                + object.label
+                + " ("
+                + hexId(object.id)
+                + "): expected "
+                + expected.length
+                + " bytes, got "
+                + actual.length);
+      }
+    }
+    steps.add("Verified exact readback of " + pkg.dataObjects.size() + " data objects");
+    out.println("Verified exact readback of " + pkg.dataObjects.size() + " data objects");
+  }
+
+  private static byte[] getData(GPSession gp, byte[] objectId) {
+    ResponseAPDU response =
+        gp.transmit(
+            new CommandAPDU(
+                0x00,
+                0xCB,
+                0x3F,
+                0xFF,
+                AdminTlv.tlv(0x5C, objectId),
+                256));
+    ByteArrayOutputStream result = new ByteArrayOutputStream();
+    while (true) {
+      byte[] chunk = response.getData();
+      result.write(chunk, 0, chunk.length);
+      if (response.getSW1() != 0x61) {
+        expect(response, "Read back object " + hexId(objectId));
+        return result.toByteArray();
+      }
+      int le = response.getSW2() == 0 ? 256 : response.getSW2();
+      response = gp.transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, le));
+    }
   }
 
   private static void createKey(GPSession gp, ConformancePackage.KeyMaterial key) {

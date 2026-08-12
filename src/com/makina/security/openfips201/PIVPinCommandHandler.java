@@ -263,16 +263,18 @@ final class PIVPinCommandHandler {
     if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
 
     // The container data is BER-TLV structured with Tag 0x53 (Part 1 Section 3.3.8 Table 44)
-    if (object.getLength() < (short) 12 || object.content[ZERO] != (byte) 0x53) {
+    if (object.getLength() != (short) 14 || object.content[ZERO] != (byte) 0x53) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
     // Inside tag 0x53, the pairing code value is carried under tag 0x99 with length 0x08
     short contentLength = TLVReader.getLength(object.content, ZERO);
     short contentOffset = TLVReader.getDataOffset(object.content, ZERO);
-    if (contentLength != (short) 10
+    if (contentLength != (short) 12
         || object.content[contentOffset] != (byte) 0x99
-        || object.content[(short) (contentOffset + 1)] != (byte) 0x08) {
+        || object.content[(short) (contentOffset + 1)] != (byte) 0x08
+        || object.content[(short) (contentOffset + 10)] != (byte) 0xFE
+        || object.content[(short) (contentOffset + 11)] != (byte) 0x00) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 

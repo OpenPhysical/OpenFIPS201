@@ -68,7 +68,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       (byte) 0x92,
                       (byte) 0x02,
                       (byte) 0x00,
-                      (byte) 0x0C
+                      (byte) 0x0E
                     });
             ResponseAPDU object = transmit(0x84, 0xDB, 0x3F, 0x00, objectWithOcc);
             assertSw(0x6A81, object, "OCC-bearing ACLs are unsupported until OCC CVM exists");
@@ -425,7 +425,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       (byte) 0x92,
                       (byte) 0x02,
                       (byte) 0x00,
-                      (byte) 0x0C
+                      (byte) 0x0E
                     });
             assertSw(
                 0x9000,
@@ -434,7 +434,10 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
             byte[] content =
                 concat(
-                    hex("5C035FC123"), tlv((byte) 0x53, tlv((byte) 0x99, hex("3132333435363738"))));
+                    hex("5C035FC123"),
+                    tlv(
+                        (byte) 0x53,
+                        concat(tlv((byte) 0x99, hex("3132333435363738")), hex("FE00"))));
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0xFF, content),

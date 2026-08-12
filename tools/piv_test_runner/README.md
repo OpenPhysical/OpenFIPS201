@@ -113,10 +113,25 @@ that same image:
 ```sh
 tools/piv_test_runner/run-nist-harness.sh \
   --fips --target emulator \
-  --icam /path/to/46_Golden_FIPS_201-2_PIV \
+  --icam test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV \
   --config tools/piv_test_runner/config/OpenFIPS201-RSA2048.xml \
   --test GetDataCommand:1
 ```
+
+Build a signed SP 800-73-5 VCI profile from that identity material and issue an
+on-card CS2 or CS7 secure-messaging credential before running the vector:
+
+```sh
+tools/piv_test_runner/run-nist-harness.sh \
+  --fips --target emulator \
+  --icam test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV \
+  --vci cs2 --pairing-code 12345678 \
+  --test SelectCommand:1
+```
+
+Use `--vci cs7` for P-384/AES-256. The output directory contains an ephemeral
+content-signer key and certificate. They are test-card issuer artifacts and must
+not be reused for production credentials.
 
 Run a selected suite:
 
@@ -135,6 +150,8 @@ Useful selectors:
 | `--list-tests` | Print `Subsystem:Id` entries from the NIST configuration |
 | `--fips` | Compile and install the FIPS_MODE applet |
 | `--icam DIR` | Provision a GSA ICAM folder before running vectors |
+| `--vci cs2\|cs7` | Re-sign and provision a native Part 1 VCI profile |
+| `--pairing-code 12345678` | Set the eight-digit test-card pairing code |
 | `--test SelectCommand:1` | Run one vector |
 | `--suite contact` | Run vectors whose NIST `TestInterface` is `CONTACT` |
 | `--suite contactless` | Run vectors whose NIST `TestInterface` is `CONTACTLESS` |
@@ -148,6 +165,10 @@ The emulator starts with a freshly installed applet. Without `--icam`, use
 both interface transports share one persistent emulator image. Run destructive
 PIN/PUK vectors safely: multi-vector `--icam` runs provision a fresh image for
 each vector by default. Use `--shared-card` only for an intentional stateful sequence.
+
+At launch, the harness creates a local class-only compatibility overlay for four
+NIST 5.0.1 classes that call BouncyCastle 1.56 APIs removed from the emulator's
+current dependency. It does not modify or redistribute the installed NIST jars.
 
 Generated runner output such as `piv_tests/`, logs, buffers, and result
 directories is local-only and ignored by git. Every completed harness run writes

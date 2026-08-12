@@ -239,6 +239,53 @@ class CertificationProfileValidatorTest {
     assertTrue(pairingFailure.getMessage().contains("5FC123"));
   }
 
+  @Test
+  void rejectsObjectAndKeyAccessModesOutsidePart1Tables2And5() {
+    ArrayList<ConformancePackage.DataObject> objects = new ArrayList<ConformancePackage.DataObject>();
+    objects.add(object(hex("5FC103"), hex("BC0101FE00")));
+    ConformancePackage wrongBiometric = packageWith(objects);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.validateAccessModes(wrongBiometric));
+
+    objects.clear();
+    objects.add(
+        new ConformancePackage.DataObject(
+            hex("5FC103"),
+            "fingerprints",
+            (byte) 0x01,
+            (byte) 0x09,
+            ConformancePackage.PutForm.TAG_LIST,
+            hex("BC0101FE00")));
+    assertDoesNotThrow(
+        () -> CertificationProfileValidator.validateAccessModes(packageWith(objects)));
+
+    ConformancePackage.KeyMaterial badCardAuth =
+        new ConformancePackage.KeyMaterial(
+            (byte) 0x9E,
+            "card auth",
+            (byte) 0x11,
+            (byte) 0x04,
+            (byte) 0x10,
+            (byte) 0x7F,
+            (byte) 0x08,
+            null,
+            null);
+    ConformancePackage badKeyPackage =
+        new ConformancePackage(
+            "test",
+            Paths.get("."),
+            StandardCardProfile.PIN,
+            StandardCardProfile.PUK,
+            StandardCardProfile.ADMIN_KEY_ALG,
+            StandardCardProfile.ADMIN_KEY,
+            Collections.<ConformancePackage.DataObject>emptyList(),
+            Collections.singletonList(badCardAuth));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.validateAccessModes(badKeyPackage));
+  }
+
   private static ArrayList<ConformancePackage.DataObject> mandatoryPlaceholders() {
     ArrayList<ConformancePackage.DataObject> result =
         new ArrayList<ConformancePackage.DataObject>();

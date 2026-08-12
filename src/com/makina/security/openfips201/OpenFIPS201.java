@@ -290,6 +290,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       }
     }
 
+    byte[] commandDataBuffer = buffer;
+    short commandDataOffset = apdu.getOffsetCdata();
+    if (piv.isSecureMessagingCommand()
+        && (short) (commandDataOffset + length) > (short) buffer.length) {
+      commandDataBuffer = piv.getSecureMessagingCommandBuffer();
+      commandDataOffset = (short) 5;
+    }
+
     //
     // Normal APDU processing
     //
@@ -311,7 +319,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       //
       // We pass the byte array, offset and length here because the previous call to unwrap() may
       // have altered the length.
-      piv.processIncomingObject(buffer, apdu.getOffsetCdata(), length);
+      piv.processIncomingObject(commandDataBuffer, commandDataOffset, length);
 
       // A multi-step GENERAL AUTHENTICATE exchange is bound to consecutive authentication APDUs.
       // GET RESPONSE may finish carrying a large GA response, but every other command abandons the
@@ -363,7 +371,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
-          processPIV_GENERAL_AUTHENTICATE(apdu, length);
+          processPIV_GENERAL_AUTHENTICATE(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_PIV_PUT_DATA: // Case 2
@@ -906,9 +914,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * @param apdu The incoming APDU object
    * @param length The incoming APDU command-data length
    */
-  private void processPIV_GENERAL_AUTHENTICATE(APDU apdu, short length) {
-
-    byte[] buffer = apdu.getBuffer();
+  private void processPIV_GENERAL_AUTHENTICATE(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
 
     /*
      * PRE-CONDITIONS
@@ -921,8 +928,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      */
 
     // STEP 1 - Call the PIV GENERAL AUTHENTICATE method
-    short offset = apdu.getOffsetCdata();
-    length = piv.generalAuthenticate(buffer, offset, length);
+    length = piv.generalAuthenticate(commandData, commandDataOffset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response, if any
     if (length > 0) piv.processOutgoing(apdu);

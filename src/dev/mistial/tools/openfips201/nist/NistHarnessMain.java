@@ -16,6 +16,7 @@ import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
 import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
 import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
+import dev.mistial.tools.openfips201.vci.NativeVciProfile;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -23,6 +24,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.Security;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 public final class NistHarnessMain {
@@ -62,18 +64,45 @@ public final class NistHarnessMain {
       throw new IllegalArgumentException("No NIST test vectors matched the requested selection");
     }
 
-    ConformancePackage profile =
-        options.icam == null ? null : IcamCardFolder.load(Paths.get(options.icam));
+    NativeVciProfile.Material nativeVci = null;
+    ConformancePackage profile;
+    if (options.vciSuite != null) {
+      if (options.icam == null) {
+        throw new IllegalArgumentException("--vci requires --icam identity material");
+      }
+      Path materialDirectory = Paths.get(options.out, "native-vci");
+      Files.createDirectories(materialDirectory);
+      byte suite =
+          "cs7".equals(options.vciSuite)
+              ? NativeVciProfile.SUITE_CS7
+              : NativeVciProfile.SUITE_CS2;
+      nativeVci =
+          NativeVciProfile.build(
+              Paths.get(options.icam),
+              materialDirectory.resolve("content-signer").toString(),
+              options.pairingCode,
+              suite);
+      profile = nativeVci.profile;
+    } else {
+      profile = options.icam == null ? null : IcamCardFolder.load(Paths.get(options.icam));
+    }
+    if (profile != null) {
+      patchProfileConfiguration(configuration, profile, nativeVci);
+    }
     List<HarnessResult> results = new ArrayList<HarnessResult>();
     int failures = 0;
     if (profile != null && selected.size() > 1 && !options.sharedCard) {
       for (TestVector vector : selected) {
         failures +=
             runOnCard(
-                configuration, java.util.Collections.singletonList(vector), profile, results);
+                configuration,
+                java.util.Collections.singletonList(vector),
+                profile,
+                nativeVci,
+                results);
       }
     } else {
-      failures = runOnCard(configuration, selected, profile, results);
+      failures = runOnCard(configuration, selected, profile, nativeVci, results);
     }
     writeJUnitSummary(Paths.get(options.out, "nist-results.xml"), results);
     if (failures != 0) {
@@ -85,6 +114,7 @@ public final class NistHarnessMain {
       Configuration configuration,
       List<TestVector> selected,
       ConformancePackage profile,
+      NativeVciProfile.Material nativeVci,
       List<HarnessResult> results)
       throws Exception {
     try (JCardEngineNistCardTransport.SharedCard card = JCardEngineNistCardTransport.createCard();
@@ -93,6 +123,9 @@ public final class NistHarnessMain {
       if (profile != null) {
         ConformanceProvisioner.provision(
             card.openBibo("T=1"), ScpConfig.defaultTestScp03(), profile, System.out);
+      }
+      if (nativeVci != null) {
+        NativeVciProfile.provisionSmCredential(card.openBibo("T=1"), nativeVci);
       }
       installProvider(contact, contactless);
       return runTests(configuration, selected, results);
@@ -118,6 +151,7 @@ public final class NistHarnessMain {
         configuration,
         "connectivity:CONTACTLESS_READER_NAME",
         OpenFips201TerminalFactorySpi.CONTACTLESS_READER);
+    setEntry(configuration, "testing:PAIRING_CODE", options.pairingCode);
     setEntry(configuration, "testing:output:TestMainPath", options.out);
     setEntry(
         configuration, "testing:output:TestResultPath", options.out + File.separator + "results");
@@ -134,6 +168,44 @@ public final class NistHarnessMain {
       throw new IllegalArgumentException("Configuration entry is missing: " + name);
     }
     entry.setValue(value);
+  }
+
+  private static void patchProfileConfiguration(
+      Configuration configuration, ConformancePackage profile, NativeVciProfile.Material nativeVci)
+      throws Exception {
+    for (ConformancePackage.KeyMaterial key : profile.keys) {
+      String algorithm = String.format("%02X", key.algorithm & 0xFF);
+      if (key.slot == (byte) 0x9A) {
+        setEntry(configuration, "testing:KEY_ALGORITHMS_AUTHENTICATION", algorithm);
+        setEntry(configuration, "testing:GENERAL_AUTH_ALGORITHM_PIV_AUTHENTICATION_KEY", algorithm);
+      } else if (key.slot == (byte) 0x9C) {
+        setEntry(configuration, "testing:KEY_ALGORITHMS_DIGITAL_SIGNATURE", algorithm);
+      } else if (key.slot == (byte) 0x9D) {
+        setEntry(configuration, "testing:KEY_ALGORITHMS_KEY_MANAGEMENT", algorithm);
+      } else if (key.slot == (byte) 0x9E) {
+        setEntry(configuration, "testing:KEY_ALGORITHMS_CARD_AUTHENTICATION", algorithm);
+      }
+      if (key.certificate != null) {
+        setEntry(
+            configuration,
+            "testing:keytypealgorithmkeys:KEY_"
+                + String.format("%02X", key.slot & 0xFF)
+                + "_"
+                + algorithm,
+            pemCertificate(key.certificate.getEncoded()));
+      }
+    }
+    if (nativeVci != null) {
+      setEntry(
+          configuration,
+          "testing:KEY_ALGORITHMS_SECURE_MESSAGING",
+          String.format("%02X", nativeVci.suite & 0xFF));
+    }
+  }
+
+  private static String pemCertificate(byte[] encoded) {
+    String body = Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(encoded);
+    return "-----BEGIN CERTIFICATE-----\n" + body + "\n-----END CERTIFICATE-----";
   }
 
   private static List<TestVector> loadVectors(Configuration configuration) {
@@ -222,7 +294,7 @@ public final class NistHarnessMain {
           System.out.println("FAIL " + name + " " + resultText);
           printResultDetails(result);
         }
-      } catch (Exception e) {
+      } catch (Exception | LinkageError e) {
         failure = e.toString();
         System.out.println("ERROR " + name + " " + e.getMessage());
         e.printStackTrace(System.out);
@@ -332,6 +404,8 @@ public final class NistHarnessMain {
     String suite;
     String test;
     String icam;
+    String vciSuite;
+    String pairingCode = "12345678";
     int limit;
     boolean listTests;
     boolean fips;
@@ -362,6 +436,13 @@ public final class NistHarnessMain {
           options.test = requireValue(args, ++i, arg);
         } else if ("--icam".equals(arg)) {
           options.icam = requireValue(args, ++i, arg);
+        } else if ("--vci".equals(arg)) {
+          options.vciSuite = requireValue(args, ++i, arg).toLowerCase();
+          if (!"cs2".equals(options.vciSuite) && !"cs7".equals(options.vciSuite)) {
+            throw new IllegalArgumentException("--vci must be cs2 or cs7");
+          }
+        } else if ("--pairing-code".equals(arg)) {
+          options.pairingCode = requireValue(args, ++i, arg);
         } else if ("--limit".equals(arg)) {
           options.limit = Integer.parseInt(requireValue(args, ++i, arg));
         } else {
@@ -393,6 +474,8 @@ public final class NistHarnessMain {
           "  --suite contact          Run an interface, card-<interface>, all, or subsystem");
       System.out.println("  --test Subsystem:Id      Run one vector, for example SelectCommand:1");
       System.out.println("  --icam DIR               Provision a GSA ICAM card folder before testing");
+      System.out.println("  --vci cs2|cs7           Build a signed native Part 1 VCI profile");
+      System.out.println("  --pairing-code 12345678 Eight-digit test-card pairing code");
       System.out.println("  --shared-card            Preserve one ICAM image across multiple vectors");
       System.out.println("  --limit N                Stop after N selected vectors");
     }

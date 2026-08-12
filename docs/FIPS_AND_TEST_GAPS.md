@@ -120,10 +120,11 @@ objects and four RSA-2048 keys into a FIPS_MODE emulator without a create failur
 and Security Object have some structure checks; CCC/CHUID/biometrics can still be
 well-formed TLV without content validity.
 
-**Impact:** Lifecycle can lock without an 85B-credible golden profile.  
-**Mitigation for Mac testing:** host `CertificationProfileValidator` + SO hash binding
-already exist for preflight; wire them into every FIPS provision path and document that
-full 85B remains external.
+**Impact:** Lifecycle can lock without an 85B-credible golden profile.
+**Mitigation for Mac testing:** host `CertificationProfileValidator` now verifies the
+detached CHUID CMS signature, uses its content-signing certificate to verify the
+Security Object CMS signature, validates BA/LDS hashes, and exact-compares card GET DATA
+readback. Full 85B content semantics and certification remain external.
 
 #### F-3 — SP 800-78-5 Table 10 is a hardened **subset**, not a full claim
 
@@ -139,15 +140,18 @@ full 85B remains external.
 **Claim language:** “FIPS-hardened subset of SP 800-78-5 Table 10 (through-2030 AES
 admin + asymmetric cardholder; one OPACITY suite),” not “implements full Table 10.”
 
-#### F-4 — Discovery content vs Security Object / dynamic policy
+#### F-4 — Closed: Discovery content vs Security Object / dynamic policy
 
 When Discovery is **stored** (issuer PUT), GET returns stored bytes and Global PIN /
 pairing gates parse those bytes. When Discovery is **empty/uninitialised**, GET may
 synthesise policy (without Global PIN). FIPS personalisation requires stored Discovery
 when VCI is on.
 
-**Gap for GSA path:** ICAM Discovery bytes must match FIPS-advertised VCI/pairing
-policy and must match Security Object digests after any host rewrite.
+`NativeVciProfile` replaces the legacy Discovery object, removes deprecated CHUID tag
+0x32, creates the Part 1 pairing and SM signer containers, and re-signs both CHUID and
+Security Object with one fresh content-signing key. Strict validation checks the CMS
+signatures, LDS hashes, unsigned-object coverage, schemas, capacities, and Tables 2/5
+ACRs before card mutation.
 
 #### F-5 — Standard CAP residual (listing footgun)
 
@@ -191,9 +195,9 @@ Power-up self-tests and pairwise consistency checks support a module story; they
 | Applet unit / APDU JUnit | `ant test` (excludes `@Tag("slow")`) | Yes | Command SW samples, PIN, admin PUT, selected GA, VCI |
 | Full matrix | `ant test-all` — 8 profiles (standard\|fips × CS2\|CS7 × att on\|off), includes slow SM | Yes | Release gate |
 | Host VCI / OPACITY vectors | tool-tests (`OpenFIPS201Vci*`, SM checklist) | Yes | Strong for SM crypto KATs |
-| ICAM provision | provisioner + NIST `--icam` | Yes | GSA card 46 on standard and FIPS_MODE |
+| ICAM provision | vendored GSA card 46 + NIST `--icam` | Yes | Always-on standard/FIPS_MODE source validation |
 | 85B issuer-input corpus | `test-sp80085b-corpus` / `test-vectors/sp800-85b-personalization/` | Yes | Inputs only, not card GET DATA |
-| NIST headless harness | `tools/piv_test_runner/run-nist-harness.sh` | Yes | Personalised FIPS card-command vectors on one image |
+| NIST headless harness | `tools/piv_test_runner/run-nist-harness.sh` | Yes | Legacy GSA or native signed CS2/CS7 VCI profiles on fresh/shared images |
 | NIST GUI runner | External Windows install | Partial | Prefer headless on Mac |
 | GSA piv-conformance / CCT | External host stack | Conditional | Needs provisioned emulator + trust material |
 | Physical multi-app SELECT | Hardware | No on emulator | VE05.09–11 residual |
@@ -205,24 +209,39 @@ Measured FIPS_MODE + GSA card-46 results on the in-process emulator:
 
 - contact SELECT **2/2**, GET DATA **14/14**, VERIFY **15/15**, CRD **22/22**, RRC **17/17**, PUT DATA **11/11**;
 - contactless SELECT **3/3**, GET DATA **11/11**, VERIFY **1/1**, CRD **6/6**, GENERATE **4/4**.
+- 85B-style CHECKs: BER-TLV **17/18** (only rolling six-year expiry), certificate
+  profiles **12/15** (three legacy-vs-CITE policy OID expectations); all exercised
+  certificate key-pair operations pass.
+- signed-data CHECKs **6/6**; biometric CHECKs **14/14**, including the
+  455-requirement facial-image validation.
 
 Remaining root causes are now isolated rather than a bare-card failure cascade:
 
 1. **Direct administrative authentication** — legacy GENERATE contact vectors use 9B mutual authentication, while FIPS_MODE requires SCP03 for administrative commands.  
-2. **RSA runner defect** — the official runner can feed a modulus-sized random integer outside the valid raw-RSA domain and throws `DataLengthException` before a useful product verdict.  
-3. **SM profile material** — GSA card 46 does not advertise/provision VCI, so SM/virtual-contact suites are not applicable to that frozen profile.  
+2. **Runner compatibility** — modern BouncyCastle linkage is handled by a generated
+   four-class overlay; the remaining RSA vector can feed a modulus-sized integer outside
+   the valid raw-RSA domain and throws `DataLengthException` before a useful product verdict.
+3. **SM/VCI runner coverage** — `--vci cs2|cs7` builds and provisions a signed native
+   Part 1 profile, issues the on-card SM key/CVC, and enables PIN use only after pairing.
+   For both CS2 and CS7, the official card secure-messaging suite passes **6/7** vectors
+   and the virtual-contact suite passes **3/7**. OPACITY, pairing, protected GET/PUT,
+   VERIFY, CRD, RRC, GENERATE, C-MAC, and R-MAC are exercised. The secure-messaging GA
+   vector intentionally omits pairing but expects VCI-gated keys to succeed. The remaining
+   virtual-contact CRD/PUT/RRC expectations include contactless administrative or PUK
+   operations forbidden by the strict FIPS profile; GA also needs key material aligned to
+   each runner algorithm configuration before it can produce a product verdict.  
 4. **Middleware vectors (`piv*`)** — require a middleware IUT and remain out of scope for this card application.  
 5. **Some CHECK_\* TRUE are optional skips** — treat only requirement counts from applicable vectors as evidence.
 
 | 85A / 73 theme | JUnit | Emulator NIST harness today | Target for Mac automation |
 | -------------- | ----- | --------------------------- | ------------------------- |
 | SELECT / APT | Partial | Contact and contactless pass | Physical multi-app residual |
-| GET DATA + ACR | Partial | Contact and contactless pass for card 46 | Add VCI-enabled frozen profile |
+| GET DATA + ACR | Partial | Contact, contactless, CS2 VCI, and CS7 VCI pass | Freeze native signed profile outputs |
 | VERIFY / CRD / RRC | Strong samples | Applicable contact/contactless vectors pass | Preserve fresh image per destructive vector |
 | GENERAL AUTHENTICATE | Samples | Official RSA runner blocked | Correct runner input domain or use independent vectors |
 | GA chain interrupt | Code fixed; limited AS05.36C evidence | Not asserted | Dedicated harness/JUnit vector |
 | GENERATE KEY PAIR | Partial | Fail / auth | Admin path under SCP on emulator |
-| Secure messaging / VCI | Strong JUnit | Mostly fail | After SM key+CVC+Discovery provision |
+| Secure messaging / VCI | Strong JUnit | CS2/CS7 SM 6/7; virtual contact 3/7 | Resolve claim-inapplicable vectors and algorithm fixtures |
 | Multi-app SELECT | Gap | Gap | **Physical residual** |
 | Full alg matrix | Gap | Gap | Parameterize configs per claimed cell |
 | Middleware `piv*` | N/A | Fail | **Exclude** from card-app gate |
@@ -233,8 +252,8 @@ Remaining root causes are now isolated rather than a bare-card failure cascade:
 | ---- | ------ |
 | Load ICAM card-46 objects/keys onto **standard** CAP emulator | MVP documented green path |
 | Load same onto **FIPS** CAP | Green: 11 objects + 4 RSA-2048 keys |
-| Discovery/SO hash consistency after host rewrite | Tooling moving toward bind/validate; must be mandatory in FIPS path |
-| VCI/SM materials from ICAM folder | **Not loaded** — need `VciProvisioning` (or profile sidecar) |
+| Discovery/SO hash consistency after host rewrite | Closed: native builder re-signs CHUID/SO and strict preflight verifies both |
+| VCI/SM materials from ICAM folder | Closed for emulator: `--vci cs2|cs7` derives a native signed profile and issues on-card CVC |
 | Attestation F9 from ICAM | Out of scope for ICAM path |
 | piv-conformance / CCT against “OpenFIPS201 Emulator” | Documented intent; depends on PC/SC or process bridge on Mac |
 | Negative ICAM cards (tampered CHUID, etc.) | Loadable as-is for host negative tests once positive path green |
@@ -320,7 +339,7 @@ Prioritised so GSA and NIST exercise the **same personalised emulator image**.
 ### Phase D — Expand automated evidence (still Mac)
 
 1. JUnit: full ACR matrix; claimed keyRef×alg GA matrix; AS05.36C interrupt cases.  
-2. Host-side 85B structural checks over GET DATA of golden profile (CMS parse, key↔cert bind) — **not** a substitute for official DMT, but closes a Mac-testable gap.  
+2. **Partial:** provisioning exact-compares GET DATA readback, and preflight verifies CHUID/Security Object CMS signatures plus LDS hashes. Remaining work is deeper object semantics and key↔cert operational binding. This is **not** a substitute for official DMT.
 3. Promote VE Draft rows to Pass **only** with Phase B/C logs for the frozen CAP SHA.  
 4. Fix docs: coverage 80%, closed code gaps, VE05.16 pairing wording.
 
@@ -367,7 +386,7 @@ NIST configs must match these after provision.
 | 6 | **Done:** harness builds FIPS, installs/provisions in-process, runs vectors, and writes JUnit XML | Developer UX |
 | 7 | GSA CCT / piv-conformance smoke doc + trust material checklist | Phase C |
 | 8 | JUnit ACR + keyRef×alg matrix expansion | CI evidence |
-| 9 | Host-side 85B structure over GET DATA of golden profile | Partial 85B on Mac |
+| 9 | **Partial:** exact readback and CHUID/SO CMS verification are enforced; add deeper semantics and key↔cert operations | Partial 85B on Mac |
 | 10 | Doc sync (coverage 80%, VE drafts, closed code gaps) | Process hygiene |
 | 11 | Physical multi-app + lab 85A/85B (when ready for listing) | Phase E |
 
@@ -378,7 +397,7 @@ NIST configs must match these after provision.
 | Metric | Current (approx.) | Mac target (pre-lab) |
 | ------ | ----------------- | -------------------- |
 | FIPS CAP ICAM provision | **Passes** with GSA card 46 | Preserve as regression gate |
-| NIST harness card-app contact (claimed) | Core applicable vectors pass; GA/admin incompatibilities classified | All applicable vectors pass |
+| NIST harness card-app contact (claimed) | Core commands plus signed-data/biometric CHECK suites pass; GA/admin and dated-card incompatibilities classified | All applicable vectors pass |
 | NIST middleware `piv*` | Fail | Explicitly out of scope / N/A |
 | GSA ICAM CCT smoke | Manual / partial | Documented green on emulator |
 | `ant test-all` 8-profile matrix | Release gate | Still green |

@@ -52,6 +52,7 @@ import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -174,7 +175,10 @@ final class VciProvisioning {
             .getCertificate(holder);
 
     if (outPrefix != null) {
-      writePem(Paths.get(outPrefix + ".key"), keyPair.getPrivate());
+      // Persist PKCS#8 so EC curve parameters survive a PEM round trip.
+      writePem(
+          Paths.get(outPrefix + ".key"),
+          PrivateKeyInfo.getInstance(keyPair.getPrivate().getEncoded()));
       writePem(Paths.get(outPrefix + ".crt"), certificate);
     }
     return new CaMaterial(keyPair.getPrivate(), certificate);
@@ -183,7 +187,7 @@ final class VciProvisioning {
   static CaMaterial loadCa(String certPath, String keyPath) throws Exception {
     ensureProvider();
     X509Certificate certificate = readCertificate(Paths.get(certPath));
-    PrivateKey privateKey = readPrivateKey(Paths.get(keyPath));
+    PrivateKey privateKey = readPrivateKey(Paths.get(keyPath), certificate);
     return new CaMaterial(privateKey, certificate);
   }
 
@@ -291,7 +295,42 @@ final class VciProvisioning {
                 0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
         "Set standard PUK");
 
-    // STEP 1 - Define the SM key: reference 04, CS2/CS7, key-establishment role, non-importable.
+    provisionSmCredential(gp, ca, suite, minimumCvcLength);
+    provisionDataObjects(gp, ca, pairingCode, suite);
+  }
+
+  /** Adds only the on-card SM key and CVC to an already provisioned Part 1 data profile. */
+  static void provisionSmCredentialOnly(
+      BIBO bibo, String caCertPath, String caKeyPath, String scp03KeyHex, byte suite)
+      throws Exception {
+    if (!VciSupport.isCs2(suite) && !VciSupport.isCs7(suite)) {
+      throw new IllegalArgumentException("suite must be CS2 (0x27) or CS7 (0x2E)");
+    }
+    CaMaterial ca = loadCa(caCertPath, caKeyPath);
+    byte[] scpKey =
+        scp03KeyHex == null
+            ? PlaintextKeys.DEFAULT_KEY()
+            : Hex.decode(scp03KeyHex.replace(" ", ""));
+    GPSession gp = GPSession.connect(bibo, new AID(PIV_AID));
+    PlaintextKeys keys = PlaintextKeys.fromMasterKey(scpKey);
+    keys.setVersion(0);
+    gp.openSecureChannel(
+        keys,
+        new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
+        null,
+        EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
+    provisionSmCredential(gp, ca, suite, 0);
+    expect(
+        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
+        "Set VCI mode to pairing-code");
+    expect(
+        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A0038301FF"))),
+        "Permit PIN use over contactless VCI");
+  }
+
+  private static void provisionSmCredential(
+      GPSession gp, CaMaterial ca, byte suite, int minimumCvcLength) throws Exception {
+    // Define the SM key: reference 04, CS2/CS7, key-establishment role, non-importable.
     byte[] keyDefinition =
         VciSupport.tlv(
             0x66,
@@ -305,7 +344,7 @@ final class VciProvisioning {
                 VciSupport.tlv(0x90, new byte[] {ATTR_NONE})));
     expect(gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, keyDefinition)), "Define SM key 04");
 
-    // STEP 2 - The card generates the VCI key pair; only the public point comes back.
+    // The card generates the VCI key pair; only the public point comes back.
     ResponseAPDU generated =
         expect(
             gp.transmit(
@@ -320,7 +359,7 @@ final class VciProvisioning {
     byte[] cardPublicPoint = parseGeneratedPublicPoint(generated.getData());
     System.out.println("Card SM public point: " + Hex.toHexString(cardPublicPoint).toUpperCase());
 
-    // STEP 3 - Sign the card public key into a CVC with the VCI signer CA.
+    // Sign the card public key into a CVC with the VCI signer CA.
     byte[] issuerId = VciSupport.issuerIdFromPublicKey(ca.certificate.getPublicKey());
     // Subject identifier is a 16-byte GUID, matching the encoding production PIV cards use in the
     // CVC (rather than an ASCII label). A fixed value from the shared profile keeps the emulator's
@@ -340,7 +379,7 @@ final class VciProvisioning {
     System.out.println(
         "Signed CVC (" + cvc.length + " bytes): " + Hex.toHexString(cvc).toUpperCase());
 
-    // STEP 4 - Load the CVC onto the SM key (CHANGE REFERENCE DATA, chained).
+    // Load the CVC onto the SM key (CHANGE REFERENCE DATA, chained).
     sendChained(
         gp,
         0x24,
@@ -348,8 +387,11 @@ final class VciProvisioning {
         VciSupport.KEY_REF_SECURE_MESSAGING & 0xFF,
         VciSupport.tlv(0x30, VciSupport.tlv(0x8A, cvc)),
         "Load SM CVC");
+  }
 
-    // STEP 4b - Install the Secure Messaging Certificate Signer (5FC122) holding the X.509 Content
+  private static void provisionDataObjects(
+      GPSession gp, CaMaterial ca, String pairingCode, byte suite) throws Exception {
+    // Install the Secure Messaging Certificate Signer (5FC122) holding the X.509 Content
     // Signing certificate whose public key verifies the SM CVC (SP 800-73-5 Part 1 Section 3.3.7,
     // Table 43: 0x70 X.509 cert, 0x71 CertInfo). A relying party reads this object to validate the
     // card CVC; making it readable lets the host trust the card's secure-messaging credential
@@ -362,7 +404,8 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
-                VciSupport.tlv(0x92, new byte[] {0x08, 0x00})));
+                // Part 1 Appendix A guarantees 2,471 bytes for container 0x1017.
+                VciSupport.tlv(0x92, new byte[] {0x09, (byte) 0xA7})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, smSignerDefinition)),
         "Define Secure Messaging Certificate Signer (5FC122)");
@@ -374,7 +417,8 @@ final class VciProvisioning {
                 0x53,
                 concat(
                     VciSupport.tlv(0x70, ca.certificate.getEncoded()),
-                    VciSupport.tlv(0x71, new byte[] {0x00}))));
+                    VciSupport.tlv(0x71, new byte[] {0x00}),
+                    VciSupport.tlv(0xFE, new byte[0]))));
     sendChained(
         gp, 0xDB, 0x3F, 0xFF, smSignerValue, "Write Secure Messaging Certificate Signer (5FC122)");
 
@@ -383,6 +427,9 @@ final class VciProvisioning {
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
         "Set VCI mode to pairing-code");
+    expect(
+        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A0038301FF"))),
+        "Permit PIN use over contactless VCI");
 
     // STEP 6 - Define the pairing-code object with the SP 800-73-5 container access rules: GET
     // DATA is PIN over contact and VCI-and-PIN over contactless (Part 1 Table 2, container
@@ -397,7 +444,8 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_PIN}),
                 VciSupport.tlv(0x8D, new byte[] {(byte) (ACCESS_VCI | ACCESS_PIN)}),
                 VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
-                VciSupport.tlv(0x92, new byte[] {0x00, 0x0C})));
+                // The 12-byte Part 1 payload is stored inside a two-byte 53 wrapper.
+                VciSupport.tlv(0x92, new byte[] {0x00, 0x0E})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, pairingDefinition)),
         "Define pairing-code object");
@@ -406,7 +454,10 @@ final class VciProvisioning {
         concat(
             VciSupport.tlv(0x5C, PAIRING_OBJECT_ID),
             VciSupport.tlv(
-                0x53, VciSupport.tlv(0x99, pairingCode.getBytes(StandardCharsets.US_ASCII))));
+                0x53,
+                concat(
+                    VciSupport.tlv(0x99, pairingCode.getBytes(StandardCharsets.US_ASCII)),
+                    VciSupport.tlv(0xFE, new byte[0]))));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0xFF, pairingPayload)),
         "Write pairing-code object");
@@ -930,6 +981,11 @@ final class VciProvisioning {
   }
 
   static PrivateKey readPrivateKey(Path path) throws Exception {
+    return readPrivateKey(path, null);
+  }
+
+  private static PrivateKey readPrivateKey(Path path, X509Certificate certificate)
+      throws Exception {
     ensureProvider();
     try (Reader reader = Files.newBufferedReader(path, StandardCharsets.US_ASCII);
         PEMParser parser = new PEMParser(reader)) {
@@ -937,12 +993,26 @@ final class VciProvisioning {
       JcaPEMKeyConverter converter =
           new JcaPEMKeyConverter().setProvider(BouncyCastleProvider.PROVIDER_NAME);
       if (object instanceof PEMKeyPair) {
-        return converter.getKeyPair((PEMKeyPair) object).getPrivate();
+        PEMKeyPair pair = (PEMKeyPair) object;
+        if (pair.getPublicKeyInfo() == null) {
+          return converter.getPrivateKey(withCertificateParameters(pair.getPrivateKeyInfo(), certificate));
+        }
+        return converter.getKeyPair(pair).getPrivate();
       }
       if (object instanceof PrivateKeyInfo) {
-        return converter.getPrivateKey((PrivateKeyInfo) object);
+        return converter.getPrivateKey(withCertificateParameters((PrivateKeyInfo) object, certificate));
       }
       throw new IllegalArgumentException("Unsupported private key PEM object in " + path);
     }
+  }
+
+  private static PrivateKeyInfo withCertificateParameters(
+      PrivateKeyInfo privateKey, X509Certificate certificate) throws Exception {
+    if (privateKey.getPrivateKeyAlgorithm().getParameters() != null || certificate == null) {
+      return privateKey;
+    }
+    SubjectPublicKeyInfo publicKey =
+        SubjectPublicKeyInfo.getInstance(certificate.getPublicKey().getEncoded());
+    return new PrivateKeyInfo(publicKey.getAlgorithm(), privateKey.parsePrivateKey());
   }
 }

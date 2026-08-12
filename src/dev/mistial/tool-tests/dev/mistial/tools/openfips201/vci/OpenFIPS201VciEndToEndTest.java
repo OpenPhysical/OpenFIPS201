@@ -14,6 +14,7 @@ import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.common.ZmqBibo;
 import dev.mistial.tools.openfips201.emulator.ZmqEmulatorFixture;
+import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -40,6 +41,10 @@ import pro.javacard.gp.keys.PlaintextKeys;
 @Tag("slow")
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201VciEndToEndTest {
+  private static final Path GSA_CARD_46 =
+      Paths.get(
+          "test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/"
+              + "46_Golden_FIPS_201-2_PIV");
   private ZmqEmulatorFixture fixture;
   private String endpoint;
 
@@ -91,6 +96,42 @@ class OpenFIPS201VciEndToEndTest {
       assertFalse(
           VciProvisioning.probe(bibo, caPrefix + ".crt", "87654321"),
           "VCI probe must reject an incorrect pairing code");
+    }
+  }
+
+  @Test
+  void provisionsSignedNativeProfileBeforeIssuingSmCredential(@TempDir Path tempDir)
+      throws Exception {
+    byte suite = isCs7Build() ? VciSupport.ALG_CS7 : VciSupport.ALG_CS2;
+    String caPrefix = tempDir.resolve("native-vci-ca").toString();
+    NativeVciProfile.Material material =
+        NativeVciProfile.build(GSA_CARD_46, caPrefix, "12345678", suite);
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      ConformanceProvisioner.provision(
+          bibo, ScpConfig.defaultTestScp03(), material.profile, System.out);
+    }
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.provisionSmCredentialOnly(
+          bibo,
+          material.signerCertificatePath,
+          material.signerKeyPath,
+          null,
+          material.suite);
+    }
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.EstablishedSession established =
+          VciProvisioning.establishSecureMessaging(bibo, material.signerCertificatePath);
+      assertNotNull(established, "signed Part 1 profile must establish secure messaging");
+      assertEquals(
+          0x9000,
+          VciProvisioning.verifyReferenceDataOverSm(
+                  bibo,
+                  established.session,
+                  (byte) 0x98,
+                  "12345678".getBytes(StandardCharsets.US_ASCII))
+              .statusWord,
+          "pairing must establish VCI on the signed native profile");
     }
   }
 

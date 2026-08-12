@@ -402,10 +402,14 @@ final class PIV {
     length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
     secureMessagingCommand[ZERO] = (byte) 1;
     Util.arrayCopyNonAtomic(smCommand, ZERO, buffer, ZERO, (short) 5);
-    if (length > ZERO) {
+    if (length > ZERO && (short) (offset + length) <= (short) buffer.length) {
       Util.arrayCopyNonAtomic(smCommand, (short) 5, buffer, offset, length);
     }
     return length;
+  }
+
+  byte[] getSecureMessagingCommandBuffer() {
+    return smCommand;
   }
 
   /**

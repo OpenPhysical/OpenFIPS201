@@ -11,12 +11,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.interfaces.RSAPrivateKey;
+import java.util.HashMap;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * Offline unit tests for native ICAM folder acceptance. Skips when the GSA ICAM card-builder tree
- * is not present on the machine (not checked into this repo).
+ * Offline tests for the vendored GSA card-46 image. The system property override supports checking
+ * another card-builder checkout without weakening the default CI coverage.
  */
 class IcamCardFolderTest {
 
@@ -26,8 +28,8 @@ class IcamCardFolderTest {
       Paths.get(
           System.getProperty(
               "openfips201.icam46",
-              System.getProperty("user.home")
-                  + "/Projects/gsa-icam-card-builder/cards/ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV"));
+              "test-vectors/gsa-icam-card-builder/cards/ICAM_Card_Objects/"
+                  + "46_Golden_FIPS_201-2_PIV"));
 
   @Test
   void loadsGoldenCard46Natively() throws Exception {
@@ -81,6 +83,42 @@ class IcamCardFolderTest {
     }
 
     assertFalse(pkg.keys.isEmpty());
+  }
+
+  @Test
+  void rejectsGoldenCardWithTamperedChuidSignature() throws Exception {
+    assumeTrue(Files.isDirectory(ICAM_46), "ICAM card 46 not present at " + ICAM_46);
+    ConformancePackage pkg = IcamCardFolder.load(ICAM_46);
+    Map<String, ConformancePackage.DataObject> objects = index(pkg);
+    ConformancePackage.DataObject chuid = objects.get("5FC102");
+    byte[] tampered = chuid.payload.clone();
+    tampered[tampered.length - 8] ^= 0x01;
+    objects.put(
+        "5FC102",
+        new ConformancePackage.DataObject(
+            chuid.id,
+            chuid.label,
+            chuid.modeContact,
+            chuid.modeContactless,
+            chuid.putForm,
+            tampered));
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> CertificationProfileValidator.validateSecurityObject(objects));
+    assertTrue(failure.getMessage().contains("CHUID CMS signature verification failed"));
+  }
+
+  private static Map<String, ConformancePackage.DataObject> index(ConformancePackage pkg) {
+    Map<String, ConformancePackage.DataObject> result =
+        new HashMap<String, ConformancePackage.DataObject>();
+    for (ConformancePackage.DataObject object : pkg.dataObjects) {
+      StringBuilder id = new StringBuilder();
+      for (byte value : object.id) id.append(String.format("%02X", value & 0xFF));
+      result.put(id.toString(), object);
+    }
+    return result;
   }
 
   private static void assertObjectAccess(ConformancePackage.DataObject object) {
