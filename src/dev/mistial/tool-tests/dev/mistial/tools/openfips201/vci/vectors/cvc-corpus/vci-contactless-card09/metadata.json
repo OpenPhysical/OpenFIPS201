@@ -1,0 +1,14 @@
+{
+  "source": "source-vector.json",
+  "source_sha256": "0998c0a507b17d38d4a0d96247811f4dfd12455de5bd5b16fc05924859558dd0",
+  "public_test_fixture": true,
+  "secure_cvc": {
+    "length": 273,
+    "iin": "6F8FF48F42B3E22E",
+    "subject_identifier": "E51FAF0114D7471D83E169E5D725BA64",
+    "role": "00",
+    "public_key_curve_oid": "1.3.132.0.34",
+    "signature_algorithm_oid": "1.2.840.10045.4.3.3"
+  },
+  "note": "This public test fixture preserves the CVC from the VCI vector. It may preserve byte-complete test-card capture material and does not include anchor validation material."
+}
