@@ -72,6 +72,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
   @Test
   void unrelatedCommandAbortsIncompleteGeneralAuthenticateChain() {
+    setLocalPinOverScp(hex("313233343536FFFF"));
     provisionManagementKeyOverScp(keyMaterial((byte) 0x51), (byte) 0x14);
     assertSw(0x9000, selectApplet(), "SELECT before chained GENERAL AUTHENTICATE");
 
@@ -80,15 +81,20 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
         transmit(0x10, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C02")),
         "First GENERAL AUTHENTICATE chain segment");
     assertSw(
-        0x6883,
+        0x9000,
         transmit(0x00, 0x20, 0x00, 0x80, hex("313233343536FFFF")),
-        "An unrelated command must not splice into an authentication chain");
+        "VERIFY must execute after abandoning the authentication chain");
+
+    assertSw(
+        0x6A80,
+        transmit(0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("8100")),
+        "The abandoned authentication fragment must not survive");
 
     assertSw(
         0x9000,
         transmit(
             0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
-        "Rejected splice must leave the applet ready for a new command");
+        "The applet must accept a fresh authentication command");
   }
 
   private void provisionManagementKeyOverScp(byte[] keyBytes, byte attributes) {

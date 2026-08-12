@@ -36,7 +36,7 @@ baseline:
 - Additional negative-path coverage for PIV management operations.
 - Test coverage for secure channel and extended APDU handling.
 - Enforcement of SP 800-73-5 retry counter and PIN length requirements.
-- PIV-style `CHANGE REFERENCE DATA` support for the management key.
+- ISO 7816-4 proprietary-class administration for PIN, PUK, key, object, and configuration updates.
 - Symmetric cipher selection by management key type for `GENERAL AUTHENTICATE`.
 - Full one-to-three byte PIV data object identifiers for GET DATA, PUT DATA,
   create, and delete operations.
@@ -55,12 +55,16 @@ baseline:
 - Updated test and tooling dependencies, including JCardEngine, GlobalPlatformPro,
   APDU4J, JUnit, Mockito, Bouncy Castle, ASM, SLF4J, and JaCoCo.
 
-Administrative `CHANGE REFERENCE DATA` operations intentionally support two parallel authorization
-paths: an SCP session with command encryption, or prior authentication of the applicable
-administrative key (normally `9B`). This applies to management keys, PINs, and PUKs, allowing card
-administration when GlobalPlatform secure-channel credentials are unavailable. Deployments that
-require transport confidentiality must use SCP; the authenticated-`9B` path does not encrypt APDU
-contents.
+Administrative updates intentionally support two parallel authorization paths: an SCP session with
+command encryption, or prior authentication of the applicable administrative key (normally `9B`).
+PIN and PUK replacement uses proprietary `CHANGE REFERENCE DATA` (`80 24 01 <reference>`). Key
+material uses proprietary `UPDATE KEY` (`80 25 01 <reference>`) with the algorithm in tag `80`.
+Under SCP the class is `84`. Structure and configuration changes use administrative `PUT DATA`
+(`80/84 DB FF FF`) and remain SCP-only. The authenticated-`9B` path does not encrypt APDU contents.
+
+Administrative status/version queries use proprietary `GET DATA` (`80/84 CB FF FF`). In FIPS mode,
+the interindustry PIV command surface accepts only the standard P1/P2 forms; the relaxed build also
+retains the earlier protected administrative encodings for compatibility.
 
 Administrative PUT DATA accepts one operation per command. Legacy bulk containers are rejected
 because Java Card allocation and deletion cannot be rolled back reliably as one transaction; an

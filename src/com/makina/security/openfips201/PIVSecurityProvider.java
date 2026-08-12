@@ -240,6 +240,13 @@ final class PIVSecurityProvider {
     return selectKey(id) != null;
   }
 
+  boolean hasUsableManagementKey() {
+    PIVKeyObject key = selectKey((byte) 0x9B);
+    return key != null
+        && key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE)
+        && key.isInitialised();
+  }
+
   /**
    * Adds a key to the internal key store
    *
@@ -263,6 +270,10 @@ final class PIVSecurityProvider {
     // First, map the default mechanism code to TDEA 3KEY
     if (mechanism == PIV.ID_ALG_DEFAULT) {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
+    }
+
+    if (!FipsPolicy.allowsKeyDefinition(id, mechanism, role, attributes)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     if (keyExists(id)) {

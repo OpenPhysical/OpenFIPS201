@@ -42,6 +42,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
   @Test
   void personalizeAppletTransitionIsOneWayAndBlocksStructuralChanges() {
+    provisionManagementKeyOverScp(keyMaterialAes128((byte) 0x30));
     withMockedScp(
         () -> {
           byte[] state = new byte[] {GPSystem.APPLICATION_SELECTABLE};
@@ -86,11 +87,24 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
               transmit(0x84, 0xDB, 0x3F, 0x00, create),
               "Personalized applets reject new object definitions");
 
-          ResponseAPDU status = transmit(0x00, 0xCB, 0x3F, 0x00, hex("5C032F4753"));
+          ResponseAPDU status = transmit(0x80, 0xCB, 0xFF, 0xFF, hex("5C032F4753"));
           assertSw(0x9000, status, "GET STATUS after lifecycle transition");
           assertTrue(
               contains(status.getData(), hex("80010F")),
               "GET STATUS must report the raw GP application state");
+        });
+  }
+
+  @Test
+  void personalizeAppletRequiresUsableManagementKey() {
+    withMockedScp(
+        () -> {
+          Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
+          assertSw(0x9000, selectApplet(), "SELECT before personalization readiness test");
+          assertSw(
+              ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              "Personalization must not strand an applet without a usable management key");
         });
   }
 
@@ -235,16 +249,10 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         transmit(0x00, 0xDB, 0x3F, 0xFF, hex("7E03010203")),
         "9B-authenticated session should permit discovery-object PUT DATA update");
 
-    // Discovery reads are generated dynamically; we only assert command success and expected
-    // wrapper.
     ResponseAPDU discovery = getDataDiscovery();
-    assertSw(0x9000, discovery, "GET DATA discovery should still succeed after PUT DATA");
-    assertEquals(
-        (byte) 0x7E, discovery.getData()[0], "Discovery response should begin with discovery tag");
-    assertEquals(
-        (byte) 0x00,
-        discovery.getData()[19],
-        "PIN preference byte must be RFU zero when Global PIN is disabled");
+    assertSw(0x9000, discovery, "GET DATA discovery should succeed after PUT DATA");
+    assertArrayEquals(
+        hex("7E03010203"), discovery.getData(), "GET DATA must return the issuer's stored Discovery");
   }
 
   @Test
@@ -489,7 +497,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           (byte) 0x01,
           (byte) 0x9B
         };
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0x00, createObjectRequest);
+    ResponseAPDU response = transmit(0x80, 0xDB, 0xFF, 0xFF, createObjectRequest);
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         response,

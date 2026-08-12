@@ -65,41 +65,8 @@ final class PIVPinCommandHandler {
       return;
     }
 
-    switch (id) {
-      case ID_CVM_GLOBAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_GLOBAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        break;
-
-      case ID_CVM_LOCAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_LOCAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        break;
-
-      default:
-        ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        return; // Keep static analyser happy
-    }
-
-    // PRE-CONDITION 2 - The PIN must be permitted to operate over the current interface
-    if (cspPIV.getIsContactless()
-        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-        && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
-    // PRE-CONDITION 2B - SP 800-73-5 Part 1 Section 5.5 defines VCI as secure
-    // messaging plus Discovery Object policy. PIN verification over contactless fails closed until
-    // that VCI state is established.
-    if (cspPIV.getIsContactless()
-        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-        && !owner.isVciSatisfied()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
+    requireEnabledPinReference(id);
+    requirePinInterface();
 
     // PRE-CONDITION 3 - The supplied PIN format must be valid
     // If the key reference is '00' or '80' and the authentication data in the command data
@@ -184,33 +151,8 @@ final class PIVPinCommandHandler {
       return;
     }
 
-    // PRE-CONDITION 2 - We must be permitted to operate over the current interface
-    if (cspPIV.getIsContactless()
-        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-        && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
-    switch (id) {
-      case ID_CVM_GLOBAL_PIN:
-
-        // Make sure CONFIG_PIN_ENABLE_GLOBAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        break;
-
-      case ID_CVM_LOCAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_LOCAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        break;
-
-      default:
-        ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        return; // Keep static analyser happy
-    }
+    requireEnabledPinReference(id);
+    requirePinInterface();
 
     // If P1='00', and Lc and the command data field are absent, the command can be used to retrieve
     // the number of further retries allowed ('63 CX'), or to check whether verification is not
@@ -257,38 +199,39 @@ final class PIVPinCommandHandler {
       return;
     }
 
-    // PRE-CONDITION 2 - We must be permitted to operate over the current interface
-    if (cspPIV.getIsContactless()
-        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-        && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
-    switch (id) {
-      case ID_CVM_GLOBAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_GLOBAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        break;
-
-      case ID_CVM_LOCAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_LOCAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        break;
-
-      default:
-        ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        return; // Keep static analyser happy
-    }
+    requireEnabledPinReference(id);
+    requirePinInterface();
 
     // Reset the requested PIN
     pin.reset();
 
     // Reset the PIN ALWAYS flag
     cspPIV.clearPINAlways();
+  }
+
+  private void requireEnabledPinReference(byte id) {
+    if (id == ID_CVM_GLOBAL_PIN) {
+      if (!config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL) || !owner.isGlobalPinAdvertised()) {
+        ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      }
+      return;
+    }
+    if (id == ID_CVM_LOCAL_PIN) {
+      if (!config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL)) {
+        ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      }
+      return;
+    }
+    ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+  }
+
+  private void requirePinInterface() {
+    if (!cspPIV.getIsContactless() || config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)) {
+      return;
+    }
+    if (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !owner.isVciSatisfied()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
   }
 
   /**
@@ -369,6 +312,10 @@ final class PIVPinCommandHandler {
       return;
     }
 
+    if (FipsPolicy.ENABLED && cspPIV.getIsContactless() && id == ID_CVM_PUK) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
+
     // PRE-CONDITION 2
     // Only reference data associated with key references '80' and '81' specific to the PIV Card
     // Application (i.e., local key reference) and the Global PIN with key reference '00' may be
@@ -391,6 +338,9 @@ final class PIVPinCommandHandler {
       case ID_CVM_GLOBAL_PIN:
         // Make sure CONFIG_PIN_ENABLE_GLOBAL is set
         if (!config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL)) {
+          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+        }
+        if (!owner.isGlobalPinAdvertised()) {
           ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
         }
 
@@ -496,13 +446,9 @@ final class PIVPinCommandHandler {
     // criteria in Section 2.4.3, then the PIV Card Application shall return the status word '6A
     // 80'.
 
-    // Ensure the supplied length is exactly two maximum lengths
-    byte pinLength;
-    if (puk) {
-      pinLength = config.readValue(Config.CONFIG_PUK_LENGTH);
-    } else {
-      pinLength = config.readValue(Config.CONFIG_PIN_MAX_LENGTH);
-    }
+    // SP 800-73-5 fixes both command fields at eight bytes. Configuration limits the significant
+    // PIN value before FF padding; it never changes the command encoding.
+    byte pinLength = Config.LIMIT_PIN_MAX_LENGTH;
     if (length != (short) (pinLength + pinLength)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
@@ -574,6 +520,10 @@ final class PIVPinCommandHandler {
    * @param length The length of the CDATA element
    */
   void resetRetryCounter(byte id, byte[] buffer, short offset, short length) throws ISOException {
+
+    if (FipsPolicy.ENABLED && cspPIV.getIsContactless()) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
 
     //
     // PRE-CONDITIONS
@@ -816,11 +766,11 @@ final class PIVPinCommandHandler {
     // PIN is less than 8 bytes it shall be padded to 8 bytes with 'FF' when presented to the card
     // command interface. The 'FF' padding bytes shall be appended to the actual value of the PIN.
 
-    // NOTE: We define the minimum and maximum lengths in configuration, but only the max is checked
-    //		 here because of the padding requirement
+    // The APDU field is always eight bytes. Configuration limits the significant value before
+    // padding, not the wire width.
     byte minLength = config.readValue(Config.CONFIG_PIN_MIN_LENGTH);
     byte maxLength = config.readValue(Config.CONFIG_PIN_MAX_LENGTH);
-    if (length != maxLength) {
+    if (length != Config.LIMIT_PIN_MAX_LENGTH) {
       return false;
     }
 
@@ -894,6 +844,10 @@ final class PIVPinCommandHandler {
             padding = true;
           }
         } else {
+
+          if (i >= maxLength) {
+            return false;
+          }
 
           // Invariant Check
           // NOTE: This converts the input buffer to all lower-case, which will then

@@ -30,18 +30,18 @@ jobs:
             --dry-run --set-exit-if-changed \
             $(find src build/tools -name '*.java' -type f | sort)
 
-      - name: Run unit and simulator tests
-        run: tools/ant/bin/ant -f build/build.xml test-all
-
-      - name: Enforce coverage ratchet
-        run: tools/ant/bin/ant -f build/build.xml coverage
-
       - name: Build and verify CAP files
         env:
           SOURCE_DATE_EPOCH: "0"
           TZ: UTC
           LC_ALL: C.UTF-8
         run: tools/ant/bin/ant -f build/build.xml compile
+
+      - name: Run unit and simulator tests
+        run: tools/ant/bin/ant -f build/build.xml test-all
+
+      - name: Enforce coverage ratchet
+        run: tools/ant/bin/ant -f build/build.xml coverage
 
       - name: Upload verification artifacts
         if: always()
@@ -50,6 +50,8 @@ jobs:
           name: verification-reports
           path: |
             build/test-reports/
+            build/matrix/*/build.log
+            build/matrix/*/reports/
             build/coverage/
             build/bin/*.cap
           if-no-files-found: ignore

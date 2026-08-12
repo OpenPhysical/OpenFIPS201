@@ -67,7 +67,10 @@ final class PIVDataCommandHandler {
 
     short length;
     byte[] data;
-    if (discovery) {
+    if (discovery && object.isInitialised()) {
+      length = object.getLength();
+      data = object.content;
+    } else if (discovery) {
       length = buildDiscoveryObject(scratch, ZERO, vciAdvertised);
       data = scratch;
     } else {
@@ -76,6 +79,40 @@ final class PIVDataCommandHandler {
     }
     chainBuffer.setOutgoing(data, ZERO, length, false);
     return length;
+  }
+
+  boolean isGlobalPinAdvertised() {
+    PIVDataObject discovery = dataStore.findSingleByte(PIV.ID_DATA_DISCOVERY);
+    if (discovery == null || !discovery.isInitialised()) return false;
+
+    byte[] content = discovery.content;
+    short total = discovery.getLength();
+    try {
+      if (total < (short) 2 || content[ZERO] != (byte) 0x7E) return false;
+      short outerLength = TLVReader.getLength(content, ZERO);
+      short cursor = TLVReader.getDataOffset(content, ZERO);
+      short end = (short) (cursor + outerLength);
+      if (end < cursor || end > total) return false;
+
+      while (cursor < end) {
+        short tagOffset = cursor;
+        short tagLength = (content[cursor] & (byte) 0x1F) == (byte) 0x1F ? (short) 2 : (short) 1;
+        if ((short) (cursor + tagLength) >= end) return false;
+        short valueLength = TLVReader.getLength(content, tagOffset);
+        short valueOffset = TLVReader.getDataOffset(content, tagOffset);
+        short next = (short) (valueOffset + valueLength);
+        if (next < valueOffset || next > end) return false;
+        if (tagLength == (short) 2
+            && content[tagOffset] == (byte) 0x5F
+            && content[(short) (tagOffset + 1)] == (byte) 0x2F) {
+          return valueLength == (short) 2 && (content[valueOffset] & (byte) 0x20) != (byte) 0;
+        }
+        cursor = next;
+      }
+    } catch (RuntimeException ignored) {
+      return false;
+    }
+    return false;
   }
 
   void putData(

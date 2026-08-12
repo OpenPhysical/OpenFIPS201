@@ -54,6 +54,8 @@ import org.mockito.Mockito;
 @Timeout(value = 35, unit = TimeUnit.SECONDS)
 class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
+  private static final boolean FIPS_MODE = Boolean.getBoolean("fips.mode");
+
   private static final byte ALG_RSA_1024 = (byte) 0x06;
   private static final byte ALG_RSA_2048 = (byte) 0x07;
   private static final byte ALG_AES_128 = (byte) 0x08;
@@ -155,7 +157,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
             0xF9,
             tlv((byte) 0x30, tlv((byte) 0x86, authority.publicPoint)));
     assertSw(
-        0x6982,
+        FIPS_MODE ? 0x6A86 : 0x6982,
         response,
         "F9 authority material must not be accepted outside encrypted and MACed SCP");
   }
@@ -201,6 +203,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     createDataObjectOverScp((byte) 0x5A);
 
     Authority rotated = Authority.create(new X500Name("CN=Rotated Authority,O=Example"));
+    if (Boolean.getBoolean("fips.mode")) {
+      importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0xE0, new byte[0]);
+    }
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x86, rotated.publicPoint);
     assertSw(
         0x9000,
@@ -208,6 +213,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         "Partial F9 key rotation must not clear existing data");
 
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x87, rotated.privateScalar);
+    if (Boolean.getBoolean("fips.mode")) {
+      importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, rotated.subjectDer);
+      importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x93, rotated.validityDer);
+    }
     ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
     assertSw(0x9000, cleared, "Complete F9 key rotation should clear existing data");
     assertArrayEquals(hex("5300"), cleared.getData());
@@ -259,19 +268,25 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   @Test
   void authorityCommitRejectsMismatchedKeyPairWithoutPurge() throws Exception {
-    Assumptions.assumeFalse(
-        Boolean.getBoolean("fips.mode"),
-        "FIPS pairwise consistency rejects the mismatched component before authority commit");
+    setAuthorityOverScp(Authority.create(new X500Name("CN=Original Authority,O=Example")));
     createDataObjectOverScp((byte) 0x5A);
 
     Authority mismatched = Authority.create(new X500Name("CN=Bad Authority,O=Example"));
     KeyPair other = generateEcP256();
     byte[] badPrivate = fixed(((ECPrivateKey) other.getPrivate()).getS(), 32);
 
-    ResponseAPDU failed =
-        setAuthorityOverScpAndReturn(
-            mismatched.publicPoint, badPrivate, mismatched.subjectDer, mismatched.validityDer);
-    assertSw(0x6A80, failed, "Mismatched authority key pair must be rejected");
+    importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x86, mismatched.publicPoint);
+    final ResponseAPDU[] failed = new ResponseAPDU[1];
+    withMockedScp(
+        () ->
+            failed[0] =
+                transmit(
+                    0x84,
+                    0x24,
+                    ALG_ECC_P256 & 0xFF,
+                    0xF9,
+                    tlv((byte) 0x30, tlv((byte) 0x87, badPrivate))));
+    assertSw(0x6983, failed[0], "Mismatched authority key pair must be rejected");
 
     assertSw(
         0x9000,
@@ -446,6 +461,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     // Importing key material over a generated key changes its origin; the applet can no longer
     // attest that the slot's key was generated on-card.
     KeyPair replacement = generateEcP256();
+    importKeyElementOverScp(ALG_ECC_P256, SLOT_AUTHENTICATION, (byte) 0xE0, new byte[0]);
     importKeyElementOverScp(
         ALG_ECC_P256,
         SLOT_AUTHENTICATION,
@@ -500,6 +516,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     // Staging one half of a replacement keypair deactivates the authority. No certificate may be
     // issued while the committed key and the staged key could disagree.
     Authority replacement = Authority.create(new X500Name("CN=Half Staged,O=Example"));
+    if (Boolean.getBoolean("fips.mode")) {
+      importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0xE0, new byte[0]);
+    }
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x86, replacement.publicPoint);
 
     assertSw(
@@ -948,7 +967,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                   algorithm,
                   (byte) 0x8F,
                   (byte) 0x01,
-                  (byte) 0x04,
+                  operationalRole(slot),
                   (byte) 0x90,
                   (byte) 0x01,
                   ATTR_IMPORTABLE
@@ -959,6 +978,13 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                 "Create target key should succeed");
           }
         });
+  }
+
+  private static byte operationalRole(byte slot) {
+    if ((slot >= (byte) 0x82 && slot <= (byte) 0x95) || slot == (byte) 0x9D) {
+      return (byte) 0x02;
+    }
+    return (byte) 0x04;
   }
 
   private byte[] generateKeyOverScp(final byte slot, final String generateRequest) {

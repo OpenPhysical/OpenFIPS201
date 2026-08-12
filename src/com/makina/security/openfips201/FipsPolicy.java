@@ -34,4 +34,59 @@ final class FipsPolicy {
         return false;
     }
   }
+
+  static boolean allowsKeyDefinition(byte id, byte mechanism, byte role, byte attributes) {
+    if (id == PIV.ID_KEY_SECURE_MESSAGING) {
+      return mechanism == PIV.ID_ALG_ECC_SM && role == PIVKeyObject.ROLE_KEY_ESTABLISH;
+    }
+
+    if (id == PIV.ID_KEY_ATTESTATION) {
+      return mechanism == PIV.ID_ALG_ECC_P256 && role == PIVKeyObject.ROLE_SIGN;
+    }
+
+    if (id == (byte) 0x9B) {
+      return isAllowedManagementMechanism(mechanism)
+          && role == PIVKeyObject.ROLE_AUTHENTICATE
+          && (attributes & PIVKeyObject.ATTR_PERMIT_INTERNAL) == 0;
+    }
+
+    if (isRetiredKeyManagement(id) || id == (byte) 0x9D) {
+      return isAllowedCardholderAsymmetric(mechanism)
+          && role == PIVKeyObject.ROLE_KEY_ESTABLISH;
+    }
+
+    if (id == (byte) 0x9A || id == (byte) 0x9C || id == (byte) 0x9E) {
+      return isAllowedCardholderAsymmetric(mechanism) && role == PIVKeyObject.ROLE_SIGN;
+    }
+
+    return false;
+  }
+
+  private static boolean isAes(byte mechanism) {
+    return mechanism == PIV.ID_ALG_AES_128
+        || mechanism == PIV.ID_ALG_AES_192
+        || mechanism == PIV.ID_ALG_AES_256;
+  }
+
+  private static boolean isAllowedManagementMechanism(byte mechanism) {
+    return isAes(mechanism)
+        || (!ENABLED
+            && (mechanism == PIV.ID_ALG_DEFAULT || mechanism == PIV.ID_ALG_TDEA_3KEY));
+  }
+
+  private static boolean isAllowedCardholderAsymmetric(byte mechanism) {
+    return isCardholderAsymmetric(mechanism)
+        || (!ENABLED && mechanism == PIV.ID_ALG_RSA_1024);
+  }
+
+  private static boolean isCardholderAsymmetric(byte mechanism) {
+    return mechanism == PIV.ID_ALG_RSA_2048
+        || mechanism == PIV.ID_ALG_RSA_3072
+        || mechanism == PIV.ID_ALG_ECC_P256
+        || mechanism == PIV.ID_ALG_ECC_P384;
+  }
+
+  private static boolean isRetiredKeyManagement(byte id) {
+    return id >= (byte) 0x82 && id <= (byte) 0x95;
+  }
 }

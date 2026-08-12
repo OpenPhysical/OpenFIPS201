@@ -3,10 +3,7 @@ package dev.mistial.tests.openfips201;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-
 import javax.smartcardio.ResponseAPDU;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -25,11 +22,6 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte ATTR_NONE = (byte) 0x00;
   private static final byte ATTR_IMPORTABLE = (byte) 0x10;
-
-  @BeforeEach
-  void requireCs2Build() {
-    assumeTrue(isCs2Build(), "VCI conformance fixtures use the default CS2 applet build");
-  }
 
   /** Verifies that invalid VCI modes are rejected. */
   @Test
@@ -150,24 +142,25 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
    * key.
    */
   @Test
-  void applicationPropertyTemplateAdvertisesCs2OnlyAfterKeyMaterialAndCvc() {
+  void applicationPropertyTemplateAdvertisesConfiguredSuiteOnlyAfterKeyMaterialAndCvc() {
+    byte[] advertisement = new byte[] {(byte) 0x80, (byte) 0x01, activeAlgorithm()};
     assertSw(0x9000, selectApplet(), "Initial SELECT");
     assertFalse(
-        contains(selectAppletWithData().getData(), hex("800127")),
-        "APT must not advertise CS2 by default");
+        contains(selectAppletWithData().getData(), advertisement),
+        "APT must not advertise secure messaging by default");
 
     configureVciMode((byte) 0x02);
     createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPublicKeyOverScp(p256BasePoint());
-    importVciPrivateKeyOverScp(p256ScalarOne());
+    importVciPublicKeyOverScp(activeBasePoint());
+    importVciPrivateKeyOverScp(activeScalarOne());
     assertFalse(
-        contains(selectAppletWithData().getData(), hex("800127")),
+        contains(selectAppletWithData().getData(), advertisement),
         "APT requires CVC as well as key material");
 
     loadVciCvcOverScp(hex("7F2181100102030405060708090A0B0C0D0E0F10"));
     assertTrue(
-        contains(selectAppletWithData().getData(), hex("800127")),
-        "APT must advertise CS2 after key and CVC");
+        contains(selectAppletWithData().getData(), advertisement),
+        "APT must advertise the configured suite after key and CVC");
   }
 
   /**
@@ -183,7 +176,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
     loadVciCvcOverScp(hex("7F210401020304"));
     ResponseAPDU privateImport =
-        changeVciReferenceDataOverScp(tlv((byte) 0x30, tlv((byte) 0x87, fixed((byte) 0x44, 32))));
+        changeVciReferenceDataOverScp(
+            tlv((byte) 0x30, tlv((byte) 0x87, fixed((byte) 0x44, activeScalarOne().length))));
     assertSw(0x6982, privateImport, "Generated non-importable VCI key must reject private import");
   }
 
@@ -197,34 +191,38 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   void importedVciKeyRequiresCvcBeforeAptAdvertisement() {
     configureVciMode((byte) 0x01);
     createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPublicKeyOverScp(p256BasePoint());
-    importVciPrivateKeyOverScp(p256ScalarOne());
+    importVciPublicKeyOverScp(activeBasePoint());
+    importVciPrivateKeyOverScp(activeScalarOne());
     assertFalse(
-        contains(selectAppletWithData().getData(), hex("800127")),
+        contains(selectAppletWithData().getData(), activeAdvertisement()),
         "Imported VCI key still requires CVC");
 
     loadVciCvcOverScp(hex("7F210401020304"));
     assertTrue(
-        contains(selectAppletWithData().getData(), hex("800127")),
+        contains(selectAppletWithData().getData(), activeAdvertisement()),
         "Imported VCI key advertises after CVC");
   }
 
   @Test
-  void configuredCs2BuildRejectsCs7SecureMessagingKeyDefinition() {
+  void configuredBuildRejectsOtherSecureMessagingKeyDefinition() {
     configureVciMode((byte) 0x02);
-    ResponseAPDU response = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, ALG_CS7);
-    assertEquals(0x6A81, response.getSW(), "CS2 build must reject CS7 SM key definition");
+    ResponseAPDU response = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, inactiveAlgorithm());
+    assertEquals(0x6A81, response.getSW(), "Build must reject the other SM suite definition");
     assertFalse(
-        contains(selectAppletWithData().getData(), hex("80012E")), "APT must not advertise CS7");
+        contains(
+            selectAppletWithData().getData(),
+            new byte[] {(byte) 0x80, (byte) 0x01, inactiveAlgorithm()}),
+        "APT must not advertise the other suite");
   }
 
   @Test
-  void configuredCs2BuildDoesNotAllowBothSecureMessagingSuites() {
+  void configuredBuildDoesNotAllowBothSecureMessagingSuites() {
     configureVciMode((byte) 0x02);
-    createVciKeyOverScp(ATTR_IMPORTABLE, ALG_CS2);
+    createVciKeyOverScp(ATTR_IMPORTABLE, activeAlgorithm());
 
-    ResponseAPDU secondSuite = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, ALG_CS7);
-    assertEquals(0x6A81, secondSuite.getSW(), "Card must not accept both CS2 and CS7 SM keys");
+    ResponseAPDU secondSuite =
+        createVciKeyOverScpForResponse(ATTR_IMPORTABLE, inactiveAlgorithm());
+    assertEquals(0x6A81, secondSuite.getSW(), "Card must not accept both SM suites");
   }
 
   private void configureVciMode(final byte mode) {
@@ -247,7 +245,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void createVciKeyOverScp(final byte attributes) {
-    createVciKeyOverScp(attributes, ALG_CS2);
+    createVciKeyOverScp(attributes, activeAlgorithm());
   }
 
   private void createVciKeyOverScp(final byte attributes, final byte mechanism) {
@@ -303,8 +301,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
   private void createOperationalVciKey() {
     createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPublicKeyOverScp(p256BasePoint());
-    importVciPrivateKeyOverScp(p256ScalarOne());
+    importVciPublicKeyOverScp(activeBasePoint());
+    importVciPrivateKeyOverScp(activeScalarOne());
     loadVciCvcOverScp(hex("7F210401020304"));
   }
 
@@ -349,7 +347,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void importVciPrivateKeyOverScp(byte[] privateScalar) {
-    importVciPrivateKeyOverScp(privateScalar, ALG_CS2);
+    importVciPrivateKeyOverScp(privateScalar, activeAlgorithm());
   }
 
   private void importVciPrivateKeyOverScp(byte[] privateScalar, byte mechanism) {
@@ -359,7 +357,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void importVciPublicKeyOverScp(byte[] publicPoint) {
-    importVciPublicKeyOverScp(publicPoint, ALG_CS2);
+    importVciPublicKeyOverScp(publicPoint, activeAlgorithm());
   }
 
   private void importVciPublicKeyOverScp(byte[] publicPoint, byte mechanism) {
@@ -369,7 +367,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void loadVciCvcOverScp(byte[] cvc) {
-    loadVciCvcOverScp(cvc, ALG_CS2);
+    loadVciCvcOverScp(cvc, activeAlgorithm());
   }
 
   private void loadVciCvcOverScp(byte[] cvc, byte mechanism) {
@@ -379,7 +377,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private ResponseAPDU changeVciReferenceDataOverScp(final byte[] data) {
-    return changeVciReferenceDataOverScp(data, ALG_CS2);
+    return changeVciReferenceDataOverScp(data, activeAlgorithm());
   }
 
   private ResponseAPDU changeVciReferenceDataOverScp(final byte[] data, final byte mechanism) {
@@ -454,5 +452,25 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
   private static boolean isCs2Build() {
     return !"CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
+  }
+
+  private static byte activeAlgorithm() {
+    return isCs2Build() ? ALG_CS2 : ALG_CS7;
+  }
+
+  private static byte inactiveAlgorithm() {
+    return isCs2Build() ? ALG_CS7 : ALG_CS2;
+  }
+
+  private static byte[] activeBasePoint() {
+    return isCs2Build() ? p256BasePoint() : p384BasePoint();
+  }
+
+  private static byte[] activeScalarOne() {
+    return isCs2Build() ? p256ScalarOne() : p384ScalarOne();
+  }
+
+  private static byte[] activeAdvertisement() {
+    return new byte[] {(byte) 0x80, (byte) 0x01, activeAlgorithm()};
   }
 }

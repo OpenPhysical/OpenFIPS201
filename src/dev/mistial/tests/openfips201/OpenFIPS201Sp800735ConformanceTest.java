@@ -1,6 +1,7 @@
 package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.util.concurrent.TimeUnit;
 import javacard.framework.APDU;
@@ -22,6 +23,7 @@ import org.mockito.Mockito;
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
+  private static final boolean FIPS_MODE = Boolean.getBoolean("fips.mode");
   private static final byte SC_MASK =
       (byte) (SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC);
 
@@ -102,6 +104,19 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void changeReferenceDataWireLengthDoesNotFollowConfiguredPinLimit() {
+    assertSw(0x9000, selectApplet(), "SELECT before CHANGE REFERENCE DATA length test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 08 A0 06 84 01 06 85 01 06")),
+        "Configure a six-byte significant PIN limit");
+
+    ResponseAPDU response =
+        transmit(0x00, 0x24, 0x00, 0x80, hex("313233343536FFFF363534333231FFFF"));
+    assertSw(0x9000, response, "CHANGE REFERENCE DATA must consume two eight-byte fields");
+  }
+
+  @Test
   void contactlessChangeReferenceDataRequiresVciEvenWhenContactlessPinChangeIsEnabled() {
     assertSw(0x9000, selectApplet(), "SELECT before contactless PIN change config");
     assertSw(
@@ -121,6 +136,117 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
           0x6982,
           response,
           "Contactless CHANGE REFERENCE DATA for key ref 80 requires VCI, not plaintext");
+    }
+  }
+
+  @Test
+  void contactlessVerifyStatusAndResetRequireVci() {
+    assertSw(0x9000, selectApplet(), "SELECT before contactless VERIFY policy test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 05 A0 03 83 01 FF")),
+        "Enable contactless PIN use");
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      assertSw(
+          0x6982,
+          transmit(0x00, 0x20, 0x00, 0x80),
+          "Contactless VERIFY status must require VCI");
+      assertSw(
+          0x6982,
+          transmit(0x00, 0x20, 0xFF, 0x80),
+          "Contactless VERIFY reset must require VCI");
+    }
+  }
+
+  @Test
+  void globalPinStatusAndResetRequireDiscoveryAdvertisement() {
+    assertSw(0x9000, selectApplet(), "SELECT before Global PIN policy test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 05 A0 03 81 01 FF")),
+        "Enable Global PIN without provisioning Discovery");
+
+    assertSw(
+        0x6A88,
+        transmit(0x00, 0x20, 0x00, 0x00),
+        "Global PIN status must require Discovery advertisement");
+    assertSw(
+        0x6A88,
+        transmit(0x00, 0x20, 0xFF, 0x00),
+        "Global PIN reset must require Discovery advertisement");
+  }
+
+  @Test
+  void strictContactlessPutDataAndGenerateKeyAreUnsupported() {
+    assumeTrue(FIPS_MODE, "Strict command availability is enforced by the FIPS profile");
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      assertSw(
+          0x6A81,
+          transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025300")),
+          "Strict contactless PUT DATA must be unsupported");
+      assertSw(
+          0x6A81,
+          transmit(0x00, 0x47, 0x00, 0x9A, hex("AC03800111")),
+          "Strict contactless GENERATE KEY must be unsupported");
+    }
+  }
+
+  @Test
+  void strictProfileRejectsContactlessPukChangeAsUnsupported() {
+    assertSw(0x9000, selectApplet(), "SELECT before contactless PUK policy test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 05 A1 03 81 01 FF")),
+        "Enable the relaxed-profile contactless PUK extension");
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      assertSw(
+          FIPS_MODE ? 0x6A81 : 0x9000,
+          transmit(
+              0x00,
+              0x24,
+              0x00,
+              0x81,
+              hex("31323334353637383837363534333231")),
+          "Strict mode must not expose contactless PUK change");
+    }
+  }
+
+  @Test
+  void strictProfileRejectsContactlessResetRetryCounterAsUnsupported() {
+    assertSw(0x9000, selectApplet(), "SELECT before contactless retry-reset policy test");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("680AA0038301FFA1038101FF")),
+        "Enable the relaxed-profile contactless PIN and PUK extensions");
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+      assertSw(
+          FIPS_MODE ? 0x6A81 : 0x9000,
+          transmit(
+              0x00,
+              0x2C,
+              0x00,
+              0x80,
+              hex("3132333435363738363534333231FFFF")),
+          "Strict mode must not expose contactless retry reset");
     }
   }
 

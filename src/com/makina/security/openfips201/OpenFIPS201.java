@@ -64,6 +64,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte INS_PIV_GET_DATA = (byte) 0xCB;
   private static final byte INS_PIV_VERIFY = (byte) 0x20;
   private static final byte INS_PIV_CHANGE_REFERENCE_DATA = (byte) 0x24;
+  private static final byte INS_ADMIN_UPDATE_KEY = (byte) 0x25;
   private static final byte INS_PIV_RESET_RETRY_COUNTER = (byte) 0x2C;
   private static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
   private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
@@ -214,6 +215,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     if (selectingApplet()) {
       piv.abortOutgoingResponse();
+      piv.abortAuthenticationExchange();
       processPIV_SELECT(apdu);
       return;
     }
@@ -311,6 +313,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // have altered the length.
       piv.processIncomingObject(buffer, apdu.getOffsetCdata(), length);
 
+      // A multi-step GENERAL AUTHENTICATE exchange is bound to consecutive authentication APDUs.
+      // GET RESPONSE may finish carrying a large GA response, but every other command abandons the
+      // pending challenge before that command executes.
+      if (buffer[ISO7816.OFFSET_INS] != INS_PIV_GENERAL_AUTHENTICATE
+          && buffer[ISO7816.OFFSET_INS] != INS_GP_GET_RESPONSE) {
+        piv.abortAuthenticationExchange();
+      }
+
       // PIV secure messaging is handled as a transport wrapper here. Command-specific access
       // checks below still decide whether the unwrapped command is allowed in the current profile
       // and interface state.
@@ -342,6 +352,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
         case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
           processPIV_CHANGE_REFERENCE_DATA(apdu, length);
+          break;
+
+        case INS_ADMIN_UPDATE_KEY:
+          processADMIN_UPDATE_KEY(apdu, length);
           break;
 
         case INS_PIV_RESET_RETRY_COUNTER: // Case 2
@@ -409,7 +423,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     if (piv.isSecureMessagingCLA(cla)) {
       if (!piv.isSecureMessagingEstablished()) {
-        ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       }
       return;
     }
@@ -424,12 +438,43 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       }
     }
 
-    // PIV uses the interindustry class. Administrative commands may use GP SCP (84), and either
-    // class may carry the ISO command-chaining bit (10).
+    // PIV uses the interindustry class. Administrative commands use the proprietary class 80, or
+    // 84 when protected by GP SCP. Any of those classes may carry command chaining.
     byte baseCla = (byte) (cla & (byte) 0xEF);
-    if (baseCla != (byte) 0x00 && baseCla != (byte) 0x84) {
+    if (baseCla == (byte) 0x80) {
+      if (!isAdministrativeInstruction(ins)) {
+        ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+      }
+      return;
+    }
+    if (baseCla == (byte) 0x84) {
+      SecureChannel secureChannel = GPSystem.getSecureChannel();
+      if (!isAdministrativeInstruction(ins)
+          || secureChannel == null
+          || (secureChannel.getSecurityLevel() & SC_MASK) != SC_MASK) {
+        ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+      }
+      return;
+    }
+    if (baseCla != (byte) 0x00) {
       ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
     }
+  }
+
+  private static boolean isAdministrativeInstruction(byte ins) {
+    return ins == INS_PIV_GET_DATA
+        || ins == INS_PIV_PUT_DATA
+        || ins == INS_PIV_CHANGE_REFERENCE_DATA
+        || ins == INS_ADMIN_UPDATE_KEY
+        || ins == INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR
+        // #if ATTESTATION_ENABLED
+        || ins == INS_PIV_ATTEST
+    // #endif
+    ;
+  }
+
+  private static boolean isPlainProprietaryClass(byte cla) {
+    return (byte) (cla & (byte) 0xEF) == (byte) 0x80;
   }
 
   private boolean isPlaintextOpacityEstablishment(byte[] buffer) {
@@ -519,6 +564,21 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     final byte P2_EXTENDED = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
+    boolean proprietary =
+        isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
+            || (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84
+                && buffer[ISO7816.OFFSET_P1] == (byte) 0xFF
+                && buffer[ISO7816.OFFSET_P2] == (byte) 0xFF;
+
+    if (proprietary) {
+      if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF
+          || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
+        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+      }
+      piv.getDataExtended(buffer, apdu.getOffsetCdata(), length);
+      piv.processOutgoing(apdu);
+      return;
+    }
 
     /*
      * PRE-CONDITIONS
@@ -531,7 +591,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // PRE-CONDITION 2 - The P2 value must be equal to the constant 'FF'
     boolean extended = false;
-    if (buffer[ISO7816.OFFSET_P2] == P2_EXTENDED) {
+    if (FipsPolicy.ENABLED && buffer[ISO7816.OFFSET_P2] != P2) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    } else if (buffer[ISO7816.OFFSET_P2] == P2_EXTENDED) {
       extended = true;
     } else if (buffer[ISO7816.OFFSET_P2] != P2) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
@@ -569,6 +631,26 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     final byte CONST_P2_ADMIN = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
+    if (FipsPolicy.ENABLED && piv.isContactless()) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
+    boolean proprietary =
+        isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
+            || (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84
+                && buffer[ISO7816.OFFSET_P1] == (byte) 0xFF
+                && buffer[ISO7816.OFFSET_P2] == (byte) 0xFF;
+
+    if (proprietary) {
+      if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF
+          || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
+        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+      }
+      if (!piv.isInterfacePermittedForAdmin()) {
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      }
+      piv.putDataAdmin(buffer, apdu.getOffsetCdata(), length);
+      return;
+    }
 
     /*
      * PRE-CONDITIONS
@@ -587,7 +669,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // PRE-CONDITION 3 - The P2 value must be equal to the constant CONST_P2 or CONST_P2_ADMIN
     boolean admin = false;
 
-    if (buffer[ISO7816.OFFSET_P2] == CONST_P2_ADMIN) {
+    if (FipsPolicy.ENABLED
+        && (byte) (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x00
+        && buffer[ISO7816.OFFSET_P2] != CONST_P2) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    } else if (buffer[ISO7816.OFFSET_P2] == CONST_P2_ADMIN) {
       // This is an administrative command
       admin = true;
     } else if (buffer[ISO7816.OFFSET_P2] != CONST_P2) {
@@ -682,6 +768,27 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     byte[] buffer = apdu.getBuffer();
 
+    boolean proprietary =
+        isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
+            || (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84
+                && buffer[ISO7816.OFFSET_P1] == (byte) 0x01;
+    if (proprietary) {
+      if (buffer[ISO7816.OFFSET_P1] != (byte) 0x01
+          || (buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_LOCAL_PIN
+              && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_PUK)) {
+        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+      }
+      piv.changeReferenceDataAdmin(
+          buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
+      return;
+    }
+
+    if (FipsPolicy.ENABLED
+        && (byte) (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x00
+        && buffer[ISO7816.OFFSET_P1] != CONST_P1) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
     /*
      * PRE-CONDITIONS
      */
@@ -720,6 +827,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // CASE 2 - Otherwise, we pass it to the administrative command handler
       piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
     }
+  }
+
+  private void processADMIN_UPDATE_KEY(APDU apdu, short length) {
+    byte[] buffer = apdu.getBuffer();
+    if (buffer[ISO7816.OFFSET_P1] != (byte) 0x01) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+    piv.changeReferenceDataAdmin(
+        buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
   }
 
   /**
@@ -795,6 +911,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     final byte CONST_P1 = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
+
+    if (FipsPolicy.ENABLED && piv.isContactless()) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
 
     /*
      * PRE-CONDITIONS

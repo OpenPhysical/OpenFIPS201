@@ -51,11 +51,22 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
   @Test
   void pivCommandsRejectUnsupportedClassBytes() {
-    int[] invalidClasses = {0x04, 0x0C, 0x40, 0x80, 0xFC};
+    int[] invalidClasses = {0x04, 0x40, 0x80, 0x84, 0xFC};
     for (int cla : invalidClasses) {
       assertSw(0x9000, selectApplet(), "SELECT before CLA validation");
       ResponseAPDU response = transmit(cla, 0x20, 0x00, 0x80, hex("313233343536FFFF"));
       assertSw(0x6E00, response, String.format("VERIFY must reject CLA %02X", cla));
+    }
+  }
+
+  @Test
+  void secureMessagingClassWithoutSessionKeysReturnsSecurityStatus() {
+    for (int cla : new int[] {0x0C, 0x1C}) {
+      assertSw(0x9000, selectApplet(), "SELECT before secure-messaging CLA validation");
+      assertSw(
+          0x6982,
+          transmit(cla, 0x20, 0x00, 0x80, hex("313233343536FFFF")),
+          String.format("SM CLA %02X without session keys must return 6982", cla));
     }
   }
 
@@ -95,8 +106,8 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   void getDataExtendedGetVersionWorks() {
     assertSw(0x9000, selectApplet(), "SELECT before GET DATA EXTENDED checks");
 
-    // Extended GET DATA (P2=00) with id "GV" (0x4756) asks for implementation version details.
-    ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0x00, hex("5C032F4756"), 0);
+    // Proprietary GET DATA with id "GV" (0x4756) asks for implementation version details.
+    ResponseAPDU response = transmit(0x80, 0xCB, 0xFF, 0xFF, hex("5C032F4756"), 0);
     assertSw(0x9000, response, "GET DATA EXTENDED GV should succeed");
 
     // Extended responses are wrapped in a response TLV with tag 0x53.
@@ -118,7 +129,7 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   @Test
   void getDataExtendedRejectsUnknownIdentifier() {
     assertSw(0x9000, selectApplet(), "SELECT before GET DATA EXTENDED checks");
-    ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0x00, hex("5C032F1234"), 0);
+    ResponseAPDU response = transmit(0x80, 0xCB, 0xFF, 0xFF, hex("5C032F1234"), 0);
     assertSw(
         0x6A82, response, "Unknown extended data object identifier should return FILE_NOT_FOUND");
   }
@@ -127,8 +138,7 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   void putDataAdminWithoutSecureChannelIsRejected() {
     assertSw(0x9000, selectApplet(), "SELECT before PUT DATA checks");
 
-    // P2=00 chooses the administrative PUT DATA path, which must require SCP.
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0x00, hex("7E00"));
+    ResponseAPDU response = transmit(0x80, 0xDB, 0xFF, 0xFF, hex("7E00"));
     assertSw(0x6982, response, "Administrative PUT DATA must require a secure channel");
   }
 

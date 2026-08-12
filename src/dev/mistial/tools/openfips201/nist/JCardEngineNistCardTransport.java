@@ -11,13 +11,15 @@ final class JCardEngineNistCardTransport implements NistCardTransport {
   private static final byte[] OPENFIPS201_AID_BYTES = hex("A000000308000010000100");
 
   private final JavaCardEngine engine;
-  private final BIBO session;
+  private final String protocol;
+  private BIBO session;
 
-  JCardEngineNistCardTransport() {
+  JCardEngineNistCardTransport(String protocol) {
+    this.protocol = protocol;
     engine = JavaCardEngine.create();
     AID aid = new AID(OPENFIPS201_AID_BYTES, (short) 0, (byte) OPENFIPS201_AID_BYTES.length);
     engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
-    session = engine.connect();
+    session = engine.connect(protocol, true);
   }
 
   @Override
@@ -36,6 +38,16 @@ final class JCardEngineNistCardTransport implements NistCardTransport {
       return session.transceive(command);
     } catch (BIBOException e) {
       throw new CardException("JCardEngine APDU exchange failed", e);
+    }
+  }
+
+  @Override
+  public void reset() throws CardException {
+    try {
+      session.close();
+      session = engine.connect(protocol, true);
+    } catch (RuntimeException e) {
+      throw new CardException("JCardEngine reset failed", e);
     }
   }
 

@@ -25,6 +25,15 @@ final class PIVDataStore {
     return null;
   }
 
+  PIVDataObject findSingleByte(byte id) {
+    PIVDataObject object = first;
+    while (object != null) {
+      if (object.matchSingleByteId(id)) return object;
+      object = (PIVDataObject) object.getNext();
+    }
+    return null;
+  }
+
   void create(
       byte[] idBuffer,
       short idOffset,

@@ -182,10 +182,9 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
   void changeReferenceDataAdminVariantRequiresAdministrativeAuthorization() {
     assertSw(0x9000, selectApplet(), "SELECT before CHANGE REFERENCE DATA checks");
 
-    // P1=FF routes to the administrative handler. Neither SCP nor 9B is authenticated here.
     byte[] payload = hex("313233343536FFFF393837363534FFFF");
     ResponseAPDU response =
-        transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0xFF, LOCAL_PIN_REFERENCE, payload);
+        transmit(0x80, INS_CHANGE_REFERENCE_DATA, 0x01, LOCAL_PIN_REFERENCE, payload);
     assertSw(0x6982, response, "Administrative CHANGE REFERENCE DATA must require authorization");
   }
 
@@ -226,6 +225,35 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
         transmit(0x00, INS_RESET_RETRY_COUNTER, 0x00, LOCAL_PIN_REFERENCE, payload);
     int retries = assert63cxAndGetRetries(response, "RESET RETRY COUNTER wrong PUK");
     assertTrue(retries > 0, "PUK retry counter should still be above zero after one failure");
+  }
+
+  @Test
+  void resetRetryCounterUsesFixedWireFieldsWithSixDigitPinLimit() {
+    byte[] puk = hex("3837363534333231");
+    setLocalPinOverScp(hex("313233343536FFFF"));
+    setPukOverScp(puk);
+    withMockedScp(
+        () ->
+            assertSw(
+                0x9000,
+                transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A003850106")),
+                "Set the significant PIN limit to six digits"));
+
+    assertSw(0x9000, selectApplet(), "SELECT before fixed-width RESET RETRY COUNTER");
+    byte[] newPin = hex("363534333231FFFF");
+    assertSw(
+        0x9000,
+        transmit(
+            0x00,
+            INS_RESET_RETRY_COUNTER,
+            0x00,
+            LOCAL_PIN_REFERENCE,
+            concat(puk, newPin)),
+        "Six-digit policy must still use two eight-byte command fields");
+    assertSw(
+        0x9000,
+        transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE, newPin),
+        "The replacement PIN should verify using the fixed-width encoding");
   }
 
   @Test

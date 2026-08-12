@@ -9,6 +9,8 @@ interface NistCardTransport extends AutoCloseable {
 
   byte[] transmit(byte[] command) throws CardException;
 
+  void reset() throws CardException;
+
   @Override
   void close();
 }

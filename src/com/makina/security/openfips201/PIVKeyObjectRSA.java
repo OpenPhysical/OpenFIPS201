@@ -57,6 +57,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   private static final byte CONST_TAG_MODULUS = (byte) 0x81; // RSA - The modulus
   private static final byte CONST_TAG_EXPONENT = (byte) 0x82; // RSA - The public exponent
   private static final short CONST_LENGTH_EXPONENT = (short) 3; // RSA - The public exponent length
+  private static final byte EXPONENT_FIRST_BYTE = (byte) 0x01;
 
   // The key values
   protected RSAPrivateKey privateKey;
@@ -280,6 +281,10 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       allocatePrivate();
       allocatePublic();
 
+      outBuffer[outOffset] = EXPONENT_FIRST_BYTE;
+      outBuffer[(short) (outOffset + 1)] = (byte) 0x00;
+      outBuffer[(short) (outOffset + 2)] = EXPONENT_FIRST_BYTE;
+      publicKey.setExponent(outBuffer, outOffset, CONST_LENGTH_EXPONENT);
       keyPair.genKeyPair();
 
       if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(outBuffer, outOffset)) {
@@ -328,12 +333,14 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   @Override
   boolean pairwiseConsistencyTest(byte[] scratch, short offset) {
     short blockLength = getBlockLength();
+    short transformedOffset = (short) (offset + blockLength);
     Util.arrayFillNonAtomic(scratch, offset, blockLength, (byte) 0);
     scratch[(short) (offset + blockLength - 1)] = (byte) 0x5A;
     short transformedLength =
-        PIVCrypto.doSign(privateKey, scratch, offset, blockLength, scratch, offset);
+        PIVCrypto.doSign(privateKey, scratch, offset, blockLength, scratch, transformedOffset);
     short recoveredLength =
-        PIVCrypto.doRsaPublic(publicKey, scratch, offset, transformedLength, scratch, offset);
+        PIVCrypto.doRsaPublic(
+            publicKey, scratch, transformedOffset, transformedLength, scratch, offset);
     if (recoveredLength != blockLength
         || scratch[(short) (offset + blockLength - 1)] != (byte) 0x5A) {
       return false;

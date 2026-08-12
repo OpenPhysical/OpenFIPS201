@@ -16,17 +16,24 @@ import javax.smartcardio.TerminalFactorySpi;
 public final class OpenFips201TerminalFactorySpi extends TerminalFactorySpi {
   static final String CONTACT_READER = "OpenFIPS201 Emulator Contact";
   static final String CONTACTLESS_READER = "OpenFIPS201 Emulator Contactless";
+  private static final String CONTACTLESS_INTERFACE = "CONTACTLESS";
+  private static final String SECURE_MESSAGING_INTERFACE = "SECURE_MESSAGING";
+  private static final String VIRTUAL_CONTACT_INTERFACE = "VIRTUAL_CONTACT";
 
   private static volatile OpenFips201CardTerminals terminals =
       new OpenFips201CardTerminals(Collections.emptyList());
 
   public OpenFips201TerminalFactorySpi() {}
 
-  static void install(NistCardTransport transport) {
+  static void install(NistCardTransport contact, NistCardTransport contactless) {
     List<CardTerminal> configured = new ArrayList<CardTerminal>();
-    configured.add(new OpenFips201CardTerminal(CONTACT_READER, transport));
-    configured.add(new OpenFips201CardTerminal(CONTACTLESS_READER, transport));
+    configured.add(new OpenFips201CardTerminal(CONTACT_READER, contact));
+    configured.add(new OpenFips201CardTerminal(CONTACTLESS_READER, contactless));
     terminals = new OpenFips201CardTerminals(configured);
+  }
+
+  static void reset(String testInterface) throws CardException {
+    terminals.reset(testInterface);
   }
 
   @Override
@@ -39,6 +46,21 @@ public final class OpenFips201TerminalFactorySpi extends TerminalFactorySpi {
 
     OpenFips201CardTerminals(List<CardTerminal> terminals) {
       this.terminals = Collections.unmodifiableList(new ArrayList<CardTerminal>(terminals));
+    }
+
+    void reset(String testInterface) throws CardException {
+      boolean useContactless =
+          CONTACTLESS_INTERFACE.equalsIgnoreCase(testInterface)
+              || SECURE_MESSAGING_INTERFACE.equalsIgnoreCase(testInterface)
+              || VIRTUAL_CONTACT_INTERFACE.equalsIgnoreCase(testInterface);
+      String reader = useContactless ? CONTACTLESS_READER : CONTACT_READER;
+      for (CardTerminal terminal : terminals) {
+        if (reader.equals(terminal.getName())) {
+          ((OpenFips201CardTerminal) terminal).reset();
+          return;
+        }
+      }
+      throw new CardException("No emulator reader for interface: " + testInterface);
     }
 
     @Override
@@ -94,6 +116,10 @@ public final class OpenFips201TerminalFactorySpi extends TerminalFactorySpi {
     public boolean waitForCardAbsent(long timeout) {
       return false;
     }
+
+    void reset() throws CardException {
+      transport.reset();
+    }
   }
 
   private static final class OpenFips201Card extends Card {
@@ -142,8 +168,11 @@ public final class OpenFips201TerminalFactorySpi extends TerminalFactorySpi {
     }
 
     @Override
-    public void disconnect(boolean reset) {
+    public void disconnect(boolean reset) throws CardException {
       exclusive = false;
+      if (reset) {
+        transport.reset();
+      }
     }
 
     @Override

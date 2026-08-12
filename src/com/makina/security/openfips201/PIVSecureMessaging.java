@@ -202,8 +202,7 @@ final class PIVSecureMessaging {
   }
 
   boolean isSecureMessagingCla(byte cla) {
-    return (byte) (cla & (byte) 0x1C) == CLA_SECURE_MESSAGING
-        || (byte) (cla & (byte) 0x1C) == CLA_CHAINED_SECURE_MESSAGING;
+    return cla == CLA_SECURE_MESSAGING || cla == CLA_CHAINED_SECURE_MESSAGING;
   }
 
   /**

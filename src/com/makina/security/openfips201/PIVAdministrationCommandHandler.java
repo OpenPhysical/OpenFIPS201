@@ -67,6 +67,9 @@ final class PIVAdministrationCommandHandler {
         || GPSystem.getCardContentState() != GPSystem.APPLICATION_SELECTABLE) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
+    if (!cspPIV.hasUsableManagementKey()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
     if (!GPSystem.setCardContentState(APP_STATE_PERSONALIZED)) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
@@ -558,7 +561,7 @@ final class PIVAdministrationCommandHandler {
       throws ISOException {
 
     final byte CONST_TAG_SEQUENCE = (byte) 0x30;
-    final byte mechanism = buffer[ISO7816.OFFSET_P1];
+    byte mechanism = buffer[ISO7816.OFFSET_P1];
 
     // The PIV Card Application may allow the reference data associated with other key references
     // to be changed by the PIV Card Application CHANGE REFERENCE DATA, if PIV Card Application will
@@ -584,6 +587,19 @@ final class PIVAdministrationCommandHandler {
 
     // If the length is zero, just return so the caller can keep sending
     if (length == 0) return;
+
+    // Proprietary UPDATE KEY uses P1=01 and carries the PIV algorithm reference in tag 80 before
+    // the existing single-element key-update sequence.
+    if (mechanism == (byte) 0x01 && id != ID_CVM_LOCAL_PIN && id != ID_CVM_PUK) {
+      if (length < (short) 5
+          || commandBuffer[ZERO] != (byte) 0x80
+          || commandBuffer[(short) 1] != (byte) 0x01) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+      mechanism = commandBuffer[(short) 2];
+      length -= (short) 3;
+      Util.arrayCopyNonAtomic(commandBuffer, (short) 3, commandBuffer, ZERO, length);
+    }
 
     // If we got this far, the scratch buffer now contains the incoming DATA. Keep in mind that the
     // original buffer
@@ -732,11 +748,18 @@ final class PIVAdministrationCommandHandler {
       } else {
         // #endif
         if (key instanceof PIVKeyObjectPKI) {
+          PIVKeyObjectPKI importedKey = (PIVKeyObjectPKI) key;
+          boolean hadPrivateKey = importedKey.isInitialised();
+          if (key.getId() != ID_KEY_ATTESTATION
+              && hadPrivateKey
+              && !importedKey.hasPendingImportedParts()
+              && importedKey.isImportedKeyMaterial(elementTag)) {
+            ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+          }
           JCSystem.beginTransaction();
           try {
             key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
-            if (FipsPolicy.ENABLED && elementTag != PIVKeyObject.ELEMENT_CLEAR) {
-              PIVKeyObjectPKI importedKey = (PIVKeyObjectPKI) key;
+            if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
               if (importedKey.completesImportedKeyPair(elementTag)
                   && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
                 key.clear();

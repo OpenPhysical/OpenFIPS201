@@ -6,9 +6,12 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.security.AlgorithmParameters;
 import java.security.KeyFactory;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.PublicKey;
 import java.security.Security;
 import java.security.Signature;
+import java.security.interfaces.ECPrivateKey;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
@@ -83,6 +86,46 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
             SLOT_SIGNATURE & 0xFF,
             signTemplate(filled(64, (byte) 0x5A))),
         "ECC must not sign a 64-byte (SHA-512) digest");
+  }
+
+  @Test
+  void rejectsMismatchedPrivateRotationAndRetainsTheOriginalPair() throws Exception {
+    byte[] publicPoint = provisionEccSignKey(SLOT_SIGNATURE);
+    KeyPairGenerator generator =
+        KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME);
+    generator.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair mismatch = generator.generateKeyPair();
+    byte[] privateScalar =
+        fixed(((ECPrivateKey) mismatch.getPrivate()).getS(), P256_FIELD_BYTES);
+
+    withMockedScp(
+        () ->
+            assertSw(
+                0x6985,
+                transmit(
+                    0x84,
+                    0x24,
+                    ALG_ECC_P256 & 0xFF,
+                    SLOT_SIGNATURE & 0xFF,
+                    tlv((byte) 0x30, tlv((byte) 0x87, privateScalar))),
+                "A private component that mismatches a live public key must be rejected"));
+
+    byte[] digest = filled(P256_FIELD_BYTES, (byte) 0x3C);
+    byte[] response =
+        collect(
+            transmit(
+                new CommandAPDU(
+                    0x00,
+                    0x87,
+                    ALG_ECC_P256 & 0xFF,
+                    SLOT_SIGNATURE & 0xFF,
+                    signTemplate(digest),
+                    256)),
+            "The original key must remain usable after a rejected rotation");
+    byte[] signature = tlvValue(tlvValue(response, (byte) 0x7C), (byte) 0x82);
+    assertTrue(
+        verifiesEcdsa(publicPoint, digest, signature),
+        "The retained private key must still match the advertised public key");
   }
 
   @Test
@@ -184,6 +227,15 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
     byte[] buffer = new byte[length];
     Arrays.fill(buffer, value);
     return buffer;
+  }
+
+  private static byte[] fixed(BigInteger value, int length) {
+    byte[] encoded = value.toByteArray();
+    byte[] result = new byte[length];
+    int sourceOffset = Math.max(0, encoded.length - length);
+    int copyLength = Math.min(encoded.length, length);
+    System.arraycopy(encoded, sourceOffset, result, length - copyLength, copyLength);
+    return result;
   }
 
   private static boolean verifiesEcdsa(byte[] uncompressedPoint, byte[] digest, byte[] derSignature)

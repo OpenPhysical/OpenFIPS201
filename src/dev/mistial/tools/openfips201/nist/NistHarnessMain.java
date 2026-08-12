@@ -54,8 +54,9 @@ public final class NistHarnessMain {
       throw new IllegalArgumentException("No NIST test vectors matched the requested selection");
     }
 
-    try (NistCardTransport transport = new JCardEngineNistCardTransport()) {
-      installProvider(transport);
+    try (NistCardTransport contact = new JCardEngineNistCardTransport("T=1");
+        NistCardTransport contactless = new JCardEngineNistCardTransport("T=CL")) {
+      installProvider(contact, contactless);
       int failures = runTests(configuration, selected);
       if (failures != 0) {
         throw new IllegalStateException(failures + " NIST test vector(s) failed");
@@ -63,8 +64,9 @@ public final class NistHarnessMain {
     }
   }
 
-  private static void installProvider(NistCardTransport transport) {
-    OpenFips201TerminalFactorySpi.install(transport);
+  private static void installProvider(
+      NistCardTransport contact, NistCardTransport contactless) {
+    OpenFips201TerminalFactorySpi.install(contact, contactless);
     if (Security.getProvider(OpenFips201NistProvider.PROVIDER_NAME) == null) {
       Security.insertProviderAt(new OpenFips201NistProvider(), 1);
     }
@@ -145,6 +147,9 @@ public final class NistHarnessMain {
     if ("contactless".equals(suite)) {
       return CONTACTLESS.equalsIgnoreCase(testInterface);
     }
+    if (suite.equalsIgnoreCase(testInterface)) {
+      return true;
+    }
     return vector.getSubsystemName().equalsIgnoreCase(suite);
   }
 
@@ -162,6 +167,7 @@ public final class NistHarnessMain {
       TestResult result = null;
       try {
         System.out.println("RUN " + (index + 1) + "/" + selected.size() + " " + name);
+        OpenFips201TerminalFactorySpi.reset(testInterface(vector));
         test.setupTest();
         result = test.runTest();
         String resultText = result == null ? "error" : result.getResultCodeText();
@@ -207,8 +213,7 @@ public final class NistHarnessMain {
 
   private static boolean isPassingResult(String resultText) {
     return "pass".equalsIgnoreCase(resultText)
-        || "true".equalsIgnoreCase(resultText)
-        || "skip".equalsIgnoreCase(resultText);
+        || "true".equalsIgnoreCase(resultText);
   }
 
   private static String testName(TestVector vector) {

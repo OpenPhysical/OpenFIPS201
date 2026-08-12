@@ -81,7 +81,7 @@ abstract class OpenFIPS201TestSupport {
           assertSw(0x9000, selectApplet(), "SELECT before admin PIN update");
           assertSw(
               0x9000,
-              transmit(0x84, 0x24, 0xFF, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pin),
+              transmit(0x84, 0x24, 0x01, StandardCardProfile.LOCAL_PIN_REF & 0xFF, pin),
               "Administrative local PIN update");
         });
   }
@@ -93,7 +93,7 @@ abstract class OpenFIPS201TestSupport {
           assertSw(0x9000, selectApplet(), "SELECT before admin PUK update");
           assertSw(
               0x9000,
-              transmit(0x84, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, puk),
+              transmit(0x84, 0x24, 0x01, StandardCardProfile.PUK_REF & 0xFF, puk),
               "Administrative PUK update");
         });
   }
@@ -109,16 +109,16 @@ abstract class OpenFIPS201TestSupport {
           assertSw(
               0x9000,
               transmit(
-                  0x84, 0xDB, 0x3F, 0x00, StandardCardProfile.managementKeyDefinition(algorithm)),
+                  0x84, 0xDB, 0xFF, 0xFF, StandardCardProfile.managementKeyDefinition(algorithm)),
               "SCP create-key operation for 9B should succeed");
           assertSw(
               0x9000,
               transmit(
                   0x84,
-                  0x24,
-                  algorithm & 0xFF,
+                  0x25,
+                  0x01,
                   StandardCardProfile.ADMIN_KEY_REF & 0xFF,
-                  keyUpdateData(keyBytes)),
+                  concat(new byte[] {(byte) 0x80, (byte) 0x01, algorithm}, keyUpdateData(keyBytes))),
               "SCP initial key import for 9B should succeed");
         });
   }

@@ -56,8 +56,8 @@ final class PIV {
   //
 
   // Transient buffer allocation
-  // RSA-3072 operations require a 384-byte block plus response TLV headers.
-  static final short LENGTH_SCRATCH = (short) 512;
+  // RSA-3072 pairwise testing keeps input and output in separate 384-byte regions.
+  static final short LENGTH_SCRATCH = (short) 768;
 
   //
   // Static PIV identifiers
@@ -341,6 +341,10 @@ final class PIV {
     chainBuffer.processIncomingObject(buffer, offset, length, currentProtection());
   }
 
+  void abortAuthenticationExchange() {
+    authenticationContext.reset();
+  }
+
   private byte currentProtection() {
     byte protection = ChainBuffer.PROTECTION_PLAIN;
     if (cspPIV.getIsSecureChannel()) {
@@ -583,6 +587,10 @@ final class PIV {
     return isSecureMessagingCommand() && secureMessaging.isVciEstablished();
   }
 
+  boolean isGlobalPinAdvertised() {
+    return dataCommands.isGlobalPinAdvertised();
+  }
+
   void rejectUnsupportedOccAccessMode(byte mode) {
     if (mode != PIVObject.ACCESS_MODE_ALWAYS
         && (mode & PIVObject.ACCESS_MODE_OCC) == PIVObject.ACCESS_MODE_OCC) {
@@ -650,6 +658,10 @@ final class PIV {
       value = false;
     }
     cspPIV.setIsContactless(value);
+  }
+
+  boolean isContactless() {
+    return cspPIV.getIsContactless();
   }
 
   boolean isInterfacePermitted() {

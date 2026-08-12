@@ -85,12 +85,23 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
   /** Verifies that the public and private components form a usable pair. */
   abstract boolean pairwiseConsistencyTest(byte[] scratch, short offset);
 
+  final boolean isImportedKeyMaterial(byte element) {
+    return importPartForElement(element) != (byte) 0;
+  }
+
   /** Returns true exactly when this element completes a fresh imported key pair. */
   final boolean completesImportedKeyPair(byte element) {
-    importedParts |= importPartForElement(element);
+    byte importedPart = importPartForElement(element);
+    if (importedPart == (byte) 0) return false;
+
+    importedParts |= importedPart;
     if ((importedParts & requiredImportParts()) != requiredImportParts()) return false;
     importedParts = (byte) 0;
     return true;
+  }
+
+  final boolean hasPendingImportedParts() {
+    return importedParts != (byte) 0;
   }
 
   final void resetImportedParts() {

@@ -49,7 +49,7 @@ class OpenFIPS201SecureChannelAndExtendedLengthTest extends OpenFIPS201TestSuppo
       // Wrapped length is 20 bytes. Plaintext length seen by handlers should become 16.
       byte[] resetRetryWrapped =
           hex(
-              "84 2C 00 80 14 "
+              "04 2C 00 80 14 "
                   + "31 32 33 34 35 36 37 38 " // wrong PUK guess
                   + "39 38 37 36 35 34 FF FF " // new PIN in valid format
                   + "AA BB CC DD"); // synthetic SCP wrapper overhead

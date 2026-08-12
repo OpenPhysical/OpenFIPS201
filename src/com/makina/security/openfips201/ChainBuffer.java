@@ -172,7 +172,7 @@ final class ChainBuffer {
     context[CONTEXT_TRANSACTION] = (short) 0;
   }
 
-  /** Rejects an unrelated command while a command-data chain is incomplete. */
+  /** Abandons an incomplete command-data chain when a different command arrives. */
   void checkIncomingAPDU(byte[] apdu) {
     if (context[CONTEXT_STATE] != STATE_INCOMING_APDU) return;
 
@@ -182,7 +182,6 @@ final class ChainBuffer {
     if (command != expected
         || context[CONTEXT_APDU_P1P2] != Util.getShort(apdu, ISO7816.OFFSET_P1)) {
       resetAbort();
-      ISOException.throwIt(ISO7816.SW_LAST_COMMAND_EXPECTED);
     }
   }
 

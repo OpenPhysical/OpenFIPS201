@@ -156,6 +156,12 @@ abstract class PIVObject {
     return (header[HEADER_ID] == id);
   }
 
+  boolean matchSingleByteId(byte id) {
+    return idBytes[(short) 0] == (byte) 0
+        && idBytes[(short) 1] == (byte) 0
+        && idBytes[(short) 2] == id;
+  }
+
   boolean match(byte[] idBuffer, short idOffset, short idLength) {
     if (idLength < (short) 0x01 || idLength > (short) 0x03) {
       return false;
