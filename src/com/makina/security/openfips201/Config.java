@@ -102,7 +102,11 @@ final class Config {
         // 2 bytes - Application Property Template (TAG '61')
         (byte) 0x61,
         (byte) 0x81,
+        // #if FIPS_MODE
+        (byte) 0x89,
+        // #else
         (byte) 0x92,
+        // #endif
 
         // 2 + 11 bytes - Application identifier of application (TAG '4F')
         (byte) 0x4F,
@@ -227,15 +231,22 @@ final class Config {
 
         // 2 + 33 - Cryptographic Algorithm Identifier Template (Tag 'AC')
         (byte) 0xAC,
+        // #if FIPS_MODE
+        (byte) 0x18,
+        // #else
         (byte) 0x21,
+        // #endif
 
         // Supported mechanisms
+        // #if FIPS_MODE
+        // #else
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_DEFAULT,
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_TDEA_3KEY,
+        // #endif
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_AES_128,
@@ -245,9 +256,12 @@ final class Config {
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_AES_256,
+        // #if FIPS_MODE
+        // #else
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_RSA_1024,
+        // #endif
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_RSA_2048,
@@ -446,6 +460,9 @@ final class Config {
     config[CONFIG_PIN_MAX_LENGTH] = DEFAULT_PIN_MAX_LENGTH;
     config[CONFIG_PIN_RETRIES_CONTACT] = DEFAULT_PIN_RETRIES_CONTACT;
     config[CONFIG_PIN_RETRIES_CONTACTLESS] = DEFAULT_PIN_RETRIES_CONTACTLESS;
+    if (FipsPolicy.ENABLED) {
+      config[CONFIG_PIN_CHARSET] = PIN_CHARSET_NUMERIC;
+    }
 
     // PUK
     config[CONFIG_PUK_ENABLED] = DEFAULT_PUK_ENABLED;
@@ -589,6 +606,9 @@ final class Config {
       if (reader.match(TAG_PIN_CHARSET)) {
         byte value = reader.toByte();
         if (value < PIN_CHARSET_NUMERIC || value > PIN_CHARSET_RAW) {
+          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        if (FipsPolicy.ENABLED && value != PIN_CHARSET_NUMERIC) {
           ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
         config[CONFIG_PIN_CHARSET] = value;
@@ -740,7 +760,11 @@ final class Config {
 
       // Restrict Contactless - Admin
       if (reader.match(TAG_RESTRICT_CONTACTLESS_ADMIN)) {
-        setBoolean(OPTION_RESTRICT_CONTACTLESS_ADMIN, reader.toByte());
+        byte value = reader.toByte();
+        if (FipsPolicy.ENABLED && value == (byte) 0) {
+          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        setBoolean(OPTION_RESTRICT_CONTACTLESS_ADMIN, value);
         reader.moveNext();
       }
 
@@ -757,7 +781,11 @@ final class Config {
 
       // Ignore Contactless ACL
       if (reader.match(TAG_IGNORE_CONTACTLESS_ACL)) {
-        setBoolean(OPTION_IGNORE_CONTACTLESS_ACL, reader.toByte());
+        byte value = reader.toByte();
+        if (FipsPolicy.ENABLED && value != (byte) 0) {
+          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        setBoolean(OPTION_IGNORE_CONTACTLESS_ACL, value);
         reader.moveNext();
       }
 

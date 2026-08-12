@@ -25,7 +25,7 @@ public final class IssuerProfile {
   }
 
   public static final class Applet {
-    public String capPath = "build/bin/OpenFIPS201-v1_10_openphy-r1.cap";
+    public String capPath = "build/bin/OpenFIPS201-standard-CS2-attestation-true.cap";
     public String packageAid = "A00000030800001000";
     public String appletAid = "A000000308000010000100";
     public String instanceAid = "A000000308000010000100";

@@ -11,6 +11,7 @@ import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Assumptions;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
@@ -326,6 +327,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
 
   @Test
   void pivAlgorithmIdentifier03WorksForManagementKeyChange() {
+    Assumptions.assumeFalse(Boolean.getBoolean("fips.mode"), "TDEA is excluded from FIPS mode");
     assertManagementKeyRotationWorksWithoutScp(ALG_3DES);
   }
 

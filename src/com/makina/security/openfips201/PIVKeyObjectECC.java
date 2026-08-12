@@ -76,7 +76,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
     this.params = params;
     if (params == null) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
     // Uncompressed ECC public keys are marshaled as the concatenation of:
@@ -103,8 +103,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     byte symmetricAttributes =
         (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
     if ((attributes & symmetricAttributes) != (byte) 0
-        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
-            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
+        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     return new PIVKeyObjectECC(
@@ -234,6 +233,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
       keyPair.genKeyPair();
 
+      if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(scratch, offset)) {
+        ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+      }
+
       TLVWriter writer = TLVWriter.getInstance();
 
       // We know that the worst-case of this will fit into a short-form length.
@@ -253,6 +256,20 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     }
 
     return length;
+  }
+
+  @Override
+  boolean pairwiseConsistencyTest(byte[] scratch, short offset) {
+    if ((getRoles() & ROLE_KEY_ESTABLISH) != (byte) 0) {
+      return PIVCrypto.pairwiseAgreementTest(privateKey, publicKey, params, scratch, offset);
+    }
+    short hashLength = getKeyLengthBytes();
+    javacard.framework.Util.arrayFillNonAtomic(scratch, offset, hashLength, (byte) 0x5A);
+    short signatureOffset = (short) (offset + hashLength);
+    short signatureLength =
+        PIVCrypto.doSign(privateKey, scratch, offset, hashLength, scratch, signatureOffset);
+    return PIVCrypto.doVerify(
+        publicKey, scratch, offset, hashLength, scratch, signatureOffset, signatureLength);
   }
 
   /**
@@ -319,6 +336,19 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     }
     smCvcLength = (short) 0;
     clearOrigin();
+    resetImportedParts();
+  }
+
+  @Override
+  byte importPartForElement(byte element) {
+    if (element == ELEMENT_ECC_POINT) return (byte) 1;
+    if (element == ELEMENT_ECC_SECRET) return (byte) 2;
+    return (byte) 0;
+  }
+
+  @Override
+  byte requiredImportParts() {
+    return (byte) 3;
   }
 
   short getSmCvc(byte[] buffer, short offset) throws ISOException {

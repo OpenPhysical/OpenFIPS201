@@ -339,7 +339,7 @@ class OpenFIPS201VciEndToEndTest {
 
   private void installOpenFips201Applet() throws Exception {
     AppletInstallRequest request = new AppletInstallRequest();
-    request.capPath = Paths.get("build/bin/OpenFIPS201-v1_10_openphy-r1.cap");
+    request.capPath = Paths.get(System.getProperty("cap.path"));
     request.packageAid = "A00000030800001000";
     request.appletAid = "A000000308000010000100";
     request.instanceAid = "A000000308000010000100";

@@ -172,7 +172,7 @@ private key material.
     "masterKeyEnv": "BIGCORP_STOCK_SCP03_KEY"
   },
   "applet": {
-    "capPath": "build/bin/OpenFIPS201-v1_10_openphy-r1.cap",
+    "capPath": "build/bin/OpenFIPS201-standard-CS2-attestation-true.cap",
     "packageAid": "A00000030800001000",
     "appletAid": "A000000308000010000100",
     "instanceAid": "A000000308000010000100",

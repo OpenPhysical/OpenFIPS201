@@ -87,8 +87,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     byte symmetricAttributes =
         (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
     if ((attributes & symmetricAttributes) != (byte) 0
-        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH))
-            == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
+        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     return new PIVKeyObjectRSA(
@@ -180,6 +179,20 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     publicKey.clearKey();
     privateKey.clearKey();
     clearOrigin();
+    resetImportedParts();
+  }
+
+  @Override
+  byte importPartForElement(byte element) {
+    if (element == ELEMENT_RSA_N) return (byte) 1;
+    if (element == ELEMENT_RSA_E) return (byte) 2;
+    if (element == ELEMENT_RSA_D) return (byte) 4;
+    return (byte) 0;
+  }
+
+  @Override
+  byte requiredImportParts() {
+    return (byte) 7;
   }
 
   /**
@@ -269,6 +282,10 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
       keyPair.genKeyPair();
 
+      if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(outBuffer, outOffset)) {
+        ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+      }
+
       TLVWriter writer = TLVWriter.getInstance();
 
       // Create the TLV response with the appropriate expected length for public key + header
@@ -306,6 +323,25 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       CardRuntimeException.throwIt(ex.getReason());
       return (short) 0; // Keep compiler happy
     }
+  }
+
+  @Override
+  boolean pairwiseConsistencyTest(byte[] scratch, short offset) {
+    short blockLength = getBlockLength();
+    Util.arrayFillNonAtomic(scratch, offset, blockLength, (byte) 0);
+    scratch[(short) (offset + blockLength - 1)] = (byte) 0x5A;
+    short transformedLength =
+        PIVCrypto.doSign(privateKey, scratch, offset, blockLength, scratch, offset);
+    short recoveredLength =
+        PIVCrypto.doRsaPublic(publicKey, scratch, offset, transformedLength, scratch, offset);
+    if (recoveredLength != blockLength
+        || scratch[(short) (offset + blockLength - 1)] != (byte) 0x5A) {
+      return false;
+    }
+    for (short index = 0; index < (short) (blockLength - 1); index++) {
+      if (scratch[(short) (offset + index)] != (byte) 0) return false;
+    }
+    return true;
   }
 
   /**

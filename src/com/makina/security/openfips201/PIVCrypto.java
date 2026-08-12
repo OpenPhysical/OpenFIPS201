@@ -38,6 +38,7 @@ import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
 import javacard.security.RSAPrivateCrtKey;
 import javacard.security.RSAPrivateKey;
+import javacard.security.RSAPublicKey;
 import javacard.security.RandomData;
 import javacard.security.SecretKey;
 import javacard.security.Signature;
@@ -194,9 +195,31 @@ final class PIVCrypto {
       }
     }
     // #endif
+
+  }
+
+  static boolean pairwiseAgreementTest(
+      ECPrivateKey privateKey,
+      ECPublicKey publicKey,
+      ECParams params,
+      byte[] scratch,
+      short offset) {
+    short fieldLength = (short) (privateKey.getSize() >> 3);
+    cspECDH.init(privateKey);
+    short secretOffset = (short) (offset + params.getG().length);
+    short secretLength =
+        cspECDH.generateSecret(
+            params.getG(), (short) 0, (short) params.getG().length, scratch, secretOffset);
+    short pointLength = publicKey.getW(scratch, offset);
+    return secretLength == fieldLength
+        && pointLength == (short) (fieldLength * (short) 2 + (short) 1)
+        && PIVSecurityProvider.arrayEqualsConstantTime(
+            scratch, secretOffset, scratch, (short) (offset + 1), fieldLength);
   }
 
   static boolean supportsMechanism(byte mechanism) {
+
+    if (!FipsPolicy.allowsMechanism(mechanism)) return false;
 
     switch (mechanism) {
       case PIV.ID_ALG_DEFAULT:
@@ -651,6 +674,17 @@ final class PIVCrypto {
       cspRSA.init(theKey, Cipher.MODE_DECRYPT);
       return cspRSA.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
     }
+  }
+
+  static short doRsaPublic(
+      RSAPublicKey key,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    cspRSA.init(key, Cipher.MODE_DECRYPT);
+    return cspRSA.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   /**

@@ -75,6 +75,32 @@ actually submitted.
 
 ## Automated test coverage (repository CI)
 
+### Coverage evidence boundary
+
+`ant -f build/build.xml coverage` enforces a **55% applet line-coverage floor**. This is a
+regression guard against broad test loss, chosen from the measured simulator baseline. It is not a
+security target and must not be raised or lowered to imply assurance that the percentage cannot
+provide.
+
+The JaCoCo result does **not** prove that security boundaries, failure paths, cryptographic state
+transitions, Java Card transaction behavior, or every supported platform primitive were exercised.
+It is also not NPIVP, SP 800-85A, SP 800-85B, CMVP, or FIPS 140 validation evidence. Those claims
+require the named external suites, complete requirement matrices, platform evidence, and retained
+test artifacts described below.
+
+### Secure-messaging release gate
+
+A releasable source revision must pass `ant -f build/build.xml test-all`. That target builds and
+executes the complete isolated matrix, with slow secure-messaging and VCI tests enabled:
+
+- standard and FIPS candidate profiles;
+- OPACITY cipher suites CS2 and CS7; and
+- attestation enabled and disabled.
+
+All eight profiles must finish successfully. A passing default CS2 run, a unit-vector-only run, or
+an aborted simulator test does not substitute for this gate. Release evidence must retain each
+profile's CAP, build log, and JUnit XML directory from `build/matrix/`.
+
 Primary suites live under `src/dev/mistial/tests/` and
 `src/dev/mistial/tool-tests/`. Run with:
 

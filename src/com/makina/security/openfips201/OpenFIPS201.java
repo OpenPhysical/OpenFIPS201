@@ -31,6 +31,7 @@ import javacard.framework.Applet;
 import javacard.framework.AppletEvent;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
 import javacardx.apdu.ExtendedLength;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
@@ -76,6 +77,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte SC_MASK =
       SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC;
   private final PIV piv;
+  private final byte[] fipsState;
 
   //
   // Persistent state definitions
@@ -85,6 +87,16 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // Create our PIV provider
     piv = new PIV();
+    fipsState = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_RESET);
+    ensureFipsOperational();
+  }
+
+  private void ensureFipsOperational() {
+    if (!FipsPolicy.ENABLED || fipsState[0] == (byte) 1) return;
+    if (!piv.runFipsSelfTests()) {
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
+    }
+    fipsState[0] = (byte) 1;
   }
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {
@@ -187,6 +199,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
   @Override
   public void process(APDU apdu) {
+
+    ensureFipsOperational();
 
     //
     // Handle incoming APDUs

@@ -6,6 +6,7 @@ import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Assumptions;
 
 @Timeout(value = 35, unit = TimeUnit.SECONDS)
 class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestSupport {
@@ -17,6 +18,9 @@ class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestS
 
   @Test
   void rsaKeyEstablishmentUsesKeyTransportBranch() {
+    Assumptions.assumeFalse(
+        Boolean.getBoolean("fips.mode"),
+        "The simulator APDU buffer cannot carry an unchained RSA-2048 transport block");
     provisionGeneratedRsaKey(SLOT_KEY_MANAGEMENT);
 
     byte[] malformedTransportBlock = new byte[RSA_1024_BYTES];

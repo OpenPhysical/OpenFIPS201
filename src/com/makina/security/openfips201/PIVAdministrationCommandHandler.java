@@ -12,7 +12,6 @@ import static com.makina.security.openfips201.PIV.*;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.PIN;
 import javacard.framework.Util;
 import org.globalplatform.GPSystem;
 
@@ -39,8 +38,9 @@ final class PIVAdministrationCommandHandler {
       PIVSecureMessaging secureMessaging,
       byte[] scratch,
       byte[] smCommand
-      // #if ATTESTATION_ENABLED
-      , PIVAttestation attestation
+          // #if ATTESTATION_ENABLED
+          ,
+      PIVAttestation attestation
       // #endif
       ) {
     this.owner = owner;
@@ -140,13 +140,7 @@ final class PIVAdministrationCommandHandler {
       reader.moveNext();
     }
 
-    dataStore.create(
-        scratch,
-        idOffset,
-        objectIdLength,
-        modeContact,
-        modeContactless,
-        adminKey);
+    dataStore.create(scratch, idOffset, objectIdLength, modeContact, modeContactless, adminKey);
   }
 
   private void processDeleteObjectRequest(TLVReader reader) {
@@ -741,6 +735,14 @@ final class PIVAdministrationCommandHandler {
           JCSystem.beginTransaction();
           try {
             key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
+            if (FipsPolicy.ENABLED && elementTag != PIVKeyObject.ELEMENT_CLEAR) {
+              PIVKeyObjectPKI importedKey = (PIVKeyObjectPKI) key;
+              if (importedKey.completesImportedKeyPair(elementTag)
+                  && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
+                key.clear();
+                ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+              }
+            }
             JCSystem.commitTransaction();
           } finally {
             if (JCSystem.getTransactionDepth() != (byte) 0) {
@@ -839,6 +841,7 @@ final class PIVAdministrationCommandHandler {
     final byte CONST_TAG_SCP_STATE = (byte) 0x85;
     final byte CONST_TAG_CONTACTLESS = (byte) 0x86;
     final byte CONST_TAG_FIPS_MODE = (byte) 0x87;
+    final byte CONST_TAG_PLATFORM_ID = (byte) 0x88;
 
     // Applet State
     writer.write(CONST_TAG_APPLET_STATE, GPSystem.getCardContentState());
@@ -862,7 +865,13 @@ final class PIVAdministrationCommandHandler {
     writer.write(CONST_TAG_CONTACTLESS, cspPIV.getIsContactless() ? (byte) 1 : (byte) 0);
 
     // FIPS Mode
-    writer.write(CONST_TAG_FIPS_MODE, (byte) 0); // TODO
+    writer.write(CONST_TAG_FIPS_MODE, FipsPolicy.ENABLED ? (byte) 1 : (byte) 0);
+
+    writer.write(
+        CONST_TAG_PLATFORM_ID,
+        BuildProfile.PLATFORM_ID,
+        ZERO,
+        (short) BuildProfile.PLATFORM_ID.length);
 
     return writer.finish();
   }

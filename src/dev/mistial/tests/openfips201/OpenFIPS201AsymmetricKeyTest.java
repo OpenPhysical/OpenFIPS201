@@ -1,6 +1,7 @@
 package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import javacard.framework.ISO7816;
 import javax.smartcardio.ResponseAPDU;
@@ -15,6 +16,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
 
   @Test
   void generatesRsa1024KeyPairAndReturnsModulusAndExponent() {
+    assumeFalse(Boolean.getBoolean("fips.mode"), "RSA-1024 is excluded from the FIPS profile");
     withMockedScp(
         () -> {
           createKey(0x06, 0x04);

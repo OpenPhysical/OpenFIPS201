@@ -30,9 +30,7 @@ import javacard.framework.APDU;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.PIN;
 import javacard.framework.Util;
-import org.globalplatform.GPSystem;
 
 /**
  * Implements the PIV card application for FIPS 201-2 and FIPS 201-3 deployments using the NIST SP
@@ -220,6 +218,7 @@ final class PIV {
   private final byte[] smCommand;
   // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
   private final byte[] secureMessagingCommand;
+  private final FipsSelfTest fipsSelfTest;
   /** Constructor */
   PIV() {
 
@@ -235,6 +234,7 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
+    fipsSelfTest = FipsPolicy.ENABLED ? new FipsSelfTest() : null;
 
     // Create our configuration provider
     config = new Config();
@@ -271,10 +271,11 @@ final class PIV {
             ecPointValidator,
             scratch,
             smCommand,
-            smResponse
-            , opacity
+            smResponse,
+            opacity
             // #if ATTESTATION_ENABLED
-            , attestation,
+            ,
+            attestation,
             attestationResponse
             // #endif
             );
@@ -289,7 +290,8 @@ final class PIV {
             scratch,
             smCommand
             // #if ATTESTATION_ENABLED
-            , attestation
+            ,
+            attestation
             // #endif
             );
     // Create our TLV objects (we don't care about the result, this is just to allocate)
@@ -315,6 +317,13 @@ final class PIV {
     //
     // NOTE: We do not initialise the Global PIN as this may have been managed externally.
     //
+  }
+
+  boolean runFipsSelfTests() {
+    if (!FipsPolicy.ENABLED) return true;
+    boolean passed = fipsSelfTest.run(scratch);
+    PIVSecurityProvider.zeroise(scratch, ZERO, (short) 64);
+    return passed;
   }
 
   /**
@@ -600,8 +609,7 @@ final class PIV {
   }
 
   void putData(byte[] buffer, short offset, short length) throws ISOException {
-    dataCommands.putData(
-        buffer, offset, length, isVciSatisfied(), currentProtection());
+    dataCommands.putData(buffer, offset, length, isVciSatisfied(), currentProtection());
   }
 
   /**
@@ -625,13 +633,11 @@ final class PIV {
     pinCommands.verifyResetStatus(id);
   }
 
-  void changeReferenceData(byte id, byte[] buffer, short offset, short length)
-      throws ISOException {
+  void changeReferenceData(byte id, byte[] buffer, short offset, short length) throws ISOException {
     pinCommands.changeReferenceData(id, buffer, offset, length);
   }
 
-  void resetRetryCounter(byte id, byte[] buffer, short offset, short length)
-      throws ISOException {
+  void resetRetryCounter(byte id, byte[] buffer, short offset, short length) throws ISOException {
     pinCommands.resetRetryCounter(id, buffer, offset, length);
   }
 
@@ -685,8 +691,7 @@ final class PIV {
     return pinCommands.verifyPinRules(buffer, offset, length);
   }
 
-  boolean verifyPinFormat(byte[] buffer, short offset, short length)
-      throws ISOException {
+  boolean verifyPinFormat(byte[] buffer, short offset, short length) throws ISOException {
     return pinCommands.verifyPinFormat(buffer, offset, length);
   }
 
@@ -725,5 +730,4 @@ final class PIV {
   short getDataExtended(byte[] buffer, short offset, short length) throws ISOException {
     return administrationCommands.getDataExtended(buffer, offset, length);
   }
-
 }

@@ -10,10 +10,16 @@ class ConfigDefaultsTest {
 
   @Test
   void applicationPropertyTemplateHasConsistentOuterLength() {
-    assertEquals(149, Config.TEMPLATE_APT.length);
+    assertEquals(FipsPolicy.ENABLED ? 140 : 149, Config.TEMPLATE_APT.length);
     assertEquals(0x61, Config.TEMPLATE_APT[0] & 0xFF);
     assertEquals(0x81, Config.TEMPLATE_APT[1] & 0xFF);
     assertEquals(Config.TEMPLATE_APT.length - 3, Config.TEMPLATE_APT[2] & 0xFF);
+  }
+
+  @Test
+  void fipsProfileExcludesLegacyMechanisms() {
+    assertEquals(!FipsPolicy.ENABLED, FipsPolicy.allowsMechanism(PIV.ID_ALG_TDEA_3KEY));
+    assertEquals(!FipsPolicy.ENABLED, FipsPolicy.allowsMechanism(PIV.ID_ALG_RSA_1024));
   }
 
   @Test

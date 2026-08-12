@@ -158,8 +158,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
     configureVciMode((byte) 0x02);
     createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPrivateKeyOverScp(p256ScalarOne());
     importVciPublicKeyOverScp(p256BasePoint());
+    importVciPrivateKeyOverScp(p256ScalarOne());
     assertFalse(
         contains(selectAppletWithData().getData(), hex("800127")),
         "APT requires CVC as well as key material");
@@ -197,8 +197,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   void importedVciKeyRequiresCvcBeforeAptAdvertisement() {
     configureVciMode((byte) 0x01);
     createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPrivateKeyOverScp(p256ScalarOne());
     importVciPublicKeyOverScp(p256BasePoint());
+    importVciPrivateKeyOverScp(p256ScalarOne());
     assertFalse(
         contains(selectAppletWithData().getData(), hex("800127")),
         "Imported VCI key still requires CVC");
@@ -303,8 +303,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
 
   private void createOperationalVciKey() {
     createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPrivateKeyOverScp(p256ScalarOne());
     importVciPublicKeyOverScp(p256BasePoint());
+    importVciPrivateKeyOverScp(p256ScalarOne());
     loadVciCvcOverScp(hex("7F210401020304"));
   }
 

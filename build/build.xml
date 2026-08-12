@@ -3,12 +3,12 @@
 
   <property name="VERSION_MAJOR" value="1"/>
   <property name="VERSION_MINOR" value="10"/>
-  <property name="VERSION_REVISION" value="openphy-r1"/>
   <property name="SDK_BASE" value="tools/sdk"/>
   <property name="BUILD_SDK" value="${SDK_BASE}/jc310"/>
   <property name="TARGET_SDK" value="3.0.5"/>
   <property name="vci.suite" value="CS2"/>
   <property name="attestation.enabled" value="true"/>
+  <property name="fips.mode" value="false"/>
 
   <!-- Use class-only GP API jar by default for JDK11+ compatibility. -->
   <property name="gp.version" value="gp211"/>
@@ -21,8 +21,6 @@
   <property name="applet.sourcepath" value="src/com/makina/security/openfips201"/>
   <property name="build.sourcepath" value="build/preprocessed-src/com/makina/security/openfips201"/>
   <property name="build.outputpath" value="build/bin"/>
-  <property name="build.outputfile" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}.cap"/>
-  <property name="build.outputfile_debug" value="OpenFIPS201-v${VERSION_MAJOR}_${VERSION_MINOR}_${VERSION_REVISION}-DEBUG.cap"/>
   <property name="docs.outputpath" value="build/docs"/>
   <property name="docs.classpath" value="${BUILD_SDK}/lib/api_classic-3.0.5.jar;${gp.exportjar}"/>
   <property name="test.sourcepath" value="src/dev/mistial/tests"/>
@@ -102,7 +100,7 @@
          skipexisting="true" />
   </target>
 
-  <target name="resolve-test-deps" depends="bootstrap-ivy">
+  <target name="resolve-test-deps" depends="bootstrap-ivy" unless="deps.resolved">
     <mkdir dir="${deps.outputpath}" />
     <taskdef uri="antlib:org.apache.ivy.ant"
              resource="org/apache/ivy/ant/antlib.xml"
@@ -117,7 +115,7 @@
 
   <target name="clean">
     <delete dir="${build.outputpath}"/>
-    <delete dir="build/preprocessed-src"/>
+    <delete dir="${build.sourcepath}"/>
     <delete dir="${docs.outputpath}"/>
     <delete dir="${test.outputpath}"/>
     <delete dir="${tool.outputpath}"/>
@@ -152,7 +150,41 @@
     </condition>
   </target>
 
-  <target name="preprocess-applet" depends="jpp-build,configure-vci-suite,configure-attestation">
+  <target name="configure-fips">
+    <condition property="FIPS_MODE" value="true">
+      <equals arg1="${fips.mode}" arg2="true"/>
+    </condition>
+  </target>
+
+  <target name="validate-fips-platform" depends="configure-fips" if="FIPS_MODE">
+    <fail unless="fips.platform" message="FIPS builds require -Dfips.platform=&lt;descriptor-name&gt;"/>
+    <available file="build/fips-platforms/${fips.platform}.properties" property="fips.platform.exists"/>
+    <fail unless="fips.platform.exists"
+          message="Unknown FIPS platform descriptor: build/fips-platforms/${fips.platform}.properties"/>
+    <loadproperties srcFile="build/fips-platforms/${fips.platform}.properties"/>
+    <fail unless="fips.platform.id" message="FIPS platform descriptor lacks fips.platform.id"/>
+    <fail unless="fips.platform.tag-bytes" message="FIPS platform descriptor lacks fips.platform.tag-bytes"/>
+    <fail unless="fips.platform.module-certificate" message="FIPS platform descriptor lacks fips.platform.module-certificate"/>
+    <fail unless="fips.platform.entropy-evidence" message="FIPS platform descriptor lacks fips.platform.entropy-evidence"/>
+    <fail unless="fips.platform.integrity-evidence" message="FIPS platform descriptor lacks fips.platform.integrity-evidence"/>
+  </target>
+
+  <target name="configure-artifact" depends="configure-fips,validate-fips-platform">
+    <condition property="build.profile" value="fips-${fips.platform.id}" else="standard">
+      <isset property="FIPS_MODE"/>
+    </condition>
+    <condition property="build.platform.tag-bytes" value="${fips.platform.tag-bytes}"
+               else="(byte) 0x73, (byte) 0x74, (byte) 0x61, (byte) 0x6E, (byte) 0x64, (byte) 0x61, (byte) 0x72, (byte) 0x64">
+      <isset property="FIPS_MODE"/>
+    </condition>
+    <condition property="build.platform.id" value="${fips.platform.id}" else="standard">
+      <isset property="FIPS_MODE"/>
+    </condition>
+    <property name="build.outputfile"
+              value="OpenFIPS201-${build.profile}-${vci.suite}-attestation-${attestation.enabled}.cap"/>
+  </target>
+
+  <target name="preprocess-applet" depends="jpp-build,configure-vci-suite,configure-attestation,configure-fips,configure-artifact">
     <fail message="vci.suite must be CS2 or CS7, got '${vci.suite}'">
       <condition>
         <and>
@@ -169,15 +201,29 @@
         </and>
       </condition>
     </fail>
-    <delete dir="build/preprocessed-src"/>
+    <delete dir="${build.sourcepath}"/>
     <mkdir dir="${build.sourcepath}"/>
     <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
     <jpp destdir="${build.sourcepath}" force="true" readonly="false" verbose="false">
       <fileset dir="${applet.sourcepath}" includes="**/*.java"/>
     </jpp>
+    <echo file="${build.sourcepath}/BuildProfile.java">package com.makina.security.openfips201;
+
+final class BuildProfile {
+  static final byte[] PLATFORM_ID = { ${build.platform.tag-bytes} };
+  private BuildProfile() {}
+}
+</echo>
   </target>
 
   <target name="compile" depends="clean,compile-cap"/>
+
+  <target name="compile-fips" depends="validate-fips-platform">
+    <antcall target="clean"/>
+    <antcall target="compile-cap">
+      <param name="fips.mode" value="true"/>
+    </antcall>
+  </target>
 
   <target name="compile-cap" depends="preprocess-applet">
     <mkdir dir="${build.outputpath}" />
@@ -187,11 +233,13 @@
         <applet class="com.makina.security.openfips201.OpenFIPS201" aid="A000000308000010000100"/>
         <import exps="${gp.home}" jar="${gp.exportjar}"/>
       </cap>
-      <cap targetsdk="${TARGET_SDK}" aid="A00000030800001000" output="${build.outputpath}/${build.outputfile_debug}" sources="${build.sourcepath}" version="${build.version}">
-        <applet class="com.makina.security.openfips201.OpenFIPS201" aid="A000000308000010000100"/>
-        <import exps="${gp.home}" jar="${gp.exportjar}"/>
-      </cap>
     </javacard>
+    <echo file="${build.outputpath}/${build.outputfile}.properties">profile=${build.profile}
+vci.suite=${vci.suite}
+attestation.enabled=${attestation.enabled}
+fips.mode=${fips.mode}
+platform.id=${build.platform.id}
+</echo>
   </target>
 
   <target name="doc" depends="compile">
@@ -289,6 +337,8 @@
         <fork>
           <sysproperty key="vci.suite" value="${vci.suite}"/>
           <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+          <sysproperty key="fips.mode" value="${fips.mode}"/>
+          <sysproperty key="cap.path" value="${build.outputpath}/${build.outputfile}"/>
         </fork>
         <fileset dir="${test.outputpath}">
           <include name="**/*Test.class"/>
@@ -300,26 +350,67 @@
   </target>
 
   <target name="test-all">
-    <antcall target="test-all-suite">
-      <param name="vci.suite" value="CS2"/>
-      <param name="test.reportpath" value="build/test-reports/CS2-all"/>
-      <param name="attestation.enabled" value="true"/>
-    </antcall>
-    <antcall target="test-all-suite">
-      <param name="vci.suite" value="CS7"/>
-      <param name="test.reportpath" value="build/test-reports/CS7-all"/>
-      <param name="attestation.enabled" value="true"/>
-    </antcall>
-    <antcall target="test-all-suite">
-      <param name="vci.suite" value="CS2"/>
-      <param name="test.reportpath" value="build/test-reports/CS2-no-attestation-all"/>
-      <param name="attestation.enabled" value="false"/>
-    </antcall>
-    <antcall target="test-all-suite">
-      <param name="vci.suite" value="CS7"/>
-      <param name="test.reportpath" value="build/test-reports/CS7-no-attestation-all"/>
-      <param name="attestation.enabled" value="false"/>
-    </antcall>
+    <antcall target="test-all-matrix"/>
+  </target>
+
+  <macrodef name="run-verification-profile">
+    <attribute name="id"/>
+    <attribute name="fips"/>
+    <attribute name="suite"/>
+    <attribute name="attestation"/>
+    <sequential>
+      <mkdir dir="build/matrix/@{id}"/>
+      <ant antfile="build/build.xml" target="test-all-suite" inheritAll="false"
+           output="build/matrix/@{id}/build.log">
+        <property name="deps.resolved" value="true"/>
+        <property name="fips.mode" value="@{fips}"/>
+        <property name="fips.platform" value="test-jcard"/>
+        <property name="vci.suite" value="@{suite}"/>
+        <property name="attestation.enabled" value="@{attestation}"/>
+        <property name="build.sourcepath"
+                  value="build/matrix/@{id}/preprocessed-src/com/makina/security/openfips201"/>
+        <property name="build.outputpath" value="build/matrix/@{id}/bin"/>
+        <property name="test.outputpath" value="build/matrix/@{id}/test-bin"/>
+        <property name="tool.outputpath" value="build/matrix/@{id}/tool-bin"/>
+        <property name="test.reportpath" value="build/matrix/@{id}/reports"/>
+        <property name="jpp.outputpath" value="build/matrix/@{id}/jpp-bin"/>
+        <property name="jpp.jar" value="build/matrix/@{id}/jpp.jar"/>
+      </ant>
+    </sequential>
+  </macrodef>
+
+  <target name="test-sp80085b-corpus">
+    <delete dir="build/sp800-85b-personalization"/>
+    <exec executable="sh" failonerror="true">
+      <arg value="tools/export-sp80085b-corpus.sh"/>
+      <arg value="build/sp800-85b-personalization/first"/>
+    </exec>
+    <exec executable="sh" failonerror="true">
+      <arg value="tools/export-sp80085b-corpus.sh"/>
+      <arg value="build/sp800-85b-personalization/second"/>
+    </exec>
+    <exec executable="diff" failonerror="true">
+      <arg value="-r"/>
+      <arg value="build/sp800-85b-personalization/first"/>
+      <arg value="build/sp800-85b-personalization/second"/>
+    </exec>
+  </target>
+
+  <target name="test-all-matrix" depends="resolve-test-deps,test-sp80085b-corpus">
+    <delete dir="build/matrix"/>
+    <mkdir dir="build/matrix"/>
+    <!-- Independent outputs make concurrent preprocessing, compilation, CAP generation, and
+         reporting deterministic. failonany=false waits for every profile before failing. -->
+    <parallel threadCount="4" failonany="false">
+      <run-verification-profile id="standard-CS2-attestation" fips="false" suite="CS2" attestation="true"/>
+      <run-verification-profile id="standard-CS7-attestation" fips="false" suite="CS7" attestation="true"/>
+      <run-verification-profile id="standard-CS2-no-attestation" fips="false" suite="CS2" attestation="false"/>
+      <run-verification-profile id="standard-CS7-no-attestation" fips="false" suite="CS7" attestation="false"/>
+      <run-verification-profile id="fips-CS2-attestation" fips="true" suite="CS2" attestation="true"/>
+      <run-verification-profile id="fips-CS7-attestation" fips="true" suite="CS7" attestation="true"/>
+      <run-verification-profile id="fips-CS2-no-attestation" fips="true" suite="CS2" attestation="false"/>
+      <run-verification-profile id="fips-CS7-no-attestation" fips="true" suite="CS7" attestation="false"/>
+    </parallel>
   </target>
 
   <target name="test-all-suite" depends="compile-cap,test-compile">
@@ -331,6 +422,8 @@
         <fork>
           <sysproperty key="vci.suite" value="${vci.suite}"/>
           <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+          <sysproperty key="fips.mode" value="${fips.mode}"/>
+          <sysproperty key="cap.path" value="${build.outputpath}/${build.outputfile}"/>
         </fork>
         <fileset dir="${test.outputpath}">
           <include name="**/*Test.class"/>

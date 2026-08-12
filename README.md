@@ -150,6 +150,13 @@ crypto paths. They are **not** a substitute for a full NPIVP interface run or
 for SP 800-85B validation of personalised CHUID, biometrics, certificates, and
 Security Object content.
 
+The enforced 55% JaCoCo line floor is a regression baseline only. It is not evidence that every
+security path was exercised and must not be cited as NPIVP or FIPS validation evidence.
+
+Release candidates must pass `ant -f build/build.xml test-all`. This runs slow SM/VCI coverage for
+the full standard/FIPS × CS2/CS7 × attestation on/off matrix; a narrower profile run is a
+development check, not the release gate.
+
 ## Building and Testing
 
 Run the standard test target from the repository root:

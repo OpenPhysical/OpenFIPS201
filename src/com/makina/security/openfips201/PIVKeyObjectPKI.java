@@ -29,6 +29,7 @@ package com.makina.security.openfips201;
 abstract class PIVKeyObjectPKI extends PIVKeyObject {
 
   protected static final short CONST_TAG_RESPONSE = (short) 0x7F49;
+  private byte importedParts;
 
   protected PIVKeyObjectPKI(
       byte id,
@@ -80,6 +81,25 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
    * @return The length of the generated key
    */
   abstract short generate(byte[] outBuffer, short outOffset);
+
+  /** Verifies that the public and private components form a usable pair. */
+  abstract boolean pairwiseConsistencyTest(byte[] scratch, short offset);
+
+  /** Returns true exactly when this element completes a fresh imported key pair. */
+  final boolean completesImportedKeyPair(byte element) {
+    importedParts |= importPartForElement(element);
+    if ((importedParts & requiredImportParts()) != requiredImportParts()) return false;
+    importedParts = (byte) 0;
+    return true;
+  }
+
+  final void resetImportedParts() {
+    importedParts = (byte) 0;
+  }
+
+  abstract byte importPartForElement(byte element);
+
+  abstract byte requiredImportParts();
 
   /** Returns whether this key object currently has usable private key material. */
   abstract boolean isInitialised();

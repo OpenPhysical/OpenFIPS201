@@ -12,3 +12,5 @@ jpp-bin
 jpp.jar
 tool-bin
 debug-cap-classes
+matrix
+sp800-85b-personalization

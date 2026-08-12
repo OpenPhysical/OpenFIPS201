@@ -852,7 +852,11 @@ final class PIVPinCommandHandler {
     boolean invariant = false;
     boolean raw = false;
 
-    switch (config.readValue(Config.CONFIG_PIN_CHARSET)) {
+    byte charset =
+        FipsPolicy.ENABLED
+            ? Config.PIN_CHARSET_NUMERIC
+            : config.readValue(Config.CONFIG_PIN_CHARSET);
+    switch (charset) {
       case Config.PIN_CHARSET_ALPHA:
         minPermitted = ' '; // 20h
         maxPermitted = '~'; // 7Eh

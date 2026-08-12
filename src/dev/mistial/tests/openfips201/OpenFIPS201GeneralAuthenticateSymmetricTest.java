@@ -16,6 +16,9 @@ import org.mockito.Mockito;
 class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport {
 
   private static final byte ALG_3DES = (byte) 0x03;
+  private static final byte ALG_AES_128 = (byte) 0x08;
+  private static final boolean FIPS_MODE = Boolean.getBoolean("fips.mode");
+  private static final byte TEST_ALGORITHM = FIPS_MODE ? ALG_AES_128 : ALG_3DES;
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
 
   /** Provisions its own 3DES 9B key, so the standard (AES-128) test card is not applied. */
@@ -26,53 +29,55 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
   @Test
   void externalAuthenticateChallengeSucceedsForProvisioned3desManagementKey() {
-    provisionManagementKeyOverScp(keyMaterial3des((byte) 0x41), (byte) 0x14);
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x14);
 
     assertSw(0x9000, selectApplet(), "SELECT before 3DES GENERAL AUTHENTICATE");
 
     // Case 2: external authenticate challenge request (7C {81 00})
     ResponseAPDU response =
-        transmit(0x00, 0x87, ALG_3DES & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
+        transmit(
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
     assertSw(0x9000, response, "GENERAL AUTHENTICATE challenge request should succeed");
 
     byte[] data = response.getData();
     assertEquals(
-        12, data.length, "3DES challenge response should be 7C/81 wrapper plus 8-byte challenge");
+        (FIPS_MODE ? 20 : 12), data.length, "Challenge response must contain one cipher block");
     assertEquals((byte) 0x7C, data[0], "Response should use dynamic authentication template");
     assertEquals((byte) 0x81, data[2], "Response should contain challenge tag 0x81");
-    assertEquals((byte) 0x08, data[3], "3DES challenge length should be 8 bytes");
+    assertEquals((byte) (FIPS_MODE ? 16 : 8), data[3], "Challenge length must match the cipher");
   }
 
   @Test
   void externalAuthenticateRequiresPermitAttribute() {
-    provisionManagementKeyOverScp(keyMaterial3des((byte) 0x41), (byte) 0x10);
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x10);
 
     assertSw(0x9000, selectApplet(), "SELECT before denied GENERAL AUTHENTICATE");
     assertSw(
         0x6982,
-        transmit(0x00, 0x87, ALG_3DES & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
+        transmit(
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
         "GENERAL AUTHENTICATE must require ATTR_PERMIT_EXTERNAL");
   }
 
   @Test
   void missingDynamicAuthenticationTemplateReturns6A80() {
-    provisionManagementKeyOverScp(keyMaterial3des((byte) 0x41), (byte) 0x14);
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x14);
 
     assertSw(0x9000, selectApplet(), "SELECT before malformed GENERAL AUTHENTICATE");
     assertSw(
         0x6A80,
-        transmit(0x00, 0x87, ALG_3DES & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("5300")),
+        transmit(0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("5300")),
         "GENERAL AUTHENTICATE requires the dynamic authentication template");
   }
 
   @Test
   void unrelatedCommandAbortsIncompleteGeneralAuthenticateChain() {
-    provisionManagementKeyOverScp(keyMaterial3des((byte) 0x51), (byte) 0x14);
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x51), (byte) 0x14);
     assertSw(0x9000, selectApplet(), "SELECT before chained GENERAL AUTHENTICATE");
 
     assertSw(
         0x9000,
-        transmit(0x10, 0x87, ALG_3DES & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C02")),
+        transmit(0x10, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C02")),
         "First GENERAL AUTHENTICATE chain segment");
     assertSw(
         0x6883,
@@ -81,7 +86,8 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
 
     assertSw(
         0x9000,
-        transmit(0x00, 0x87, ALG_3DES & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
+        transmit(
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
         "Rejected splice must leave the applet ready for a new command");
   }
 
@@ -117,7 +123,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
             (byte) 0x00,
             (byte) 0x8E,
             (byte) 0x01,
-            ALG_3DES,
+            TEST_ALGORITHM,
             (byte) 0x8F,
             (byte) 0x01,
             (byte) 0x01,
@@ -133,7 +139,11 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
       assertSw(
           0x9000,
           transmit(
-              0x84, 0x24, ALG_3DES & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, keyUpdateData(keyBytes)),
+              0x84,
+              0x24,
+              TEST_ALGORITHM & 0xFF,
+              KEY_REF_CARD_MANAGEMENT & 0xFF,
+              keyUpdateData(keyBytes)),
           "SCP initial key import for 9B should succeed");
     }
   }
@@ -149,6 +159,13 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
     for (int i = 0; i < key.length; i++) {
       key[i] = toOddParity((byte) (seed + i));
     }
+    return key;
+  }
+
+  private static byte[] keyMaterial(byte seed) {
+    if (!FIPS_MODE) return keyMaterial3des(seed);
+    byte[] key = new byte[16];
+    for (int i = 0; i < key.length; i++) key[i] = (byte) (seed + i);
     return key;
   }
 

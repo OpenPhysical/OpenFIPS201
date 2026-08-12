@@ -104,7 +104,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     assertGeneratedTargetAttests(authority, SLOT_AUTHENTICATION, ALG_ECC_P256, "AC03800111");
     assertGeneratedTargetAttests(authority, SLOT_SIGNATURE, ALG_ECC_P384, "AC03800114");
-    assertGeneratedTargetAttests(authority, SLOT_KEY_MANAGEMENT, ALG_RSA_1024, "AC03800106");
+    if (!Boolean.getBoolean("fips.mode")) {
+      assertGeneratedTargetAttests(authority, SLOT_KEY_MANAGEMENT, ALG_RSA_1024, "AC03800106");
+    }
     assertGeneratedTargetAttests(authority, SLOT_RETIRED, ALG_RSA_2048, "AC03800107");
   }
 
@@ -249,12 +251,17 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     assertImportedEccTargetIsNotAttestable(SLOT_AUTHENTICATION, ALG_ECC_P256, 32);
     assertImportedEccTargetIsNotAttestable(SLOT_SIGNATURE, ALG_ECC_P384, 48);
-    assertImportedRsaTargetIsNotAttestable(SLOT_KEY_MANAGEMENT, ALG_RSA_1024, 128);
+    if (!Boolean.getBoolean("fips.mode")) {
+      assertImportedRsaTargetIsNotAttestable(SLOT_KEY_MANAGEMENT, ALG_RSA_1024, 128);
+    }
     assertImportedRsaTargetIsNotAttestable(SLOT_RETIRED, ALG_RSA_2048, 256);
   }
 
   @Test
   void authorityCommitRejectsMismatchedKeyPairWithoutPurge() throws Exception {
+    Assumptions.assumeFalse(
+        Boolean.getBoolean("fips.mode"),
+        "FIPS pairwise consistency rejects the mismatched component before authority commit");
     createDataObjectOverScp((byte) 0x5A);
 
     Authority mismatched = Authority.create(new X500Name("CN=Bad Authority,O=Example"));
