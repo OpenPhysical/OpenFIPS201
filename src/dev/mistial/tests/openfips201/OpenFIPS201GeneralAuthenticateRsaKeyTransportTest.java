@@ -1,5 +1,6 @@
 package dev.mistial.tests.openfips201;
 
+import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.TimeUnit;
 import javax.smartcardio.CommandAPDU;
@@ -8,10 +9,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.Assumptions;
 
-@Timeout(value = 35, unit = TimeUnit.SECONDS)
+@Timeout(value = 10, unit = TimeUnit.SECONDS)
 class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestSupport {
   private static final byte ALG_RSA_1024 = (byte) 0x06;
-  private static final byte SLOT_KEY_MANAGEMENT = (byte) 0x9D;
+  private static final byte SLOT_RETIRED_KEY_MANAGEMENT = (byte) 0x82;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte ATTR_NONE = (byte) 0x00;
   private static final int RSA_1024_BYTES = 128;
@@ -21,7 +22,11 @@ class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestS
     Assumptions.assumeFalse(
         Boolean.getBoolean("fips.mode"),
         "The simulator APDU buffer cannot carry an unchained RSA-2048 transport block");
-    provisionGeneratedRsaKey(SLOT_KEY_MANAGEMENT);
+    provisionGeneratedRsaKey(SLOT_RETIRED_KEY_MANAGEMENT);
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x20, 0x00, 0x80, StandardCardProfile.PIN),
+        "VERIFY before retired-key use");
 
     byte[] malformedTransportBlock = new byte[RSA_1024_BYTES];
     ResponseAPDU response =
@@ -30,7 +35,7 @@ class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestS
                 0x00,
                 0x87,
                 ALG_RSA_1024 & 0xFF,
-                SLOT_KEY_MANAGEMENT & 0xFF,
+                SLOT_RETIRED_KEY_MANAGEMENT & 0xFF,
                 keyTransportTemplate(malformedTransportBlock),
                 256));
 
@@ -53,10 +58,10 @@ class OpenFIPS201GeneralAuthenticateRsaKeyTransportTest extends OpenFIPS201TestS
                 slot,
                 (byte) 0x8C,
                 (byte) 0x01,
-                (byte) 0x7F,
+                (byte) 0x01,
                 (byte) 0x8D,
                 (byte) 0x01,
-                (byte) 0x00,
+                (byte) 0x09,
                 (byte) 0x8E,
                 (byte) 0x01,
                 ALG_RSA_1024,

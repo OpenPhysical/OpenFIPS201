@@ -182,13 +182,16 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
   @Test
   void generateAsymmetricKeypairRejectsInconsistentTemplateLength() {
-    assertSw(0x9000, selectApplet(), "SELECT before GENERATE ASYMMETRIC KEYPAIR checks");
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before GENERATE ASYMMETRIC KEYPAIR checks");
 
-    // SP 800-73-5 Part 2 Section 3.3.2 requires one complete AC control reference template.
-    assertSw(
-        0x6A80,
-        transmit(0x84, 0x47, 0x00, 0x9A, hex("AC00800111")),
-        "GENERATE must reject data outside the declared AC template");
+          // SP 800-73-5 Part 2 Section 3.3.2 requires one complete AC control reference template.
+          assertSw(
+              0x6A80,
+              transmit(0x84, 0x47, 0x00, 0x9A, hex("AC00800111")),
+              "GENERATE must reject data outside the declared AC template");
+        });
   }
 
   @Test

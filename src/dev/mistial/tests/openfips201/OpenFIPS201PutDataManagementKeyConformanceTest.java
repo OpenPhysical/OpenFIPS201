@@ -38,7 +38,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   private static final byte ALG_AES_128 = (byte) 0x08;
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
 
-  private static final byte DATA_ID_NORMAL = (byte) 0x5A;
+  private static final byte DATA_ID_NORMAL = (byte) 0x02;
   private static final byte DATA_ID_BIOMETRIC_GROUP = (byte) 0x61;
   private static final byte DATA_ID_DISCOVERY = (byte) 0x7E;
 
@@ -286,14 +286,14 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     // First write a value.
     assertSw(
         0x9000,
-        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A5303010203")),
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025303010203")),
         "Initial PUT DATA update should succeed before clear test");
     assertSw(0x9000, getDataNormal(DATA_ID_NORMAL), "Object should be readable before clear");
 
     // Then clear by supplying zero-length 53 value.
     assertSw(
         0x9000,
-        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A5300")),
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025300")),
         "PUT DATA with zero-length object should clear object content");
 
     ResponseAPDU cleared = getDataNormal(DATA_ID_NORMAL);
@@ -329,7 +329,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
     assertSw(0x9000, selectApplet(), "SELECT before unauthenticated PUT DATA");
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A530101"));
+    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC102530101"));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         response,
@@ -345,7 +345,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     createDataObjectOverScp(DATA_ID_NORMAL, differentAdminKeyRef);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A530101"));
+    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC102530101"));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         response,
@@ -389,7 +389,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5D035FC15A530101"));
+    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5D035FC102530101"));
     assertSw(ISO7816.SW_WRONG_DATA, response, "PUT DATA should reject unknown top-level tag");
   }
 
@@ -403,6 +403,23 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
     ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C025FC1"));
     assertSw(ISO7816.SW_WRONG_DATA, response, "PUT DATA should reject a tag-list without DATA");
+  }
+
+  @Test
+  void putDataRejectsTruncatedDataLengthHeader() {
+    byte[] managementKey = keyMaterialAes128((byte) 0x74);
+    provisionManagementKeyOverScp(managementKey);
+    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    authenticateManagementKey(managementKey);
+
+    assertSw(
+        ISO7816.SW_WRONG_DATA,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC10253")),
+        "SP 800-73-5 Part 2 Section 3.3.4 requires a complete BER length header");
+    assertSw(
+        ISO7816.SW_WRONG_DATA,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025381")),
+        "A long-form length must include its declared length octet");
   }
 
   @Test
@@ -427,7 +444,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     assertSw(
         ISO7816.SW_FILE_NOT_FOUND,
         getDataNormal(DATA_ID_NORMAL),
-        "Custom 00C15A object must not alias standard 5FC15A");
+        "Custom 00C15A object must not alias standard 5FC102");
   }
 
   @Test
@@ -462,7 +479,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A520101"));
+    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC102520101"));
     assertSw(ISO7816.SW_WRONG_DATA, response, "Normal-object PUT DATA requires DATA tag 0x53");
   }
 
@@ -481,14 +498,14 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   @Test
   void putDataRejectsWrongP1() {
     assertSw(0x9000, selectApplet(), "SELECT before PUT DATA P1 validation");
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x00, 0xFF, hex("5C035FC15A530101"));
+    ResponseAPDU response = transmit(0x00, 0xDB, 0x00, 0xFF, hex("5C035FC102530101"));
     assertSw(ISO7816.SW_INCORRECT_P1P2, response, "PUT DATA requires P1=0x3F");
   }
 
   @Test
   void putDataRejectsWrongP2() {
     assertSw(0x9000, selectApplet(), "SELECT before PUT DATA P2 validation");
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFE, hex("5C035FC15A530101"));
+    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFE, hex("5C035FC102530101"));
     assertSw(
         ISO7816.SW_INCORRECT_P1P2, response, "PUT DATA requires P2=0xFF (or 0x00 for admin path)");
   }
@@ -522,6 +539,34 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         response,
         "Administrative PUT DATA remains SCP-gated");
+  }
+
+  @Test
+  void createObjectRequiresOneFixedCapacityAndNoTrailingElements() {
+    // SP 800-73-5 Part 1 Table 8 defines object capacities. Requiring that capacity at creation
+    // also ensures Java Card PUT DATA never allocates persistent memory during command execution.
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before capacity validation");
+          assertSw(
+              ISO7816.SW_WRONG_DATA,
+              transmit(
+                  0x84,
+                  0xDB,
+                  0x3F,
+                  0x00,
+                  hex("640E8B035FC1078C017F8D010891019B")),
+              "CREATE OBJECT requires a fixed capacity");
+          assertSw(
+              ISO7816.SW_WRONG_DATA,
+              transmit(
+                  0x84,
+                  0xDB,
+                  0x3F,
+                  0x00,
+                  hex("64158B035FC1078C017F8D010891019B920200AA930100")),
+              "CREATE OBJECT rejects data after the capacity element");
+        });
   }
 
   @Test
@@ -566,7 +611,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           @Override
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before SCP PUT DATA");
-            ResponseAPDU response = transmit(0x84, 0xDB, 0x3F, 0xFF, hex("5C035FC15A53030A0B0C"));
+            ResponseAPDU response = transmit(0x84, 0xDB, 0x3F, 0xFF, hex("5C035FC10253030A0B0C"));
             assertSw(
                 0x9000, response, "SCP should authorize PUT DATA without prior 9B authentication");
           }
@@ -587,13 +632,13 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
             assertSw(0x9000, selectApplet(), "SELECT before SCP PUT DATA");
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0xFF, hex("5C035FC15A5303010203")),
+                transmit(0x84, 0xDB, 0x3F, 0xFF, hex("5C035FC1025303010203")),
                 "SCP PUT DATA should succeed");
           }
         });
 
     // A subsequent plain command must not inherit SCP authorization.
-    ResponseAPDU withoutScp = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A53030D0E0F"));
+    ResponseAPDU withoutScp = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC10253030D0E0F"));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         withoutScp,
@@ -631,7 +676,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         verificationResponse,
         "GENERAL AUTHENTICATE must fail for incorrect challenge response");
 
-    ResponseAPDU putData = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A530101"));
+    ResponseAPDU putData = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC102530101"));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         putData,
@@ -648,7 +693,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
     assertSw(
         0x9000,
-        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A5303010203")),
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025303010203")),
         "PUT DATA should succeed while management key is authenticated");
 
     // Starting a new external-auth challenge resets the prior authenticated-key state.
@@ -657,7 +702,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     assertSw(0x9000, restart, "Fresh challenge request should succeed");
 
     ResponseAPDU putDataAfterRestart =
-        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC15A5303040506"));
+        transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035FC1025303040506"));
     assertSw(
         ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
         putDataAfterRestart,
@@ -747,7 +792,8 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
                         new byte[] {
                           (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
                           (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
-                          (byte) 0x91, (byte) 0x01, adminKey
+                          (byte) 0x91, (byte) 0x01, adminKey,
+                          (byte) 0x92, (byte) 0x02, (byte) 0x10, (byte) 0x00
                         }));
             assertSw(
                 0x9000,

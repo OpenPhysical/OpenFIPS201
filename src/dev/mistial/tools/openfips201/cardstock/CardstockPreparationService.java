@@ -128,6 +128,7 @@ public final class CardstockPreparationService {
       }
 
       byte proofSlot = (byte) Integer.parseInt(profile.attestation.proofSlot, 16);
+      byte[] proofPin = HexUtil.parse(profile.attestation.proofPin);
       boolean proofKeyCreated = false;
       try (GlobalPlatformSession piv =
           transport.openGlobalPlatformSession(
@@ -144,14 +145,17 @@ public final class CardstockPreparationService {
                     profile.attestation.issuerValidityDays,
                     HexUtil.parse(profile.attestation.issuerObjectId));
         receipt.operationsPerformed.add("F9 authority imported");
-        new AttestationProofService().createAndGenerateProofKey(piv, proofSlot);
+        AttestationProofService proofService = new AttestationProofService();
+        proofService.setProofPin(piv, proofPin);
+        proofService.createAndGenerateProofKey(piv, proofSlot);
         proofKeyCreated = true;
       }
 
       try {
         byte[] proofCertificate =
             new AttestationProofService()
-                .collectPlainProof(transport, HexUtil.parse(profile.applet.instanceAid), proofSlot);
+                .collectPlainProof(
+                    transport, HexUtil.parse(profile.applet.instanceAid), proofSlot, proofPin);
         boolean proofKeyDeleted = false;
         if (profile.attestation.deleteProofKey) {
           try (GlobalPlatformSession cleanup =

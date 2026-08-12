@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Files;
@@ -11,12 +12,15 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.interfaces.RSAPrivateKey;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Offline unit tests for native ICAM folder acceptance. Skips when the GSA ICAM card-builder tree
  * is not present on the machine (not checked into this repo).
  */
 class IcamCardFolderTest {
+
+  @TempDir Path temporaryDirectory;
 
   private static final Path ICAM_46 =
       Paths.get(
@@ -88,5 +92,22 @@ class IcamCardFolderTest {
     } catch (Exception other) {
       throw new AssertionError("expected IllegalArgumentException", other);
     }
+  }
+
+  @Test
+  void rejectsFolderMissingRequiredObjects() {
+    IllegalArgumentException failure =
+        assertThrows(IllegalArgumentException.class, () -> IcamCardFolder.load(temporaryDirectory));
+    assertTrue(failure.getMessage().contains("Missing required ICAM object"));
+  }
+
+  @Test
+  void fileSelectionIsDeterministic() throws Exception {
+    Path later = Files.write(temporaryDirectory.resolve("7 - CCC-z.bin"), new byte[] {2});
+    Path earlier = Files.write(temporaryDirectory.resolve("7 - CCC-a.bin"), new byte[] {1});
+    assertEquals(
+        earlier,
+        IcamCardFolder.findFile(temporaryDirectory, "7 - CCC", null, ""));
+    assertTrue(Files.exists(later));
   }
 }

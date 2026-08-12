@@ -41,6 +41,8 @@ final class PIVDataObject extends PIVObject {
   //   getLength().
   byte[] content;
   private byte[] pendingContent;
+  private short pendingLength;
+  private final boolean fixedCapacity;
 
   // Indicates the number of bytes currently allocated.  In the case where an object is
   // reallocated with a smaller size this will be less than content.length
@@ -48,6 +50,7 @@ final class PIVDataObject extends PIVObject {
 
   PIVDataObject(byte id, byte modeContact, byte modeContactless, byte adminKey) {
     super(id, modeContact, modeContactless, adminKey, (byte) 0);
+    fixedCapacity = false;
   }
 
   PIVDataObject(
@@ -57,7 +60,23 @@ final class PIVDataObject extends PIVObject {
       byte modeContact,
       byte modeContactless,
       byte adminKey) {
+    this(idBuffer, idOffset, idLength, modeContact, modeContactless, adminKey, (short) 0);
+  }
+
+  PIVDataObject(
+      byte[] idBuffer,
+      short idOffset,
+      short idLength,
+      byte modeContact,
+      byte modeContactless,
+      byte adminKey,
+      short capacity) {
     super(idBuffer, idOffset, idLength, modeContact, modeContactless, adminKey, (byte) 0);
+    fixedCapacity = capacity > (short) 0;
+    if (fixedCapacity) {
+      content = new byte[capacity];
+      pendingContent = new byte[capacity];
+    }
   }
 
   /**
@@ -73,7 +92,11 @@ final class PIVDataObject extends PIVObject {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    if (content == null) {
+    if (fixedCapacity) {
+      if (length > (short) content.length) ISOException.throwIt(ISO7816.SW_FILE_FULL);
+      PIVSecurityProvider.zeroise(content, (short) 0, (short) content.length);
+      PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
+    } else if (content == null) {
       content = new byte[length];
     } else if (length > (short) content.length) {
       // Try to reclaim the resources and re-allocate. If this fails then this card does not
@@ -92,7 +115,12 @@ final class PIVDataObject extends PIVObject {
   byte[] beginUpdate(short length) {
     if (length <= (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     abortUpdate();
-    pendingContent = new byte[length];
+    if (fixedCapacity) {
+      if (length > (short) pendingContent.length) ISOException.throwIt(ISO7816.SW_FILE_FULL);
+    } else {
+      pendingContent = new byte[length];
+    }
+    pendingLength = length;
     return pendingContent;
   }
 
@@ -100,18 +128,26 @@ final class PIVDataObject extends PIVObject {
     byte[] previous = content;
     JCSystem.beginTransaction();
     content = pendingContent;
-    bytesAllocated = (short) pendingContent.length;
-    pendingContent = null;
+    bytesAllocated = pendingLength;
+    pendingContent = fixedCapacity ? previous : null;
+    pendingLength = (short) 0;
     JCSystem.commitTransaction();
-    if (previous != null) PIVSecurityProvider.zeroise(previous, (short) 0, (short) previous.length);
-    if (previous != null && JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+    if (pendingContent != null) {
+      PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
+    } else if (previous != null) {
+      PIVSecurityProvider.zeroise(previous, (short) 0, (short) previous.length);
+      if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+    }
   }
 
   void abortUpdate() {
     if (pendingContent == null) return;
     PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
-    pendingContent = null;
-    if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+    pendingLength = (short) 0;
+    if (!fixedCapacity) {
+      pendingContent = null;
+      if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+    }
   }
 
   /**
@@ -120,7 +156,7 @@ final class PIVDataObject extends PIVObject {
    * @return True if the object is initialised
    */
   boolean isInitialised() {
-    return (content != null);
+    return bytesAllocated > (short) 0;
   }
 
   /*
@@ -136,7 +172,7 @@ final class PIVDataObject extends PIVObject {
     // Wipe our reference to the data, let the GC collect and re-allocate
     // NOTE: requestObjectDeletion doesn't necessarily do it straight away, so both objects may
     // remain allocated until the next call to process()
-    if (JCSystem.isObjectDeletionSupported()) {
+    if (!fixedCapacity && JCSystem.isObjectDeletionSupported()) {
       content = null;
       JCSystem.requestObjectDeletion();
     }

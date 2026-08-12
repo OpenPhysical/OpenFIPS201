@@ -390,6 +390,10 @@ final class PIV {
   }
 
   short unwrapSecureMessagingCommand(byte[] buffer, short offset, short length) {
+    // SP 800-73-5 Part 2 AS05.36C requires an interrupted command chain to have no
+    // residual effect. Abort a different pending command before SM reassembly uses
+    // the shared chain buffer.
+    chainBuffer.checkIncomingAPDU(buffer);
     boolean commandChaining = (buffer[ISO7816.OFFSET_CLA] & (byte) 0x10) != (byte) 0;
     Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);
     length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
@@ -563,7 +567,7 @@ final class PIV {
 
     // Reset all security conditions in the security provider
     cspPIV.clearAuthenticatedKey();
-    cspPIV.clearVerification();
+    cspPIV.clearApplicationVerification();
     secureMessaging.clear();
   }
 
@@ -597,6 +601,22 @@ final class PIV {
     return policy < (short) 0 || (((byte) (policy >> 8) & (byte) 0x04) == (byte) 0);
   }
 
+  boolean isPairingCodeReferenceEnabled() {
+    short policy = dataCommands.getDiscoveryPolicy();
+    return isPairingCodeReferenceEnabled(config.readValue(Config.CONFIG_VCI_MODE), policy);
+  }
+
+  static boolean isPairingCodeReferenceEnabled(byte vciMode, short policy) {
+    if (vciMode != Config.VCI_MODE_PAIRING_CODE || policy < (short) 0) return false;
+    byte pinUsagePolicy = (byte) (policy >> 8);
+    return (pinUsagePolicy & (byte) 0x08) != (byte) 0
+        && (pinUsagePolicy & (byte) 0x04) == (byte) 0;
+  }
+
+  boolean isPairingCodeVerified() {
+    return secureMessaging.isVciEstablished();
+  }
+
   boolean isGlobalPinAdvertised() {
     return dataCommands.isGlobalPinAdvertised();
   }
@@ -608,13 +628,13 @@ final class PIV {
     if (!cspPIV.areMandatoryCvmsProvisioned()
         || !cspPIV.hasUsableAsymmetricKey((byte) 0x9A)
         || !cspPIV.hasUsableAsymmetricKey((byte) 0x9E)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x07)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x02)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x05)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x01)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x03)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x08)
-        || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x06)) {
+        || !hasStructurallyValidMandatoryObject((byte) 0x07)
+        || !hasStructurallyValidMandatoryObject((byte) 0x02)
+        || !hasStructurallyValidMandatoryObject((byte) 0x05)
+        || !hasStructurallyValidMandatoryObject((byte) 0x01)
+        || !hasStructurallyValidMandatoryObject((byte) 0x03)
+        || !hasStructurallyValidMandatoryObject((byte) 0x08)
+        || !hasStructurallyValidMandatoryObject((byte) 0x06)) {
       return false;
     }
     if (isVciConfigured()) {
@@ -623,7 +643,10 @@ final class PIV {
       PIVKeyObject smKey = getSecureMessagingKey();
       if (!(smKey instanceof PIVKeyObjectECC)
           || ((PIVKeyObjectECC) smKey).getSmCvcLength() == (short) 0
-          || !hasInitialisedDataObject((byte) 0x7E, (byte) 0, (byte) 0)) {
+          || !hasInitialisedDataObject((byte) 0x7E, (byte) 0, (byte) 0)
+          // SP 800-73-5 Part 1 Section 3.3.7 requires 5FC122 when SM protects
+          // non-card-management operations.
+          || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x22)) {
         return false;
       }
       short policy = dataCommands.getDiscoveryPolicy();
@@ -658,6 +681,14 @@ final class PIV {
     }
     PIVDataObject object = dataStore.find(scratch, ZERO, length);
     return object != null && object.isInitialised();
+  }
+
+  private boolean hasStructurallyValidMandatoryObject(byte suffix) {
+    scratch[ZERO] = (byte) 0x5F;
+    scratch[(short) 1] = (byte) 0xC1;
+    scratch[(short) 2] = suffix;
+    PIVDataObject object = dataStore.find(scratch, ZERO, (short) 3);
+    return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
   }
 
   void rejectUnsupportedOccAccessMode(byte mode) {
@@ -784,6 +815,7 @@ final class PIV {
   static final byte CONST_TAG_MODE_CONTACT = (byte) 0x8C;
   static final byte CONST_TAG_MODE_CONTACTLESS = (byte) 0x8D;
   static final byte CONST_TAG_ADMIN_KEY = (byte) 0x91;
+  static final byte CONST_TAG_CAPACITY = (byte) 0x92;
   static final byte CONST_TAG_KEY_MECHANISM = (byte) 0x8E;
   static final byte CONST_TAG_KEY_ROLE = (byte) 0x8F;
   static final byte CONST_TAG_KEY_ATTRIBUTE = (byte) 0x90;

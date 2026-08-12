@@ -64,7 +64,11 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       ACCESS_MODE_OCC,
                       (byte) 0x91,
                       (byte) 0x01,
-                      (byte) 0x9B
+                      (byte) 0x9B,
+                      (byte) 0x92,
+                      (byte) 0x02,
+                      (byte) 0x00,
+                      (byte) 0x0C
                     });
             ResponseAPDU object = transmit(0x84, 0xDB, 0x3F, 0x00, objectWithOcc);
             assertSw(0x6A81, object, "OCC-bearing ACLs are unsupported until OCC CVM exists");
@@ -152,9 +156,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         "APT must not advertise secure messaging by default");
 
     configureVciMode((byte) 0x02);
-    createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPublicKeyOverScp(activeBasePoint());
-    importVciPrivateKeyOverScp(activeScalarOne());
+    createVciKeyOverScp(ATTR_NONE);
+    generateVciKeyOverScp();
     assertFalse(
         contains(selectAppletWithData().getData(), advertisement),
         "APT requires CVC as well as key material");
@@ -190,25 +193,18 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
    * secure-messaging algorithm advertisement.
    */
   @Test
-  void importedVciKeyRequiresCvcBeforeAptAdvertisement() {
+  void importableVciKeyDefinitionIsRejected() {
     configureVciMode((byte) 0x01);
-    createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPublicKeyOverScp(activeBasePoint());
-    importVciPrivateKeyOverScp(activeScalarOne());
-    assertFalse(
-        contains(selectAppletWithData().getData(), activeAdvertisement()),
-        "Imported VCI key still requires CVC");
-
-    loadVciCvcOverScp(hex("7F210401020304"));
-    assertTrue(
-        contains(selectAppletWithData().getData(), activeAdvertisement()),
-        "Imported VCI key advertises after CVC");
+    assertSw(
+        0x6A80,
+        createVciKeyOverScpForResponse(ATTR_IMPORTABLE, activeAlgorithm()),
+        "SP 800-73-5 Part 1 Section 5.1.2 requires key 04 generation on-card");
   }
 
   @Test
   void configuredBuildRejectsOtherSecureMessagingKeyDefinition() {
     configureVciMode((byte) 0x02);
-    ResponseAPDU response = createVciKeyOverScpForResponse(ATTR_IMPORTABLE, inactiveAlgorithm());
+    ResponseAPDU response = createVciKeyOverScpForResponse(ATTR_NONE, inactiveAlgorithm());
     assertEquals(0x6A81, response.getSW(), "Build must reject the other SM suite definition");
     assertFalse(
         contains(
@@ -220,11 +216,62 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   @Test
   void configuredBuildDoesNotAllowBothSecureMessagingSuites() {
     configureVciMode((byte) 0x02);
-    createVciKeyOverScp(ATTR_IMPORTABLE, activeAlgorithm());
+    createVciKeyOverScp(ATTR_NONE, activeAlgorithm());
 
     ResponseAPDU secondSuite =
-        createVciKeyOverScpForResponse(ATTR_IMPORTABLE, inactiveAlgorithm());
+        createVciKeyOverScpForResponse(ATTR_NONE, inactiveAlgorithm());
     assertEquals(0x6A81, secondSuite.getSW(), "Card must not accept both SM suites");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 4.1 reserves key 04 for OPACITY establishment. Tag 85 is the
+   * generic key-management ECDH form and must never expose key 04's shared secret.
+   */
+  @Test
+  void secureMessagingKeyRejectsGenericEcdh() {
+    configureVciMode((byte) 0x02);
+    createOperationalVciKey();
+
+    ResponseAPDU response =
+        transmit(
+            0x00,
+            0x87,
+            activeAlgorithm() & 0xFF,
+            KEY_REF_SECURE_MESSAGING & 0xFF,
+            tlv((byte) 0x7C, tlv((byte) 0x85, activeBasePoint())));
+
+    assertSw(0x6A86, response, "Key 04 must reject generic ECDH exponentiation");
+  }
+
+  @Test
+  void pairingCodeRequiresDiscoveryAndAllowsPlaintextContactVerify() {
+    configureVciMode((byte) 0x02);
+    createPairingCodeReferenceData();
+
+    assertSw(
+        0x6A88,
+        transmit(0x00, 0x20, 0x00, 0x98, hex("3132333435363738")),
+        "Pairing reference must not exist without stored Discovery VCI policy");
+
+    withMockedScp(
+        () -> {
+          createDiscoveryObject();
+          assertSw(0x9000, selectApplet(), "SELECT before stored Discovery policy");
+          assertSw(
+              0x9000,
+              transmit(
+                  0x84,
+                  0xDB,
+                  0x3F,
+                  0xFF,
+                  hex("7E124F0BA0000003080000100001005F2F024800")),
+              "Store pairing-required Discovery policy");
+        });
+
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x20, 0x00, 0x98, hex("3132333435363738")),
+        "Part 2 Table 2 permits plaintext pairing-code VERIFY on contact");
   }
 
   private void configureVciMode(final byte mode) {
@@ -296,16 +343,33 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
               ACCESS_MODE_ALWAYS,
               (byte) 0x91,
               (byte) 0x01,
-              (byte) 0x9B
+              (byte) 0x9B,
+              (byte) 0x92,
+              (byte) 0x02,
+              (byte) 0x00,
+              (byte) 0x20
             });
     assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, request), "Create Discovery Object");
   }
 
   private void createOperationalVciKey() {
-    createVciKeyOverScp(ATTR_IMPORTABLE);
-    importVciPublicKeyOverScp(activeBasePoint());
-    importVciPrivateKeyOverScp(activeScalarOne());
+    createVciKeyOverScp(ATTR_NONE);
+    generateVciKeyOverScp();
     loadVciCvcOverScp(hex("7F210401020304"));
+  }
+
+  private void generateVciKeyOverScp() {
+    withMockedScp(
+        () ->
+            assertSw(
+                0x9000,
+                transmit(
+                    0x84,
+                    0x47,
+                    0x00,
+                    KEY_REF_SECURE_MESSAGING & 0xFF,
+                    tlv((byte) 0xAC, tlv((byte) 0x80, new byte[] {activeAlgorithm()}))),
+                "Generate VCI key on-card"));
   }
 
   private void createPairingCodeReferenceData() {
@@ -330,7 +394,11 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       (byte) (ACCESS_MODE_VCI | ACCESS_MODE_PIN),
                       (byte) 0x91,
                       (byte) 0x01,
-                      (byte) 0x9B
+                      (byte) 0x9B,
+                      (byte) 0x92,
+                      (byte) 0x02,
+                      (byte) 0x00,
+                      (byte) 0x0C
                     });
             assertSw(
                 0x9000,

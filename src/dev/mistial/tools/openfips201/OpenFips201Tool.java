@@ -146,6 +146,20 @@ public final class OpenFips201Tool implements Callable<Integer> {
             "PKCS#12 password for ICAM .p12 files; defaults to empty (GSA ICAM corpus).")
     String p12Password;
 
+    @Option(
+        names = "--certification-profile",
+        description = "Validate SP 800-73-5 Part 1, provision, then irreversibly personalize.")
+    boolean certificationProfile;
+
+    @Option(names = "--government-email", description = "Require the conditional 9C/9D objects and keys.")
+    boolean governmentEmail;
+
+    @Option(names = "--vci", description = "Require a Discovery policy that advertises VCI.")
+    boolean vci;
+
+    @Option(names = "--pairing-required", description = "Require the Discovery VCI pairing-code policy.")
+    boolean pairingRequired;
+
     @Override
     public Integer call() throws Exception {
       char[] password =
@@ -163,8 +177,20 @@ public final class OpenFips201Tool implements Callable<Integer> {
           scpKey == null
               ? ScpConfig.defaultTestScp03()
               : ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 0, HexUtil.parse(scpKey));
-      ConformanceProvisioner.ProvisionReport report =
-          ConformanceProvisioner.provision(CardTarget.parse(target), scp, pkg, System.out);
+      ConformanceProvisioner.ProvisionReport report;
+      if (certificationProfile) {
+        report =
+            ConformanceProvisioner.provisionCertificationProfile(
+                CardTarget.parse(target),
+                scp,
+                pkg,
+                new dev.mistial.tools.openfips201.provisioning.CertificationProfileValidator.Claims(
+                    governmentEmail, vci, pairingRequired),
+                System.out);
+        System.out.println("Personalized validated certification profile");
+      } else {
+        report = ConformanceProvisioner.provision(CardTarget.parse(target), scp, pkg, System.out);
+      }
       System.out.println(
           "Done: "
               + report.objectsCreated

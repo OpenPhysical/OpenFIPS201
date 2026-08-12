@@ -361,7 +361,8 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8B, SM_SIGNER_OBJECT_ID),
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
-                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B})));
+                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
+                VciSupport.tlv(0x92, new byte[] {0x08, 0x00})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, smSignerDefinition)),
         "Define Secure Messaging Certificate Signer (5FC122)");
@@ -395,7 +396,8 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8B, PAIRING_OBJECT_ID),
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_PIN}),
                 VciSupport.tlv(0x8D, new byte[] {(byte) (ACCESS_VCI | ACCESS_PIN)}),
-                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B})));
+                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
+                VciSupport.tlv(0x92, new byte[] {0x00, 0x0C})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, pairingDefinition)),
         "Define pairing-code object");
@@ -418,10 +420,20 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8B, new byte[] {0x7E}),
                 VciSupport.tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
                 VciSupport.tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
-                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B})));
+                VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
+                VciSupport.tlv(0x92, new byte[] {0x00, 0x20})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, discoveryDefinition)),
         "Define Discovery Object");
+    expect(
+        gp.transmit(
+            new CommandAPDU(
+                0x00,
+                0xDB,
+                0x3F,
+                0xFF,
+                Hex.decode("7E124F0BA0000003080000100001005F2F024800"))),
+        "Write pairing-required Discovery policy");
 
     System.out.println(
         "VCI provisioning complete (pairing-code mode, suite 0x"

@@ -87,7 +87,8 @@ final class PIVSecurityProvider {
   private final PIVPIN cardPUK; // 81 - PIN Unlocking Key (PUK)
   private final PIVPIN globalPIN; // 00 - Global PIN
   private final byte[] pinHistory;
-  private final byte[] pinHistoryLengths;
+  private final byte[] pinHistoryOccupied;
+  private final byte[] pinHistoryCandidate;
 
   // PERSISTENT - Counters related to security operations
   private final byte[] persistentState;
@@ -134,16 +135,16 @@ final class PIVSecurityProvider {
 
     // Keep history storage compact and allocate it at install time. Command processing must not
     // create persistent objects on Java Card.
-    pinHistory =
-        new byte[(short) (Config.LIMIT_PIN_HISTORY * Config.LIMIT_PIN_MAX_LENGTH)];
-    pinHistoryLengths = new byte[Config.LIMIT_PIN_HISTORY];
+    pinHistory = new byte[(short) (Config.LIMIT_PIN_HISTORY * (short) 32)];
+    pinHistoryOccupied = new byte[Config.LIMIT_PIN_HISTORY];
+    pinHistoryCandidate = JCSystem.makeTransientByteArray((short) 32, JCSystem.CLEAR_ON_DESELECT);
   }
 
-  void clearVerification() {
-    // Reset all PINs
+  void clearApplicationVerification() {
+    // SP 800-73-5 Part 2 Section 3.1.1 clears application security status on deselect.
+    // Global PIN validation is ICC-wide and must survive a PIV application deselect.
     if (cardPIN.isValidated()) cardPIN.reset();
     if (cardPUK.isValidated()) cardPUK.reset();
-    if (globalPIN.isValidated()) globalPIN.reset();
   }
 
   void setAuthenticatedKey(byte key) {
@@ -156,9 +157,9 @@ final class PIVSecurityProvider {
     transientState[STATE_AUTH_KEY] = (byte) 0;
   }
 
-  boolean getIsPINAlways() {
+  boolean getIsPINAlways(boolean globalPinAuthorized) {
     return (transientState[STATE_PIN_ALWAYS] == FLAG_TRUE
-        && (cardPIN.isValidated() || globalPIN.isValidated()));
+        && pinIsValidated(cardPIN, globalPIN, globalPinAuthorized));
   }
 
   void markPINAlways() {
@@ -169,14 +170,22 @@ final class PIVSecurityProvider {
     transientState[STATE_PIN_ALWAYS] = FLAG_FALSE;
   }
 
-  private boolean consumePINAlways() {
-    boolean active = getIsPINAlways();
+  private boolean consumePINAlways(boolean globalPinAuthorized) {
+    boolean active = getIsPINAlways(globalPinAuthorized);
     clearPINAlways();
     return active;
   }
 
-  boolean getIsPINVerified() {
-    return (cardPIN.isValidated() || globalPIN.isValidated());
+  boolean getIsPINVerified(boolean globalPinAuthorized) {
+    return pinIsValidated(cardPIN, globalPIN, globalPinAuthorized);
+  }
+
+  static boolean pinIsValidated(
+      PIVPIN applicationPin, PIVPIN globalPin, boolean globalPinAuthorized) {
+    // SP 800-73-5 Part 1 Section 3.3.2: Global PIN security status participates in PIV access
+    // control only when the stored Discovery Object advertises Global PIN use.
+    return applicationPin.isValidated()
+        || (globalPinAuthorized && globalPin.isValidated());
   }
 
   /**
@@ -388,7 +397,8 @@ final class PIVSecurityProvider {
    * @param vciEstablished True if the Virtual Contact Interface (secure messaging) is established
    * @return True of the access mode check passed
    */
-  boolean checkAccessModeAdmin(PIVObject object, boolean vciEstablished) {
+  boolean checkAccessModeAdmin(
+      PIVObject object, boolean vciEstablished, boolean globalPinAuthorized) {
 
     //
     // This check can pass by any of the following conditions being true:
@@ -426,7 +436,7 @@ final class PIVSecurityProvider {
     //
     if ((mode != PIVObject.ACCESS_MODE_ALWAYS)
         && ((mode & PIVObject.ACCESS_MODE_USER_ADMIN) == PIVObject.ACCESS_MODE_USER_ADMIN)
-        && checkAccessModeObject(object, vciEstablished)) {
+        && checkAccessModeObject(object, vciEstablished, globalPinAuthorized)) {
       result = true;
     }
 
@@ -450,10 +460,11 @@ final class PIVSecurityProvider {
    * @param vciEstablished True if the Virtual Contact Interface (secure messaging) is established
    * @return True of the access mode check passed
    */
-  boolean checkAccessModeObject(PIVObject object, boolean vciEstablished) {
+  boolean checkAccessModeObject(
+      PIVObject object, boolean vciEstablished, boolean globalPinAuthorized) {
 
     boolean valid = false;
-    boolean pinAlways = consumePINAlways();
+    boolean pinAlways = consumePINAlways(globalPinAuthorized);
 
     // Select the appropriate access mode to check
     final boolean contactless = (transientState[STATE_IS_CONTACTLESS] == FLAG_TRUE);
@@ -480,7 +491,7 @@ final class PIVSecurityProvider {
           // At least one PIN type must be both Enabled and Validated or we fail
           // NOTE: We don't check if they are enabled here, because if they weren't they could
           // never be valid.
-          if (cardPIN.isValidated() || globalPIN.isValidated()) {
+          if (pinIsValidated(cardPIN, globalPIN, globalPinAuthorized)) {
             valid = true;
           }
         } else if (vciRequired && (mode & PIVObject.ACCESS_MODE_OCC) == 0) {
@@ -565,6 +576,10 @@ final class PIVSecurityProvider {
         return; // Keep compiler happy
     }
 
+    // Store only SHA-256 digests. PIN history is an equality check and does not need
+    // recoverable reference data in persistent memory.
+    PIVCrypto.doSha256(buffer, offset, length, pinHistoryCandidate, (short) 0);
+
     // Optionally verify the PIN history
     // NOTE: Any elements beyond the historyCheck count will not be used at all, so we ignore
     // their values
@@ -572,9 +587,10 @@ final class PIVSecurityProvider {
 
     // Interate through our history list (which may be zero)
     for (byte i = 0; i < historyCount; i++) {
-      short historyOffset = (short) (i * Config.LIMIT_PIN_MAX_LENGTH);
-      if (pinHistoryLengths[i] == length
-          && arrayEqualsConstantTime(pinHistory, historyOffset, buffer, offset, length)) {
+      short historyOffset = (short) (i * (short) 32);
+      if (pinHistoryOccupied[i] != FLAG_FALSE
+          && arrayEqualsConstantTime(
+              pinHistory, historyOffset, pinHistoryCandidate, (short) 0, (short) 32)) {
         matched = true;
         break;
       }
@@ -582,6 +598,7 @@ final class PIVSecurityProvider {
 
     // If we got a match, the PIN check fails and we will not update
     if (matched) {
+      zeroise(pinHistoryCandidate, (short) 0, (short) 32);
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
       return; // Keep compiler happy
     }
@@ -594,13 +611,13 @@ final class PIVSecurityProvider {
       // Move/Roll to the next position we will write to
       byte next = persistentState[STATE_HISTORY_NEXT];
       if (next >= historyCount) next = (byte) 0;
-      short historyOffset = (short) (next * Config.LIMIT_PIN_MAX_LENGTH);
-      Util.arrayCopy(
-          buffer, offset, pinHistory, historyOffset, length);
-      pinHistoryLengths[next] = length;
+      short historyOffset = (short) (next * (short) 32);
+      Util.arrayCopy(pinHistoryCandidate, (short) 0, pinHistory, historyOffset, (short) 32);
+      pinHistoryOccupied[next] = FLAG_TRUE;
       next = (byte) ((byte) (next + (byte) 1) % historyCount);
       persistentState[STATE_HISTORY_NEXT] = next;
     }
+    zeroise(pinHistoryCandidate, (short) 0, (short) 32);
   }
 
   /**

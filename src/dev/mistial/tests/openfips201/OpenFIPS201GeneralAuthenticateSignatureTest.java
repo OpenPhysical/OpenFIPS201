@@ -2,6 +2,7 @@ package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.security.AlgorithmParameters;
@@ -33,7 +34,7 @@ import org.junit.jupiter.api.Timeout;
  * a P-256 key signs a 32-byte (SHA-256) digest and refuses the 20-byte (SHA-1) and 64-byte
  * (SHA-512) sizes, so no off-spec ECDSA signature can ever be produced.
  */
-@Timeout(value = 35, unit = TimeUnit.SECONDS)
+@Timeout(value = 10, unit = TimeUnit.SECONDS)
 class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport {
 
   private static final byte ALG_ECC_P256 = (byte) 0x11;
@@ -68,6 +69,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
         "Returned signature must verify as ECDSA over the 32-byte digest");
 
     // 20 bytes (SHA-1) and 64 bytes (SHA-512): not PIV ECDSA digest sizes; no signature may result.
+    verifyLocalPin();
     assertSw(
         0x6A80,
         transmit(
@@ -77,6 +79,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
             SLOT_SIGNATURE & 0xFF,
             signTemplate(filled(20, (byte) 0x5A))),
         "ECC must not sign a 20-byte (SHA-1) digest");
+    verifyLocalPin();
     assertSw(
         0x6A80,
         transmit(
@@ -110,6 +113,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                     tlv((byte) 0x30, tlv((byte) 0x87, privateScalar))),
                 "A private component that mismatches a live public key must be rejected"));
 
+    verifyLocalPin();
     byte[] digest = filled(P256_FIELD_BYTES, (byte) 0x3C);
     byte[] response =
         collect(
@@ -142,10 +146,10 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                 SLOT_SIGNATURE,
                 (byte) 0x8C,
                 (byte) 0x01,
-                (byte) 0x7F,
+                (byte) 0x02,
                 (byte) 0x8D,
                 (byte) 0x01,
-                (byte) 0x00,
+                (byte) 0x0A,
                 (byte) 0x8E,
                 (byte) 0x01,
                 ALG_ECC_P256,
@@ -181,10 +185,10 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                 slot,
                 (byte) 0x8C,
                 (byte) 0x01,
-                (byte) 0x7F,
+                (byte) 0x02,
                 (byte) 0x8D,
                 (byte) 0x01,
-                (byte) 0x00,
+                (byte) 0x0A,
                 (byte) 0x8E,
                 (byte) 0x01,
                 ALG_ECC_P256,
@@ -202,7 +206,15 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                   "GENERATE ECC sign key");
           publicPoint[0] = tlvValue(generated, (byte) 0x86);
         });
+    verifyLocalPin();
     return publicPoint[0];
+  }
+
+  private void verifyLocalPin() {
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x20, 0x00, 0x80, StandardCardProfile.PIN),
+        "VERIFY immediately before signature use");
   }
 
   private byte[] signTemplate(byte[] digest) {

@@ -40,14 +40,15 @@ final class PIVDataStore {
       short idLength,
       byte modeContact,
       byte modeContactless,
-      byte adminKey) {
+      byte adminKey,
+      short capacity) {
     if (find(idBuffer, idOffset, idLength) != null) {
       ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
     }
 
     PIVDataObject object =
         new PIVDataObject(
-            idBuffer, idOffset, idLength, modeContact, modeContactless, adminKey);
+            idBuffer, idOffset, idLength, modeContact, modeContactless, adminKey, capacity);
     object.setNext(first);
     first = object;
   }

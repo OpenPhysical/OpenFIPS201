@@ -15,9 +15,9 @@ import org.mockito.Mockito;
  */
 class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
 
-  private static final byte[] TEST_OBJECT_ID = {(byte) 0x5F, (byte) 0xC1, (byte) 0x5A};
+  private static final byte[] TEST_OBJECT_ID = {(byte) 0x5F, (byte) 0xFF, (byte) 0x02};
   private static final byte[] TEST_TAG_LIST = {
-    (byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, (byte) 0x5A
+    (byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xFF, (byte) 0x02
   };
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
@@ -43,7 +43,8 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
                         new byte[] {
                           (byte) 0x8C, (byte) 0x01, ACCESS_MODE_ALWAYS,
                           (byte) 0x8D, (byte) 0x01, contactlessMode,
-                          (byte) 0x91, (byte) 0x01, (byte) 0x9B
+                          (byte) 0x91, (byte) 0x01, (byte) 0x9B,
+                          (byte) 0x92, (byte) 0x02, (byte) 0x00, (byte) 0x10
                         }));
             assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, create), "Create test object");
             assertSw(

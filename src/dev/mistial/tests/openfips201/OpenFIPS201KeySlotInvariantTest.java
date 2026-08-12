@@ -15,6 +15,8 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
   private static final byte SLOT_SECURE_MESSAGING = (byte) 0x04;
   private static final byte SLOT_RETIRED = (byte) 0x82;
   private static final byte ACCESS_NEVER = (byte) 0x00;
+  private static final byte ACCESS_PIN = (byte) 0x01;
+  private static final byte ACCESS_VCI_PIN = (byte) 0x09;
   private static final byte ACCESS_ALWAYS = (byte) 0x7F;
   private static final byte ROLE_SIGN = (byte) 0x04;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
@@ -153,6 +155,15 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
   }
 
   private ResponseAPDU createKey(byte slot, byte algorithm, byte role, byte attribute) {
+    byte contact = ACCESS_PIN;
+    byte contactless = ACCESS_VCI_PIN;
+    if (slot == SLOT_MANAGEMENT) {
+      contact = ACCESS_ALWAYS;
+      contactless = ACCESS_NEVER;
+    } else if (slot == SLOT_SECURE_MESSAGING) {
+      contact = ACCESS_ALWAYS;
+      contactless = ACCESS_ALWAYS;
+    }
     return transmit(
         0x84,
         0xDB,
@@ -166,10 +177,10 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
           slot,
           (byte) 0x8C,
           (byte) 0x01,
-          ACCESS_ALWAYS,
+          contact,
           (byte) 0x8D,
           (byte) 0x01,
-          ACCESS_NEVER,
+          contactless,
           (byte) 0x8E,
           (byte) 0x01,
           algorithm,

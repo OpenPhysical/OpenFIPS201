@@ -104,6 +104,46 @@ public final class ConformanceProvisioner {
     }
   }
 
+  /** Validates, provisions, and only then performs the irreversible lifecycle transition. */
+  public static ProvisionReport provisionCertificationProfile(
+      CardTarget target,
+      ScpConfig scp,
+      ConformancePackage pkg,
+      CertificationProfileValidator.Claims claims,
+      PrintStream log)
+      throws Exception {
+    CertificationProfileValidator.validate(pkg, claims);
+    ProvisionReport report = provision(target, scp, pkg, log);
+    personalize(target, scp);
+    return report;
+  }
+
+  private static void personalize(CardTarget target, ScpConfig scp) throws Exception {
+    if (target == null) throw new IllegalArgumentException("target is required");
+    ScpConfig config = scp == null ? ScpConfig.defaultTestScp03() : scp;
+    BIBO bibo = target.openBibo();
+    try {
+      GPSession gp = GPSession.connect(bibo, new AID(GlobalPlatformSession.PIV_AID));
+      gp.openSecureChannel(
+          config.toPlaintextKeys(),
+          new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
+          null,
+          EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC));
+      // Proprietary admin PUT DATA operation 69 has an empty value.
+      expect(
+          gp.transmit(
+              new CommandAPDU(
+                  0x00, 0xDB, 0x3F, 0x00, AdminTlv.tlv(0x69, new byte[0]))),
+          "Personalize validated certification profile");
+    } finally {
+      try {
+        bibo.close();
+      } catch (Exception ignored) {
+        // best-effort close
+      }
+    }
+  }
+
   /** Provisions over an already-open BIBO transport. */
   public static ProvisionReport provision(
       BIBO bibo, ScpConfig scp, ConformancePackage pkg, PrintStream log) throws Exception {
@@ -285,6 +325,9 @@ public final class ConformanceProvisioner {
   }
 
   private static void createDataObject(GPSession gp, ConformancePackage.DataObject object) {
+    int capacity =
+        CertificationProfileValidator.requiredCapacity(
+            object.id, object.payload.length);
     byte[] definition =
         AdminTlv.tlv(
             0x64,
@@ -292,7 +335,9 @@ public final class ConformanceProvisioner {
                 AdminTlv.tlv(0x8B, object.id),
                 AdminTlv.tlv(0x8C, new byte[] {object.modeContact}),
                 AdminTlv.tlv(0x8D, new byte[] {object.modeContactless}),
-                AdminTlv.tlv(0x91, new byte[] {ADMIN_KEY_REF})));
+                AdminTlv.tlv(0x91, new byte[] {ADMIN_KEY_REF}),
+                AdminTlv.tlv(
+                    0x92, new byte[] {(byte) (capacity >> 8), (byte) capacity})));
     expect(
         gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, definition)),
         "Create object " + object.label);

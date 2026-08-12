@@ -119,7 +119,8 @@ final class AttestationSupport {
             tlv(0x8B, objectId),
             tlv(0x8C, new byte[] {ACCESS_ALWAYS}),
             tlv(0x8D, new byte[] {ACCESS_ALWAYS}),
-            tlv(0x91, new byte[] {(byte) 0x9B})));
+            tlv(0x91, new byte[] {(byte) 0x9B}),
+            tlv(0x92, new byte[] {0x10, 0x00})));
   }
 
   static byte[] certificateObject(byte[] certificateDer) {

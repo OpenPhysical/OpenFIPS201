@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
+import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
 import javacard.framework.ISO7816;
 import javax.smartcardio.CommandAPDU;
@@ -22,8 +23,8 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     assumeFalse(Boolean.getBoolean("fips.mode"), "RSA-1024 is excluded from the FIPS profile");
     withMockedScp(
         () -> {
-          createKey(0x06, 0x04);
-          ResponseAPDU response = transmit(0x84, 0x47, 0x00, KEY_REFERENCE, hex("AC03800106"), 0);
+          createKey(0x82, 0x06, 0x02);
+          ResponseAPDU response = transmit(0x84, 0x47, 0x00, 0x82, hex("AC03800106"), 0);
           assertSw(0x9000, response, "RSA key generation");
           byte[] data = response.getData();
           assertEquals((byte) 0x7F, data[0]);
@@ -122,6 +123,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
               0x9000,
               transmit(0x84, 0x47, 0x00, keyManagementReference, hex("AC03800111"), 0),
               "P-256 key generation");
+          verifyLocalPin();
 
           byte[] point = new byte[65];
           point[0] = 0x04;
@@ -148,6 +150,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
               0x9000,
               transmit(0x84, 0x47, 0x00, KEY_REFERENCE, hex("AC03800111"), 0),
               "P-256 key generation");
+          verifyLocalPin();
 
           byte[] request = new byte[38];
           request[0] = 0x7C;
@@ -168,6 +171,13 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     createKey(KEY_REFERENCE, mechanism, role);
   }
 
+  private void verifyLocalPin() {
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x20, 0x00, 0x80, StandardCardProfile.PIN),
+        "VERIFY before PIN-gated asymmetric use");
+  }
+
   private void createKey(int keyReference, int mechanism, int role) {
     assertSw(0x9000, selectApplet(), "SELECT before asymmetric provisioning");
     assertSw(
@@ -181,6 +191,8 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
   }
 
   private static byte[] createKeyRequest(int keyReference, int mechanism, int role) {
+    byte modeContact = (byte) 0x01;
+    byte modeContactless = (byte) 0x09;
     return new byte[] {
       0x66,
       0x12,
@@ -189,10 +201,10 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
       (byte) keyReference,
       (byte) 0x8C,
       0x01,
-      0x7F,
+      modeContact,
       (byte) 0x8D,
       0x01,
-      0x00,
+      modeContactless,
       (byte) 0x8E,
       0x01,
       (byte) mechanism,

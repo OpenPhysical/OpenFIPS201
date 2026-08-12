@@ -229,12 +229,12 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
     assertSw(
         0x6A80,
         updateConfigOverMockedScp(
-            hex("64 0E 8B 03 5F C1 07 8C 01 7F 8D 01 7F 91 01 9B")),
+            hex("64 12 8B 03 5F C1 07 8C 01 7F 8D 01 7F 91 01 9B 92 02 00 AA")),
         "CCC must not be contactless-readable without VCI");
     assertSw(
         0x9000,
         updateConfigOverMockedScp(
-            hex("64 0E 8B 03 5F C1 07 8C 01 7F 8D 01 08 91 01 9B")),
+            hex("64 12 8B 03 5F C1 07 8C 01 7F 8D 01 08 91 01 9B 92 02 00 AA")),
         "CCC definition must accept its standard ACR");
   }
 

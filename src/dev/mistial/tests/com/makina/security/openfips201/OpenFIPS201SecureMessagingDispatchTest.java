@@ -202,6 +202,78 @@ class OpenFIPS201SecureMessagingDispatchTest {
       assertEquals(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED, rejected.getReason());
       assertArrayEquals(
           original, destination.content, "A protection mismatch must roll back staged data");
+
+      destination.allocate((short) 8);
+      assertEquals(8, destination.getLength(), "A rolled-back object remains safely reallocatable");
+    }
+  }
+
+  @Test
+  void unrelatedCommandSoftAbortsProtectedObjectChain() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      ChainBuffer chain = new ChainBuffer();
+      PIVDataObject destination =
+          new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
+      destination.allocate((short) 4);
+      byte[] original = new byte[] {0x11, 0x22, 0x33, 0x44};
+      System.arraycopy(original, 0, destination.content, 0, original.length);
+      chain.setIncomingObject(destination, (short) 4);
+
+      byte[] first = hex("10DB3FFF02AABB");
+      ISOException accepted =
+          assertThrows(
+              ISOException.class,
+              () ->
+                  chain.processIncomingObject(
+                      first, (short) 5, (short) 2, ChainBuffer.PROTECTION_SCP));
+      assertEquals(ISO7816.SW_NO_ERROR, accepted.getReason());
+
+      byte[] verify = hex("0020008000");
+      chain.processIncomingObject(verify, (short) 5, (short) 0, ChainBuffer.PROTECTION_PLAIN);
+      assertArrayEquals(original, destination.content, "The interrupted write must roll back");
+    }
+  }
+
+  @Test
+  void secureMessagingCommandSoftAbortsDifferentIncompleteApduChain() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(realApplet, "piv").get(realApplet);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      Object secureMessaging = field(piv, "secureMessaging").get(piv);
+
+      method(secureMessaging.getClass(), "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      method(secureMessaging.getClass(), "markEstablished", boolean.class)
+          .invoke(secureMessaging, false);
+
+      byte[] chainedGa = hex("1087039B027C02");
+      assertEquals(
+          (short) 0,
+          method(
+                  chainBuffer.getClass(),
+                  "processIncomingAPDU",
+                  byte[].class,
+                  short.class,
+                  short.class,
+                  byte[].class,
+                  short.class)
+              .invoke(chainBuffer, chainedGa, (short) 5, (short) 2, new byte[32], (short) 0));
+
+      byte[] protectedVerify =
+          macOnlySecureCommand((byte) 0x0C, (byte) 0x20, (byte) 0x00, (byte) 0x80);
+      short length =
+          (Short)
+              method(
+                      piv.getClass(),
+                      "unwrapSecureMessagingCommand",
+                      byte[].class,
+                      short.class,
+                      short.class)
+                  .invoke(piv, protectedVerify, (short) 5, (short) 10);
+
+      assertEquals((short) 0, length, "The interrupting SM command must be processed afresh");
+      assertEquals((byte) 0x20, protectedVerify[ISO7816.OFFSET_INS]);
     }
   }
 
@@ -634,7 +706,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
     }
 
     ResponseAPDU response =
-        transmit(new CommandAPDU(0x00, 0x87, PIV.ID_ALG_ECC_SM & 0xFF, 0x04, hex("7C00"), 0));
+        transmit(
+            new CommandAPDU(
+                0x00, 0x87, PIV.ID_ALG_ECC_SM & 0xFF, 0x04, hex("7C058101008200"), 0));
 
     assertSw(
         0x6A88,
@@ -644,6 +718,51 @@ class OpenFIPS201SecureMessagingDispatchTest {
         true,
         method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
         "Failed plaintext OPACITY re-establishment must not clear the existing SM session");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 4.1 permits only OPACITY Case 1A to re-establish a plaintext
+   * session. A generic ECDH tag 85 command must not inherit that exception.
+   */
+  @Test
+  void plaintextEcdhOnSecureMessagingKeyDoesNotBypassActiveSession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before plaintext ECDH rejection");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class)
+          .invoke(secureMessaging, false);
+    }
+
+    byte[] publicPoint = new byte[isCs2Build() ? 65 : 97];
+    publicPoint[0] = 0x04;
+    ResponseAPDU response =
+        transmit(
+            new CommandAPDU(
+                0x00,
+                0x87,
+                PIV.ID_ALG_ECC_SM & 0xFF,
+                PIV.ID_KEY_SECURE_MESSAGING & 0xFF,
+                tlv((byte) 0x7C, tlv((byte) 0x85, publicPoint)),
+                0));
+
+    assertSw(
+        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+        response,
+        "Generic ECDH must not bypass an active secure-messaging session");
+    assertEquals(
+        false,
+        method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+        "Rejected plaintext ECDH must destroy the active session");
   }
 
   /**
@@ -1389,5 +1508,16 @@ class OpenFIPS201SecureMessagingDispatchTest {
                   | Character.digit(normalized.charAt(i + 1), 16));
     }
     return bytes;
+  }
+
+  private static byte[] tlv(byte tag, byte[] value) {
+    if (value.length > 127) {
+      throw new IllegalArgumentException("Test TLV helper supports short-form lengths only");
+    }
+    byte[] encoded = new byte[value.length + 2];
+    encoded[0] = tag;
+    encoded[1] = (byte) value.length;
+    System.arraycopy(value, 0, encoded, 2, value.length);
+    return encoded;
   }
 }

@@ -54,6 +54,22 @@ class FipsPowerUpSelfTestsBehaviorTest {
     }
   }
 
+  @Test
+  void incorrectAesDecryptKnownAnswerFailsClosed() throws Exception {
+    Field expectedField = FipsPowerUpSelfTests.class.getDeclaredField("AES_DECRYPT_PLAINTEXT");
+    expectedField.setAccessible(true);
+    byte[] expected = (byte[]) expectedField.get(null);
+    byte original = expected[0];
+    expected[0] ^= (byte) 1;
+    try {
+      try (AutoCloseable ignored = enterEngineContext()) {
+        assertFalse(new FipsPowerUpSelfTests().run(new byte[128]));
+      }
+    } finally {
+      expected[0] = original;
+    }
+  }
+
   private AutoCloseable enterEngineContext() throws Exception {
     Method asCurrent = engine.getClass().getMethod("asCurrent");
     return (AutoCloseable) asCurrent.invoke(engine);

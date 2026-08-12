@@ -47,6 +47,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
@@ -64,11 +65,14 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   private static final byte SLOT_AUTHENTICATION = (byte) 0x9A;
   private static final byte SLOT_SIGNATURE = (byte) 0x9C;
   private static final byte SLOT_KEY_MANAGEMENT = (byte) 0x9D;
+  private static final byte SLOT_CARD_AUTHENTICATION = (byte) 0x9E;
   private static final byte SLOT_RETIRED = (byte) 0x82;
   private static final byte SLOT_RETIRED_SECOND = (byte) 0x83;
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
   private static final byte LOCAL_PIN_REFERENCE = (byte) 0x80;
   private static final byte ACCESS_MODE_PIN = (byte) 0x01;
+  private static final byte ACCESS_MODE_PIN_ALWAYS = (byte) 0x02;
+  private static final byte ACCESS_MODE_VCI = (byte) 0x08;
   private static final byte ACCESS_MODE_ALWAYS = (byte) 0x7F;
   private static final byte ACCESS_MODE_NEVER = (byte) 0x00;
   private static final byte ATTR_IMPORTABLE = (byte) 0x10;
@@ -106,7 +110,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     setAuthorityOverScp(authority);
 
     assertGeneratedTargetAttests(authority, SLOT_AUTHENTICATION, ALG_ECC_P256, "AC03800111");
-    assertGeneratedTargetAttests(authority, SLOT_SIGNATURE, ALG_ECC_P384, "AC03800114");
+    assertGeneratedTargetAttests(
+        authority, SLOT_SIGNATURE, signatureAlgorithm(), signatureGenerateRequest());
     if (!Boolean.getBoolean("fips.mode")) {
       assertGeneratedTargetAttests(authority, SLOT_RETIRED, ALG_RSA_1024, "AC03800106");
     }
@@ -185,13 +190,13 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   @Test
   void setAuthorityClearsExistingKeyMaterialAndDataObjectContents() throws Exception {
-    createDataObjectOverScp((byte) 0x5A);
+    createDataObjectOverScp((byte) 0x02);
     createAsymmetricKeyOverScp(SLOT_AUTHENTICATION, ALG_ECC_P256);
 
     Authority authority = Authority.create(new X500Name("CN=Provisioning Reset,O=Example"));
     setAuthorityOverScp(authority);
 
-    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
+    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
     assertSw(0x9000, cleared, "Authority commit should clear existing data object contents");
     assertArrayEquals(hex("5300"), cleared.getData());
     generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
@@ -201,7 +206,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   void authorityKeyRotationWaitsForBothKeyElementsBeforeCommit() throws Exception {
     Authority original = Authority.create(new X500Name("CN=Original Authority,O=Example"));
     setAuthorityOverScp(original);
-    createDataObjectOverScp((byte) 0x5A);
+    createDataObjectOverScp((byte) 0x02);
 
     Authority rotated = Authority.create(new X500Name("CN=Rotated Authority,O=Example"));
     if (Boolean.getBoolean("fips.mode")) {
@@ -210,7 +215,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x86, rotated.publicPoint);
     assertSw(
         0x9000,
-        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A")),
+        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102")),
         "Partial F9 key rotation must not clear existing data");
 
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x87, rotated.privateScalar);
@@ -218,7 +223,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
       importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, rotated.subjectDer);
       importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x93, rotated.validityDer);
     }
-    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
+    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
     assertSw(0x9000, cleared, "Complete F9 key rotation should clear existing data");
     assertArrayEquals(hex("5300"), cleared.getData());
   }
@@ -243,12 +248,12 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   void authorityMetadataReimportCommitsAndClearsExistingObjects() throws Exception {
     Authority original = Authority.create(new X500Name("CN=Original Metadata,O=Example"));
     setAuthorityOverScp(original);
-    createDataObjectOverScp((byte) 0x5A);
+    createDataObjectOverScp((byte) 0x02);
 
     Authority updated = Authority.create(new X500Name("CN=Updated Metadata,O=Example"));
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, updated.subjectDer);
 
-    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A"));
+    ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
     assertSw(
         0x9000, cleared, "F9 metadata re-import should recommit and clear existing data");
     assertArrayEquals(hex("5300"), cleared.getData());
@@ -260,7 +265,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     setAuthorityOverScp(authority);
 
     assertImportedEccTargetIsNotAttestable(SLOT_AUTHENTICATION, ALG_ECC_P256, 32);
-    assertImportedEccTargetIsNotAttestable(SLOT_SIGNATURE, ALG_ECC_P384, 48);
+    assertImportedEccTargetIsNotAttestable(
+        SLOT_SIGNATURE, signatureAlgorithm(), signatureCoordinateLength());
     if (!Boolean.getBoolean("fips.mode")) {
       assertImportedRsaTargetIsNotAttestable(SLOT_RETIRED, ALG_RSA_1024, 128);
     }
@@ -270,7 +276,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   @Test
   void authorityCommitRejectsMismatchedKeyPairWithoutPurge() throws Exception {
     setAuthorityOverScp(Authority.create(new X500Name("CN=Original Authority,O=Example")));
-    createDataObjectOverScp((byte) 0x5A);
+    createDataObjectOverScp((byte) 0x02);
 
     Authority mismatched = Authority.create(new X500Name("CN=Bad Authority,O=Example"));
     KeyPair other = generateEcP256();
@@ -291,7 +297,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     assertSw(
         0x9000,
-        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC15A")),
+        transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102")),
         "Rejected authority commit must preserve existing data objects");
   }
 
@@ -361,6 +367,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   @Test
   void attestationRequiresTargetSlotPinWhenTargetAclRequiresPin() throws Exception {
+    Assumptions.assumeFalse(
+        Boolean.getBoolean("fips.mode"),
+        "FIPS fixes the 9A contactless mode to VCI and PIN");
     Authority authority = Authority.create(new X500Name("CN=ACL Required,O=Example"));
     setAuthorityOverScp(authority);
     setLocalPinOverScp(LOCAL_PIN);
@@ -380,6 +389,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   @Test
   void attestationHonorsTargetContactlessAccessMode() throws Exception {
+    Assumptions.assumeFalse(
+        Boolean.getBoolean("fips.mode"),
+        "FIPS fixes the 9A contactless mode to VCI and PIN");
     Authority authority = Authority.create(new X500Name("CN=Contactless ACL,O=Example"));
     setAuthorityOverScp(authority);
     createAsymmetricKeyOverScp(
@@ -474,6 +486,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         (byte) 0x87,
         fixed(((ECPrivateKey) replacement.getPrivate()).getS(), 32));
 
+    verifyLocalPin();
     assertSw(
         0x6985,
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0)),
@@ -497,6 +510,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, replacement.subjectDer);
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x93, replacement.validityDer);
 
+    verifyLocalPin();
     assertSw(
         0x6985,
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0)),
@@ -637,8 +651,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     setAuthorityOverScp(authority);
     createAsymmetricKeyOverScp(SLOT_AUTHENTICATION, ALG_ECC_P256);
     generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
-    createAsymmetricKeyOverScp(SLOT_SIGNATURE, ALG_ECC_P384);
-    generateKeyOverScp(SLOT_SIGNATURE, "AC03800114");
+    createAsymmetricKeyOverScp(SLOT_SIGNATURE, signatureAlgorithm());
+    generateKeyOverScp(SLOT_SIGNATURE, signatureGenerateRequest());
 
     // The response buffer is allocated on the first attestation and shared by every subsequent
     // one; alternating targets exercises reuse across keys and repeated certificate builds.
@@ -646,6 +660,22 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertValidAttestation(attest(SLOT_SIGNATURE), authority);
     assertValidAttestation(attest(SLOT_AUTHENTICATION), authority);
     assertValidAttestation(attest(SLOT_SIGNATURE), authority);
+  }
+
+  private static byte signatureAlgorithm() {
+    return isCs7Build() ? ALG_ECC_P384 : ALG_ECC_P256;
+  }
+
+  private static int signatureCoordinateLength() {
+    return isCs7Build() ? 48 : 32;
+  }
+
+  private static String signatureGenerateRequest() {
+    return isCs7Build() ? "AC03800114" : "AC03800111";
+  }
+
+  private static boolean isCs7Build() {
+    return "CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
   }
 
   @Test
@@ -744,6 +774,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(algorithm, slot, (byte) 0x86, publicPoint);
     importKeyElementOverScp(algorithm, slot, (byte) 0x87, privateScalar);
 
+    verifyLocalPin();
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0));
     assertSw(0x6985, response, "Imported ECC target keys must not be attestable");
   }
@@ -761,16 +792,26 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(
         algorithm, slot, (byte) 0x83, fixed(privateKey.getPrivateExponent(), modulusLength));
 
+    verifyLocalPin();
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0));
     assertSw(0x6985, response, "Imported RSA target keys must not be attestable");
   }
 
   private X509Certificate attest(byte slot) throws Exception {
+    verifyLocalPin();
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0));
     byte[] certificate =
         collectResponse(response, "INS F9 should return an attestation certificate");
     CertificateFactory factory = CertificateFactory.getInstance("X.509");
     return (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(certificate));
+  }
+
+  private void verifyLocalPin() {
+    assertSw(0x9000, selectApplet(), "SELECT before attestation PIN authorization");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x20, 0x00, LOCAL_PIN_REFERENCE & 0xFF, LOCAL_PIN),
+        "Verify local PIN before attesting a Table 5 protected key");
   }
 
   private byte[] collectResponse(ResponseAPDU response, String context) {
@@ -940,7 +981,22 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   }
 
   private void createAsymmetricKeyOverScp(final byte slot, final byte algorithm) {
-    createAsymmetricKeyOverScp(slot, algorithm, ACCESS_MODE_ALWAYS, ACCESS_MODE_NEVER);
+    byte modeContact;
+    byte modeContactless;
+    if (slot == SLOT_CARD_AUTHENTICATION) {
+      modeContact = ACCESS_MODE_ALWAYS;
+      modeContactless = ACCESS_MODE_ALWAYS;
+    } else {
+      modeContact = slot == SLOT_SIGNATURE ? ACCESS_MODE_PIN_ALWAYS : ACCESS_MODE_PIN;
+      modeContactless = (byte) (ACCESS_MODE_VCI | modeContact);
+    }
+    createAsymmetricKeyOverScp(slot, algorithm, modeContact, modeContactless);
+    setLocalPinOverScp(LOCAL_PIN);
+    assertSw(0x9000, selectApplet(), "SELECT before target-key PIN authorization");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0x20, 0x00, LOCAL_PIN_REFERENCE & 0xFF, LOCAL_PIN),
+        "Verify local PIN for the target key's SP 800-73-5 Table 5 access mode");
   }
 
   private void createAsymmetricKeyOverScp(
@@ -1027,7 +1083,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                         new byte[] {
                           (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
                           (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
-                          (byte) 0x91, (byte) 0x01, (byte) 0x9B
+                          (byte) 0x91, (byte) 0x01, (byte) 0x9B,
+                          (byte) 0x92, (byte) 0x02, (byte) 0x10, (byte) 0x00
                         }));
             assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, create), "Create data object");
             assertSw(

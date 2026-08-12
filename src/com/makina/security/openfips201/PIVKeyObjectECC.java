@@ -309,7 +309,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
    * @return true if the privateKey exists and is initialized.
    */
   @Override
-  boolean isInitialised() {
+  boolean hasPrivateMaterial() {
 
     switch (getMechanism()) {
       case PIV.ID_ALG_ECC_P256:
@@ -337,6 +337,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     smCvcLength = (short) 0;
     clearOrigin();
     resetImportedParts();
+    resetImportedPairReady();
   }
 
   @Override

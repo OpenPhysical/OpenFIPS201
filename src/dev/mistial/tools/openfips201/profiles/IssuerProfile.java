@@ -39,6 +39,7 @@ public final class IssuerProfile {
     public String issuerSubject = "CN=OpenFIPS201 Cardstock";
     public int issuerValidityDays = 3650;
     public String proofSlot = "9A";
+    public String proofPin = "313233343536FFFF";
     public boolean deleteProofKey = true;
     public String issuerObjectId = "5FFF01";
   }

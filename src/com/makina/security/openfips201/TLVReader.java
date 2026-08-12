@@ -425,6 +425,10 @@ final class TLVReader {
     return context[CONTEXT_POSITION];
   }
 
+  public byte[] getBuffer() {
+    return (byte[]) dataPtr[0];
+  }
+
   /**
    * Sets the current position within the TLV object
    *

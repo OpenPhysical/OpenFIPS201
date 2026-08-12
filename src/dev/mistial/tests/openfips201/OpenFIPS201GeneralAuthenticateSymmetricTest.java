@@ -113,6 +113,23 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
   }
 
   @Test
+  void emptyWitnessTakesPrecedenceWhenChallengeIsAlsoEmpty() {
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x61), (byte) 0x1C);
+    assertSw(0x9000, selectApplet(), "SELECT before mutual-authentication routing test");
+
+    ResponseAPDU response =
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            hex("7C0480008100"));
+
+    assertSw(0x9000, response, "An empty Witness selects SP 800-73-5 Part 2 Case 4");
+    assertEquals((byte) 0x80, response.getData()[2], "Mutual authentication returns a Witness");
+  }
+
+  @Test
   void missingDynamicAuthenticationTemplateReturns6A80() {
     provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x14);
 

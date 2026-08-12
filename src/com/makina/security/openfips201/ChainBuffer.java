@@ -450,9 +450,6 @@ final class ChainBuffer {
       context[CONTEXT_APDU_CLASS] = (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK);
       context[CONTEXT_APDU_P1P2] = Util.getShort(buffer, ISO7816.OFFSET_P1);
       context[CONTEXT_PROTECTION] = (short) protection;
-    } else if (context[CONTEXT_PROTECTION] != (short) protection) {
-      resetAbort();
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // Validate that we are chaining for the correct command
@@ -466,6 +463,14 @@ final class ChainBuffer {
 
       // Ignore this and let the applet handle as a new APDU
       return;
+    }
+
+    // A same-command protection change is a downgrade attempt. Check this only after
+    // distinguishing an unrelated command, which SP 800-73-5 Part 2 AS05.36C requires
+    // to execute after the incomplete chain is discarded.
+    if (!firstFrame && context[CONTEXT_PROTECTION] != (short) protection) {
+      resetAbort();
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // Check if we are chaining or not (we don't use the in-built APDU.isCommandChainingCLA() call

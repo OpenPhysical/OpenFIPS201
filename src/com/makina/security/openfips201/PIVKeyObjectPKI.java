@@ -30,6 +30,7 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
 
   protected static final short CONST_TAG_RESPONSE = (short) 0x7F49;
   private byte importedParts;
+  private byte importedPairReady;
 
   protected PIVKeyObjectPKI(
       byte id,
@@ -108,12 +109,25 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
     importedParts = (byte) 0;
   }
 
+  final void markImportedPairReady() {
+    importedPairReady = (byte) 1;
+  }
+
+  final void resetImportedPairReady() {
+    importedPairReady = (byte) 0;
+  }
+
   abstract byte importPartForElement(byte element);
 
   abstract byte requiredImportParts();
 
-  /** Returns whether this key object currently has usable private key material. */
-  abstract boolean isInitialised();
+  /** Returns whether complete, consistency-tested key material is ready for use. */
+  final boolean isInitialised() {
+    return hasPrivateMaterial()
+        && (isGenerated() || importedPairReady != (byte) 0);
+  }
+
+  abstract boolean hasPrivateMaterial();
 
   /**
    * Writes the public key as an X.509 SubjectPublicKeyInfo structure.

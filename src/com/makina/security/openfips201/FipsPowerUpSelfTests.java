@@ -11,11 +11,17 @@ final class FipsPowerUpSelfTests {
     (byte) 0x88, (byte) 0x4C, (byte) 0xFA, (byte) 0x59,
     (byte) 0xCA, (byte) 0x34, (byte) 0x2B, (byte) 0x2E
   };
-  private static final byte[] AES_DECRYPT_ZERO_CIPHERTEXT = {
-    (byte) 0x66, (byte) 0xE9, (byte) 0x4B, (byte) 0xD4,
-    (byte) 0xEF, (byte) 0x8A, (byte) 0x2C, (byte) 0x3B,
-    (byte) 0x88, (byte) 0x4C, (byte) 0xFA, (byte) 0x59,
-    (byte) 0xCA, (byte) 0x34, (byte) 0x2B, (byte) 0x2E
+  private static final byte[] AES_DECRYPT_CIPHERTEXT = {
+    (byte) 0xC8, (byte) 0xA3, (byte) 0x31, (byte) 0xFF,
+    (byte) 0x8E, (byte) 0xDD, (byte) 0x3D, (byte) 0xB1,
+    (byte) 0x75, (byte) 0xE1, (byte) 0x54, (byte) 0x5D,
+    (byte) 0xBE, (byte) 0xFB, (byte) 0x76, (byte) 0x0B
+  };
+  private static final byte[] AES_DECRYPT_PLAINTEXT = {
+    (byte) 0x00, (byte) 0x11, (byte) 0x22, (byte) 0x33,
+    (byte) 0x44, (byte) 0x55, (byte) 0x66, (byte) 0x77,
+    (byte) 0x88, (byte) 0x99, (byte) 0xAA, (byte) 0xBB,
+    (byte) 0xCC, (byte) 0xDD, (byte) 0xEE, (byte) 0xFF
   };
   private static final byte[] CMAC_EMPTY = {
     (byte) 0x43, (byte) 0x87, (byte) 0xC1, (byte) 0x4B,
@@ -75,14 +81,18 @@ final class FipsPowerUpSelfTests {
             scratch,
             (short) 48,
             PIVCrypto.LENGTH_BLOCK_AES,
-            AES_DECRYPT_ZERO_CIPHERTEXT,
+            AES_DECRYPT_CIPHERTEXT,
             (short) 0,
             PIVCrypto.LENGTH_BLOCK_AES,
             scratch,
             (short) 32);
     if (length != PIVCrypto.LENGTH_BLOCK_AES
         || !PIVSecurityProvider.arrayEqualsConstantTime(
-            scratch, (short) 32, scratch, (short) 0, PIVCrypto.LENGTH_BLOCK_AES)) return false;
+            scratch,
+            (short) 32,
+            AES_DECRYPT_PLAINTEXT,
+            (short) 0,
+            PIVCrypto.LENGTH_BLOCK_AES)) return false;
 
     length = PIVCrypto.doAesCmac(aesKey, scratch, (short) 0, (short) 0, scratch, (short) 16);
     if (length != PIVCrypto.LENGTH_BLOCK_AES

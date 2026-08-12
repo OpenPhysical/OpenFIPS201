@@ -148,12 +148,33 @@ final class PIVAdministrationCommandHandler {
       reader.moveNext();
     }
 
-    if (!FipsPolicy.allowsObjectDefinition(
-        scratch, idOffset, objectIdLength, modeContact, modeContactless)) {
+    short capacity = (short) 0;
+    if (reader.match(CONST_TAG_CAPACITY)) {
+      if (reader.getLength() != (short) 2) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      capacity = reader.toShort();
+      if (capacity <= (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      reader.moveNext();
+    }
+    if (!reader.isEOF()) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    // SP 800-73-5 Part 1 Table 8 defines card object capacities. Allocate that capacity during
+    // CREATE OBJECT so later PUT DATA commands neither allocate persistent memory nor exceed it.
+    if (capacity == (short) 0) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    dataStore.create(scratch, idOffset, objectIdLength, modeContact, modeContactless, adminKey);
+    if (!FipsPolicy.allowsObjectDefinition(
+        reader.getBuffer(), idOffset, objectIdLength, modeContact, modeContactless)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    dataStore.create(
+        reader.getBuffer(),
+        idOffset,
+        objectIdLength,
+        modeContact,
+        modeContactless,
+        adminKey,
+        capacity);
   }
 
   private void processDeleteObjectRequest(TLVReader reader) {
@@ -178,7 +199,7 @@ final class PIVAdministrationCommandHandler {
     short idOffset = reader.getDataOffset();
     reader.moveNext();
 
-    dataStore.delete(scratch, idOffset, objectIdLength);
+    dataStore.delete(reader.getBuffer(), idOffset, objectIdLength);
   }
 
   private void processCreateKeyRequest(TLVReader reader, boolean legacy) {
@@ -586,7 +607,7 @@ final class PIVAdministrationCommandHandler {
     // #if VCI_CS7
     // CS7 SM CVCs may be larger than LENGTH_SCRATCH. Keep the advertised CS7 CVC limit
     // provisionable by reassembling that admin update into the larger OPACITY command buffer.
-    if (id == ID_KEY_SECURE_MESSAGING && mechanism == ID_ALG_ECC_SM) {
+    if (id == ID_KEY_SECURE_MESSAGING) {
       commandBuffer = smCommand;
     }
     // #endif
@@ -692,7 +713,8 @@ final class PIVAdministrationCommandHandler {
 
       // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
       // This allows either SCP or prior successful authentication with the key's admin key.
-      if (!cspPIV.checkAccessModeAdmin(key, owner.isVciSatisfied())) {
+      if (!cspPIV.checkAccessModeAdmin(
+          key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         return; // Keep static analyser happy
       }
@@ -775,6 +797,10 @@ final class PIVAdministrationCommandHandler {
                 key.clear();
                 ISOException.throwIt(ISO7816.SW_FILE_INVALID);
               }
+              if (!importedKey.hasPendingImportedParts()
+                  && importedKey.hasPrivateMaterial()) {
+                importedKey.markImportedPairReady();
+              }
             }
             JCSystem.commitTransaction();
           } finally {
@@ -833,6 +859,9 @@ final class PIVAdministrationCommandHandler {
       // STEP 4 - Clear any prior key-authenticated session after a key value change.
       cspPIV.clearAuthenticatedKey();
     } finally {
+      if (commandBuffer == smCommand) {
+        PIVSecurityProvider.zeroise(smCommand, ZERO, (short) smCommand.length);
+      }
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
     }
   }
@@ -880,10 +909,14 @@ final class PIVAdministrationCommandHandler {
     writer.write(CONST_TAG_APPLET_STATE, GPSystem.getCardContentState());
 
     // PIN Verified
-    writer.write(CONST_TAG_PIN_VERIFIED, cspPIV.getIsPINVerified() ? (byte) 1 : (byte) 0);
+    writer.write(
+        CONST_TAG_PIN_VERIFIED,
+        cspPIV.getIsPINVerified(owner.isGlobalPinAdvertised()) ? (byte) 1 : (byte) 0);
 
     // PIN Always
-    writer.write(CONST_TAG_PIN_ALWAYS, cspPIV.getIsPINAlways() ? (byte) 1 : (byte) 0);
+    writer.write(
+        CONST_TAG_PIN_ALWAYS,
+        cspPIV.getIsPINAlways(owner.isGlobalPinAdvertised()) ? (byte) 1 : (byte) 0);
 
     // SM State
     writer.write(CONST_TAG_SM_STATE, secureMessaging.isEstablished() ? (byte) 1 : (byte) 0);

@@ -18,12 +18,6 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
 
-  /** Exercises the random boot PIN/PUK state directly, so the standard test card is not applied. */
-  @Override
-  protected boolean provisionsStandardCard() {
-    return false;
-  }
-
   private static final int INS_VERIFY = 0x20;
   private static final int INS_CHANGE_REFERENCE_DATA = 0x24;
   private static final int INS_RESET_RETRY_COUNTER = 0x2C;
@@ -32,7 +26,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
   private static final int PUK_REFERENCE = 0x81;
 
   // Validly formatted PIN value (numeric + optional 0xFF padding), but intentionally wrong.
-  private static final byte[] WRONG_PIN_FORMAT_VALID = hex("313233343536FFFF");
+  private static final byte[] WRONG_PIN_FORMAT_VALID = hex("363534333231FFFF");
 
   // Invalid format for local/global PIN: includes a non-numeric byte before padding.
   private static final byte[] WRONG_PIN_FORMAT_INVALID = hex("31323334353647FF");
@@ -151,7 +145,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
   @Test
   void changeReferenceDataRejectsWrongP1ForStandardPinReference() {
     assertSw(0x9000, selectApplet(), "SELECT before CHANGE REFERENCE DATA checks");
-    byte[] payload = hex("313233343536FFFF393837363534FFFF");
+    byte[] payload = concat(WRONG_PIN_FORMAT_VALID, NEW_PIN_VALID);
     ResponseAPDU response =
         transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0x01, LOCAL_PIN_REFERENCE, payload);
     assertSw(0x6A86, response, "CHANGE REFERENCE DATA for standard PIN must require P1=0x00");
@@ -171,7 +165,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
     assertSw(0x9000, selectApplet(), "SELECT before CHANGE REFERENCE DATA checks");
 
     // Old value is wrong (but properly formatted), new value is properly formatted.
-    byte[] payload = hex("313233343536FFFF393837363534FFFF");
+    byte[] payload = concat(WRONG_PIN_FORMAT_VALID, NEW_PIN_VALID);
     ResponseAPDU response =
         transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0x00, LOCAL_PIN_REFERENCE, payload);
     int retries = assert63cxAndGetRetries(response, "CHANGE REFERENCE DATA wrong old PIN");
@@ -219,7 +213,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
   void resetRetryCounterWrongPukReturns63Cx() {
     assertSw(0x9000, selectApplet(), "SELECT before RESET RETRY COUNTER checks");
 
-    // PUK is random in default state, so this should reliably fail with 63Cx.
+    // The fixture provisions PUK 12345678; this distinct valid value must fail deterministically.
     byte[] payload = concat(WRONG_PUK, NEW_PIN_VALID);
     ResponseAPDU response =
         transmit(0x00, INS_RESET_RETRY_COUNTER, 0x00, LOCAL_PIN_REFERENCE, payload);
@@ -254,6 +248,33 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
         0x9000,
         transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE, newPin),
         "The replacement PIN should verify using the fixed-width encoding");
+  }
+
+  @Test
+  void successfulResetRetryCounterPreservesValidatedPinStatus() {
+    byte[] currentPin = hex("313233343536FFFF");
+    byte[] puk = hex("3132333435363738");
+    setLocalPinOverScp(currentPin);
+    setPukOverScp(puk);
+
+    assertSw(0x9000, selectApplet(), "SELECT before RESET RETRY COUNTER status test");
+    assertSw(
+        0x9000,
+        transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE, currentPin),
+        "Establish PIN security status");
+    assertSw(
+        0x9000,
+        transmit(
+            0x00,
+            INS_RESET_RETRY_COUNTER,
+            0x00,
+            LOCAL_PIN_REFERENCE,
+            concat(puk, NEW_PIN_VALID)),
+        "RESET RETRY COUNTER should succeed");
+    assertSw(
+        0x9000,
+        transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE),
+        "SP 800-73-5 Part 2 Section 3.2.3 preserves PIN security status");
   }
 
   @Test

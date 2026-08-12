@@ -89,9 +89,9 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   @Test
-  void proofKeyDefinitionAllowsProofAttestationOnContactAndContactlessReaders() {
+  void proofKeyDefinitionUsesPivAuthenticationAccessModes() {
     assertArrayEquals(
-        hex("66128B019A8C017F8D017F8E01118F0104900100"),
+        hex("66128B019A8C01018D01098E01118F0104900100"),
         AttestationProofService.proofKeyDefinition(AttestationProofService.DEFAULT_PROOF_SLOT));
   }
 
@@ -103,7 +103,7 @@ class OpenFIPS201HostAttestationToolTest {
         hex("5C035FFF01530A7003010203710100FE00"),
         AttestationSupport.putDataPayload(objectId, AttestationSupport.certificateObject(cert)));
     assertArrayEquals(
-        hex("640E8B035FFF018C017F8D017F91019B"),
+        hex("64128B035FFF018C017F8D017F91019B92021000"),
         AttestationSupport.createDataObjectDefinition(objectId));
   }
 

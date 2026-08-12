@@ -2,13 +2,94 @@ package com.makina.security.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import javacard.framework.ISOException;
 import org.junit.jupiter.api.Test;
 
 class PIVDiscoveryPolicyTest {
+
+  @Test
+  void dataObjectAllocationInitializesAndClearsReusableStorage() {
+    PIVDataObject object =
+        new PIVDataObject(
+            (byte) 0x01,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            (byte) 0x9B);
+
+    object.allocate((short) 8);
+    object.content[0] = (byte) 0x7F;
+    object.allocate((short) 4);
+
+    assertTrue(object.isInitialised());
+    assertEquals(4, object.getLength());
+    assertEquals(0, object.content[0]);
+
+  }
+
+  @Test
+  void dataObjectAllocationRejectsNonPositiveLengths() {
+    PIVDataObject object =
+        new PIVDataObject(
+            (byte) 0x01,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            (byte) 0x9B);
+
+    assertThrows(ISOException.class, () -> object.allocate((short) 0));
+    assertThrows(ISOException.class, () -> object.allocate((short) -1));
+    assertThrows(ISOException.class, () -> object.beginUpdate((short) 0));
+  }
+
+  @Test
+  void multiByteDataObjectUsesDefaultAdministrativeKey() {
+    PIVDataObject object =
+        new PIVDataObject(
+            new byte[] {(byte) 0x5F, (byte) 0xC1, (byte) 0x07},
+            (short) 0,
+            (short) 3,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            (byte) 0);
+
+    assertEquals(PIVObject.DEFAULT_ADMIN_KEY, object.getAdminKey());
+  }
+
+  @Test
+  void personalizationRequiresPart1ContainerStructure() {
+    // SP 800-73-5 Part 1 Sections 3 and 4 define complete BER-TLV containers for the mandatory
+    // objects; populated storage alone is not sufficient for the irreversible transition.
+    assertFalse(PIVDataCommandHandler.isStructurallyValidMandatoryObject(null, (byte) 0x07));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("F00100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("01810100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("0182000100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("5F2F0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("1F80")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("1F8000")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("0180")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("018201")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("018300000100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("010200")));
+
+    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("700100710100FE00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("70010071810100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("700100710100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("710100700100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("70010071020000FE00")));
+
+    assertTrue(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA00BB0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA020101BB0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BC0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0200")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB010000")));
+  }
 
   @Test
   void globalPinRequiresInitialisedDiscoveryPolicyBit() {
@@ -69,11 +150,35 @@ class PIVDiscoveryPolicyTest {
     assertEquals(-1, handler.getDiscoveryPolicy(), "The mandatory local-PIN policy bit must be set");
   }
 
+  @Test
+  void pairingReferenceRequiresStoredVciPairingPolicy() {
+    assertFalse(
+        PIV.isPairingCodeReferenceEnabled(Config.VCI_MODE_PAIRING_CODE, (short) -1),
+        "Missing Discovery must disable pairing reference 98");
+    assertFalse(
+        PIV.isPairingCodeReferenceEnabled(Config.VCI_MODE_PAIRING_CODE, (short) 0x4000),
+        "Discovery without VCI must disable pairing reference 98");
+    assertFalse(
+        PIV.isPairingCodeReferenceEnabled(Config.VCI_MODE_PAIRING_CODE, (short) 0x4C00),
+        "No-pairing Discovery policy must disable pairing reference 98");
+    assertTrue(
+        PIV.isPairingCodeReferenceEnabled(Config.VCI_MODE_PAIRING_CODE, (short) 0x4800),
+        "VCI pairing-required Discovery policy enables reference 98");
+  }
+
   private static byte[] hex(String value) {
     byte[] result = new byte[value.length() / 2];
     for (int i = 0; i < value.length(); i += 2) {
       result[i / 2] = (byte) Integer.parseInt(value.substring(i, i + 2), 16);
     }
     return result;
+  }
+
+  private static boolean mandatoryObjectIsValid(byte suffix, byte[] content) {
+    PIVDataObject object = mock(PIVDataObject.class);
+    object.content = content;
+    when(object.isInitialised()).thenReturn(true);
+    when(object.getLength()).thenReturn((short) content.length);
+    return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
   }
 }

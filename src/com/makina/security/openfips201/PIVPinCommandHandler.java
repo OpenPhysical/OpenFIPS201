@@ -54,6 +54,7 @@ final class PIVPinCommandHandler {
     //
 
     if (id == ID_CVM_PAIRING_CODE) {
+      requirePairingCodeReference();
       verifyPairingCode(buffer, offset, length);
       return;
     }
@@ -94,14 +95,10 @@ final class PIVPinCommandHandler {
     // comparison shall not be made, and the security status and the retry counter of the key
     // reference shall remain unchanged.
     byte intermediateRetries = config.getIntermediatePINRetries();
-
-    if (cspPIV.getIsContactless()) {
-      if (pin.getTriesRemaining() <= intermediateRetries)
-        ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
-    } else {
-      if (pin.getTriesRemaining() == (byte) 0)
-        ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
-    }
+    short usableRetries =
+        usableRetries(
+            pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
+    if (usableRetries <= (short) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
 
     //
     // EXECUTION STEPS
@@ -109,12 +106,9 @@ final class PIVPinCommandHandler {
 
     // Verify the PIN
     if (!pin.check(buffer, offset, (byte) length)) {
-      short remaining = pin.getTriesRemaining();
-
-      // For contactless, we reduce the retries by the difference between contact and contactless
-      if (cspPIV.getIsContactless()) {
-        remaining -= intermediateRetries;
-      }
+      short remaining =
+          usableRetries(
+              pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
 
       // Return the number of retries remaining
       ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
@@ -136,9 +130,8 @@ final class PIVPinCommandHandler {
     //
 
     if (id == ID_CVM_PAIRING_CODE) {
-      if (!owner.isVciSatisfied()) {
-        // SP 800-85A-4 AS05.16A-R4 maps an incorrect pairing-code VERIFY to 63 00.
-        // A status check before pairing is satisfied is instead the normal security-status failure.
+      requirePairingCodeReference();
+      if (!owner.isPairingCodeVerified()) {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       }
       return;
@@ -158,16 +151,27 @@ final class PIVPinCommandHandler {
     // the number of further retries allowed ('63 CX'), or to check whether verification is not
     // needed ('90 00').
 
-    // Check for a blocked PIN
-    if (pin.getTriesRemaining() == (byte) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
+    // SP 800-73-5 Part 2 Section 3.2.1 applies the contactless intermediate retry
+    // limit to every VERIFY form, including an empty status request.
+    short remaining =
+        usableRetries(
+            pin.getTriesRemaining(),
+            config.getIntermediatePINRetries(),
+            cspPIV.getIsContactless());
+    if (remaining <= (short) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
 
     // If we are not validated
     if (!pin.isValidated()) {
       // Return the number of retries remaining
-      ISOException.throwIt((short) (SW_RETRIES_REMAINING | (short) pin.getTriesRemaining()));
+      ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
     }
 
     // If we got this far we are authenticated, so just return (9000)
+  }
+
+  static short usableRetries(byte triesRemaining, byte intermediateRetries, boolean contactless) {
+    short remaining = (short) (triesRemaining & 0xFF);
+    return contactless ? (short) (remaining - (short) (intermediateRetries & 0xFF)) : remaining;
   }
 
   /**
@@ -182,6 +186,7 @@ final class PIVPinCommandHandler {
     // the retry counter associated with the key reference shall remain unchanged.
 
     if (id == ID_CVM_PAIRING_CODE) {
+      requirePairingCodeReference();
       // VERIFY reset for key reference 0x98 resets pairing security status only. Keep the
       // established SM session so the application status can still be returned under SM.
       secureMessaging.resetPairingVerified();
@@ -241,14 +246,6 @@ final class PIVPinCommandHandler {
    * command using Key Reference 0x98 for the pairing code).
    */
   private void verifyPairingCode(byte[] buffer, short offset, short length) {
-    if (config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_PAIRING_CODE) {
-      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-    }
-    // SP 800-73-5 Part 2 Section 4.2: Pairing code verification must be submitted over secure
-    // messaging.
-    if (!owner.isSecureMessagingCommand()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
     if (length != (short) 8) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     for (short i = ZERO; i < (short) 8; i++) {
       byte value = buffer[(short) (offset + i)];
@@ -287,6 +284,18 @@ final class PIVPinCommandHandler {
     }
 
     secureMessaging.markPairingVerified();
+  }
+
+  private void requirePairingCodeReference() {
+    // SP 800-73-5 Part 1 Section 3.3.2 exposes key reference 98 only when the
+    // stored Discovery Object advertises VCI with pairing required.
+    if (!owner.isPairingCodeReferenceEnabled()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+
+    // SP 800-73-5 Part 2 Table 2 permits pairing-code VERIFY as Always on contact;
+    // contactless use requires a protected secure-messaging command.
+    if (cspPIV.getIsContactless() && !owner.isSecureMessagingCommand()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
   }
 
   /**
@@ -658,8 +667,16 @@ final class PIVPinCommandHandler {
     // NOTE: Since the PUK was verified, the OwnerPIN object automatically resets the PUK counter,
     // which governs the above behaviour
 
-    // Update, reset and unblock the PIN
+    boolean wasValidated = pin.isValidated();
+
+    // Update, reset and unblock the PIN.
     cspPIV.updatePIN(id, buffer, offset, pinLength, config.readValue(Config.CONFIG_PIN_HISTORY));
+
+    // SP 800-73-5 Part 2 Section 3.2.3 requires successful RESET RETRY COUNTER to
+    // leave the PIN security status unchanged. OwnerPIN.update clears validation.
+    if (wasValidated && !pin.check(buffer, offset, pinLength)) {
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
+    }
   }
 
   /**

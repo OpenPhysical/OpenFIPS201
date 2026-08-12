@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 class FipsPolicyTest {
   @Test
-  void strictProfileLimitsObjectsToPart1Table3Namespace() {
+  void strictProfileProtectsPart1Namespace() {
     byte always = PIVObject.ACCESS_MODE_ALWAYS;
     assertEquals(
         !FipsPolicy.ENABLED,
@@ -19,15 +19,14 @@ class FipsPolicyTest {
             always,
             always),
         "5FC104 is reserved by SP 800-73-5 Part 1 Table 3");
-    assertEquals(
-        !FipsPolicy.ENABLED,
+    assertTrue(
         FipsPolicy.allowsObjectDefinition(
             new byte[] {(byte) 0xDF, (byte) 0x01},
             (short) 0,
             (short) 2,
             always,
             always),
-        "proprietary tags remain a compatibility-profile feature");
+        "Table 3 validation is scoped to the interoperable PIV namespace");
     assertTrue(
         FipsPolicy.allowsObjectDefinition(
             new byte[] {(byte) 0x5F, (byte) 0xC1, (byte) 0x07},
@@ -107,7 +106,7 @@ class FipsPolicyTest {
     boolean cs7 = "CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
 
     assertEquals(
-        cs7,
+        !FipsPolicy.ENABLED || cs7,
         FipsPolicy.allowsKeyDefinition(
             (byte) 0x9C,
             PIVObject.ACCESS_MODE_PIN_ALWAYS,
@@ -116,7 +115,7 @@ class FipsPolicyTest {
             PIVKeyObject.ROLE_SIGN,
             PIVKeyObject.ATTR_IMPORTABLE));
     assertEquals(
-        cs7,
+        !FipsPolicy.ENABLED || cs7,
         FipsPolicy.allowsKeyDefinition(
             (byte) 0x9D,
             PIVObject.ACCESS_MODE_PIN,
@@ -125,13 +124,26 @@ class FipsPolicyTest {
             PIVKeyObject.ROLE_KEY_ESTABLISH,
             PIVKeyObject.ATTR_IMPORTABLE));
     assertEquals(
-        cs7,
+        !FipsPolicy.ENABLED || cs7,
         FipsPolicy.allowsKeyDefinition(
             (byte) 0x82,
             PIVObject.ACCESS_MODE_PIN,
             (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN),
             PIV.ID_ALG_ECC_P384,
             PIVKeyObject.ROLE_KEY_ESTABLISH,
+            PIVKeyObject.ATTR_IMPORTABLE));
+  }
+
+  @Test
+  void customKeyReferencesAreCompatibilityOnly() {
+    assertEquals(
+        !FipsPolicy.ENABLED,
+        FipsPolicy.allowsKeyDefinition(
+            (byte) 0xA0,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_NEVER,
+            PIV.ID_ALG_ECC_P256,
+            PIVKeyObject.ROLE_SIGN,
             PIVKeyObject.ATTR_IMPORTABLE));
   }
 
@@ -171,5 +183,24 @@ class FipsPolicyTest {
             PIV.ID_ALG_ECC_SM,
             PIVKeyObject.ROLE_KEY_ESTABLISH,
             PIVKeyObject.ATTR_NONE));
+  }
+
+  @Test
+  void objectPolicyDoesNotOpenReservedPivTags() {
+    assertTrue(
+        FipsPolicy.allowsObjectDefinition(
+            new byte[] {(byte) 0x5F, (byte) 0xFF, (byte) 0x01},
+            (short) 0,
+            (short) 3,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_NEVER));
+    assertEquals(
+        !FipsPolicy.ENABLED,
+        FipsPolicy.allowsObjectDefinition(
+            new byte[] {(byte) 0x5F, (byte) 0xC1, (byte) 0x5A},
+            (short) 0,
+            (short) 3,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_NEVER));
   }
 }

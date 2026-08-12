@@ -42,4 +42,18 @@ class PIVCVMPINTest {
       Mockito.verify(cvm).update(value, (short) 0, (byte) value.length, CVM.FORMAT_HEX);
     }
   }
+
+  @Test
+  void globalPinStatusRequiresDiscoveryAuthorization() {
+    // SP 800-73-5 Part 1 Section 3.3.2 binds Global PIN use to the stored Discovery policy.
+    PIVPIN applicationPin = Mockito.mock(PIVPIN.class);
+    PIVPIN globalPin = Mockito.mock(PIVPIN.class);
+    Mockito.when(globalPin.isValidated()).thenReturn(true);
+
+    assertFalse(PIVSecurityProvider.pinIsValidated(applicationPin, globalPin, false));
+    assertTrue(PIVSecurityProvider.pinIsValidated(applicationPin, globalPin, true));
+
+    Mockito.when(applicationPin.isValidated()).thenReturn(true);
+    assertTrue(PIVSecurityProvider.pinIsValidated(applicationPin, globalPin, false));
+  }
 }

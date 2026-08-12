@@ -41,6 +41,8 @@ import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.RSAPrivateCrtKey;
 import java.security.interfaces.RSAPrivateKey;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
@@ -261,7 +263,7 @@ public final class IcamCardFolder {
     }
 
     String credentialId = root.getFileName().toString();
-    return new ConformancePackage(
+    ConformancePackage result = new ConformancePackage(
         credentialId,
         root,
         StandardCardProfile.PIN,
@@ -270,6 +272,22 @@ public final class IcamCardFolder {
         StandardCardProfile.ADMIN_KEY,
         objects,
         keys);
+
+    // The Security Object signs hashes of the exact container bytes written to the card.
+    // Reject any reconstruction mismatch before provisioning mutates a card.
+    java.util.Map<String, ConformancePackage.DataObject> byId =
+        new java.util.HashMap<String, ConformancePackage.DataObject>();
+    for (ConformancePackage.DataObject object : objects) {
+      byId.put(toHex(object.id), object);
+    }
+    CertificationProfileValidator.validateSecurityObject(byId);
+    return result;
+  }
+
+  private static String toHex(byte[] value) {
+    StringBuilder result = new StringBuilder(value.length * 2);
+    for (byte element : value) result.append(String.format("%02X", element & 0xFF));
+    return result.toString();
   }
 
   private static void addRawObject(
@@ -286,11 +304,11 @@ public final class IcamCardFolder {
       throws IOException {
     Path file = findFile(root, filePrefix, preferredTokens, extensionFilter);
     if (file == null) {
-      return;
+      throw new IllegalArgumentException("Missing required ICAM object: " + filePrefix);
     }
     byte[] payload = Files.readAllBytes(file);
     if (payload.length == 0) {
-      return;
+      throw new IllegalArgumentException("Empty required ICAM object: " + file);
     }
     objects.add(new ConformancePackage.DataObject(id, label, modeContact, modeContactless, putForm, payload));
   }
@@ -315,6 +333,10 @@ public final class IcamCardFolder {
     Path crt = findFile(root, filePrefix, preferred, ".crt");
     if (p12 == null && crt == null) {
       return;
+    }
+    if (p12 == null) {
+      throw new IllegalArgumentException(
+          "Certificate exists without importable key material for " + keyLabel);
     }
 
     PrivateKey privateKey = null;
@@ -416,6 +438,14 @@ public final class IcamCardFolder {
     if (matches.isEmpty()) {
       return null;
     }
+    Collections.sort(
+        matches,
+        new Comparator<Path>() {
+          @Override
+          public int compare(Path left, Path right) {
+            return left.getFileName().toString().compareToIgnoreCase(right.getFileName().toString());
+          }
+        });
     if (preferredTokens != null) {
       for (String token : preferredTokens) {
         for (Path candidate : matches) {

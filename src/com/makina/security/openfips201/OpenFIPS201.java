@@ -273,7 +273,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
     } else if (piv.isSecureMessagingEstablished()
         && !gpSecureMessagingCla
-        && !isPlaintextOpacityEstablishment(buffer)) {
+        && !isPlaintextOpacityEstablishment(buffer, offset, length)) {
       // OpenFIPS201 keeps a fail-closed policy for plaintext PIV APDUs while PIV secure
       // messaging is live. The exception is the SP 800-73-5 Part 2 Section 4.1.8 OPACITY
       // re-establishment command, which is sent as plaintext GENERAL AUTHENTICATE.
@@ -477,10 +477,32 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     return (byte) (cla & (byte) 0xEF) == (byte) 0x80;
   }
 
-  private boolean isPlaintextOpacityEstablishment(byte[] buffer) {
-    return buffer[ISO7816.OFFSET_INS] == INS_PIV_GENERAL_AUTHENTICATE
-        && buffer[ISO7816.OFFSET_P1] == PIV.ID_ALG_ECC_SM
-        && buffer[ISO7816.OFFSET_P2] == PIV.ID_KEY_SECURE_MESSAGING;
+  private boolean isPlaintextOpacityEstablishment(byte[] buffer, short offset, short length) {
+    if (buffer[ISO7816.OFFSET_INS] != INS_PIV_GENERAL_AUTHENTICATE
+        || buffer[ISO7816.OFFSET_P1] != PIV.ID_ALG_ECC_SM
+        || buffer[ISO7816.OFFSET_P2] != PIV.ID_KEY_SECURE_MESSAGING) {
+      return false;
+    }
+
+    // SP 800-73-5 Part 2 Section 4.1 reserves key 04 for OPACITY. Only its Case 1A
+    // request may bypass an existing PIV secure-messaging session.
+    try {
+      return hasOpacityCase1aTemplate(buffer, offset, length);
+    } catch (ISOException malformedTemplate) {
+      return false;
+    }
+  }
+
+  private boolean hasOpacityCase1aTemplate(byte[] buffer, short offset, short length) {
+    TLVReader reader = TLVReader.getInstance();
+    reader.init(buffer, offset, length);
+    if (!reader.match(PIV.CONST_TAG_AUTH_TEMPLATE) || !reader.moveInto()) return false;
+    if (!reader.match(PIV.CONST_TAG_AUTH_CHALLENGE) || reader.isNull() || !reader.moveNext()) {
+      return false;
+    }
+    return reader.match(PIV.CONST_TAG_AUTH_CHALLENGE_RESPONSE)
+        && reader.isNull()
+        && !reader.moveNext();
   }
 
   /**
@@ -832,6 +854,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
   private void processADMIN_UPDATE_KEY(APDU apdu, short length) {
     byte[] buffer = apdu.getBuffer();
+    if (!piv.isInterfacePermittedForAdmin()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
     if (buffer[ISO7816.OFFSET_P1] != (byte) 0x01) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }

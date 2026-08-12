@@ -3,6 +3,8 @@ package com.makina.security.openfips201;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -46,6 +48,20 @@ class PIVKeyObjectECCTest {
                       (short) 3));
       assertEquals(ISO7816.SW_WRONG_DATA, thrown.getReason());
       assertNull(field(key, "smCvc").get(key));
+    }
+  }
+
+  @Test
+  void importedPrivateScalarIsNotOperationalWithoutValidatedPublicPoint() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      PIVKeyObjectECC key = createEcc((byte) 0x9D, PIV.ID_ALG_ECC_P256);
+      byte[] scalar = new byte[32];
+      scalar[31] = 1;
+      key.updateElement((byte) 0x87, scalar, (short) 0, (short) 32);
+      key.completesImportedKeyPair((byte) 0x87);
+
+      assertTrue(key.hasPrivateMaterial());
+      assertFalse(key.isInitialised(), "An incomplete import must not be operational");
     }
   }
 

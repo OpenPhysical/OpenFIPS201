@@ -54,7 +54,8 @@ final class FipsPolicy {
     // SP 800-78-5 Section 3.1: a VCI-capable card with a P-384 digital-signature,
     // key-management, or retired key-management key must use the P-384 secure-messaging suite.
     // #if VCI_CS2
-    if (mechanism == PIV.ID_ALG_ECC_P384
+    if (ENABLED
+        && mechanism == PIV.ID_ALG_ECC_P384
         && (id == (byte) 0x9C || id == (byte) 0x9D || isRetiredKeyManagement(id))) {
       return false;
     }
@@ -94,7 +95,9 @@ final class FipsPolicy {
       return isCardholderAsymmetric(mechanism) && role == PIVKeyObject.ROLE_SIGN;
     }
 
-    return false;
+    // SP 800-73-5 Part 1 Table 5 and SP 800-78-5 Table 10 reserve all other PIV key references.
+    // Compatibility builds retain the dynamically-defined keystore extension.
+    return !ENABLED;
   }
 
   private static boolean allowsKeyAccessModes(byte id, byte contact, byte contactless) {
@@ -124,7 +127,7 @@ final class FipsPolicy {
           PIVObject.ACCESS_MODE_PIN,
           (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN));
     }
-    return false;
+    return !ENABLED;
   }
 
   static boolean allowsObjectDefinition(
@@ -144,9 +147,9 @@ final class FipsPolicy {
     if (length != (short) 3
         || id[offset] != (byte) 0x5F
         || id[(short) (offset + 1)] != (byte) 0xC1) {
-      // SP 800-73-5 Part 1, Section 4.2 and Table 3 reserve every other PIV
-      // interoperable data-object tag. Compatibility builds retain issuer extensions.
-      return false;
+      // Apply SP 800-73-5 Part 1 Section 4.2 Table 3 only within the
+      // interoperable PIV namespace.
+      return true;
     }
 
     byte suffix = id[(short) (offset + 2)];

@@ -65,6 +65,15 @@ public final class AttestationProofService {
     }
   }
 
+  public void setProofPin(CardSession session, byte[] pin) {
+    if (pin == null || pin.length != 8) {
+      throw new IllegalArgumentException("proof PIN must use the eight-byte PIV wire format");
+    }
+    expect(
+        session.transmit(new CommandAPDU(0x84, 0x24, 0x01, 0x80, pin)),
+        "set proof PIN");
+  }
+
   public Result collectAndDelete(
       CardTarget target,
       byte[] appletAid,
@@ -98,6 +107,13 @@ public final class AttestationProofService {
     return certificate;
   }
 
+  public byte[] collectPlainProof(
+      CardTransport transport, byte[] appletAid, byte slot, byte[] pin) throws Exception {
+    byte[] certificate = collectPlain(transport, appletAid, slot, pin);
+    parseCertificate(certificate);
+    return certificate;
+  }
+
   public static final class Result {
     public final byte[] certificate;
     public final boolean proofKeyDeleted;
@@ -114,12 +130,19 @@ public final class AttestationProofService {
   }
 
   static byte[] proofKeyDefinition(byte slot) {
+    byte contact = AttestationSupport.ACCESS_ALWAYS;
+    byte contactless = AttestationSupport.ACCESS_ALWAYS;
+    if (slot == (byte) 0x9A) {
+      // SP 800-73-5 Part 1 Table 5 fixes the PIV Authentication slot access modes.
+      contact = (byte) 0x01;
+      contactless = (byte) 0x09;
+    }
     return AttestationSupport.tlv(
         0x66,
         AttestationSupport.concat(
             AttestationSupport.tlv(0x8B, new byte[] {slot}),
-            AttestationSupport.tlv(0x8C, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
-            AttestationSupport.tlv(0x8D, new byte[] {AttestationSupport.ACCESS_ALWAYS}),
+            AttestationSupport.tlv(0x8C, new byte[] {contact}),
+            AttestationSupport.tlv(0x8D, new byte[] {contactless}),
             AttestationSupport.tlv(0x8E, new byte[] {AttestationSupport.ALG_ECC_P256}),
             AttestationSupport.tlv(0x8F, new byte[] {AttestationSupport.ROLE_SIGN}),
             AttestationSupport.tlv(0x90, new byte[] {0x00})));
@@ -163,6 +186,25 @@ public final class AttestationProofService {
     if (select.getSW() != 0x9000) {
       throw new IllegalStateException(
           "SELECT PIV failed SW=" + String.format("0x%04X", select.getSW()));
+    }
+    return collect(
+        command -> bibo.transmit(command),
+        bibo.transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0)),
+        0x00);
+  }
+
+  private static byte[] collectPlain(
+      CardTransport transport, byte[] appletAid, byte slot, byte[] pin) {
+    apdu4j.core.BIBO bibo = transport.bibo();
+    ResponseAPDU select = bibo.transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, appletAid, 256));
+    if (select.getSW() != 0x9000) {
+      throw new IllegalStateException(
+          "SELECT PIV failed SW=" + String.format("0x%04X", select.getSW()));
+    }
+    ResponseAPDU verified = bibo.transmit(new CommandAPDU(0x00, 0x20, 0x00, 0x80, pin));
+    if (verified.getSW() != 0x9000) {
+      throw new IllegalStateException(
+          "VERIFY proof PIN failed SW=" + String.format("0x%04X", verified.getSW()));
     }
     return collect(
         command -> bibo.transmit(command),

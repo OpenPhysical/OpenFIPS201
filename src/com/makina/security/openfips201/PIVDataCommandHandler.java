@@ -62,7 +62,7 @@ final class PIVDataCommandHandler {
       ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       return ZERO;
     }
-    if (!security.checkAccessModeObject(object, vciSatisfied)) {
+    if (!security.checkAccessModeObject(object, vciSatisfied, isGlobalPinAdvertised())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -158,6 +158,10 @@ final class PIVDataCommandHandler {
       boolean vciSatisfied,
       byte protection) {
     final short initialOffset = offset;
+    final short end = (short) (offset + length);
+    if (length <= ZERO || end < offset || end > (short) buffer.length) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
     short idOffset = offset;
     short idLength;
 
@@ -166,12 +170,14 @@ final class PIVDataCommandHandler {
         idLength = (short) 1;
         break;
       case (byte) 0x7F:
+        if ((short) (offset + 1) >= end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         if (buffer[(short) (offset + 1)] != (byte) 0x61) {
           ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
         }
         idLength = (short) 2;
         break;
       case (byte) 0x5C:
+        if ((short) (offset + 1) >= end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         offset++;
         idLength = (short) (buffer[offset] & 0xFF);
         if (idLength < (short) 1 || idLength > (short) 3) {
@@ -179,6 +185,9 @@ final class PIVDataCommandHandler {
         }
         offset++;
         idOffset = offset;
+        if ((short) (offset + idLength) < offset || (short) (offset + idLength) >= end) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        }
         offset += idLength;
         if ((short) (offset - initialOffset) >= length) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -198,10 +207,11 @@ final class PIVDataCommandHandler {
       ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       return;
     }
-    if (!security.checkAccessModeAdmin(object, vciSatisfied)) {
+    if (!security.checkAccessModeAdmin(object, vciSatisfied, isGlobalPinAdvertised())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
+    requireCompleteLengthHeader(buffer, offset, end);
     short objectLength = TLVReader.getLength(buffer, offset);
     if (objectLength == 0) {
       object.clear();
@@ -212,6 +222,26 @@ final class PIVDataCommandHandler {
     length -= (short) (offset - initialOffset);
     chainBuffer.setIncomingObject(object, objectLength);
     chainBuffer.processIncomingObject(buffer, offset, length, protection);
+  }
+
+  /** Bounds the BER length header before TLVReader examines the APDU backing array. */
+  private static void requireCompleteLengthHeader(byte[] buffer, short offset, short end) {
+    if ((short) (offset + 1) >= end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    short first = (short) (buffer[(short) (offset + 1)] & 0xFF);
+    short lengthBytes;
+    if (first < (short) 0x80) {
+      lengthBytes = (short) 0;
+    } else if (first == (short) 0x81) {
+      lengthBytes = (short) 1;
+    } else if (first == (short) 0x82) {
+      lengthBytes = (short) 2;
+    } else {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return;
+    }
+    if ((short) (offset + (short) 1 + lengthBytes) >= end) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
   }
 
   private short buildDiscoveryObject(byte[] buffer, short offset, boolean vciAdvertised) {
@@ -240,5 +270,91 @@ final class PIVDataCommandHandler {
       if (idBuffer[(short) (idOffset + index)] != (byte) 0) return false;
     }
     return idBuffer[(short) (idOffset + leading)] == PIV.ID_DATA_DISCOVERY;
+  }
+
+  static boolean isStructurallyValidMandatoryObject(PIVDataObject object, byte suffix) {
+    if (object == null || !object.isInitialised() || object.getLength() < (short) 2) return false;
+
+    // SP 800-73-5 Part 1 Sections 3 and 4 require complete BER-TLV containers before the
+    // irreversible personalization transition.
+    byte[] content = object.content;
+    short limit = object.getLength();
+    short offset = (short) 0;
+    if (suffix == (byte) 0x05 || suffix == (byte) 0x01) {
+      if (content[offset] != (byte) 0x70) return false;
+      offset = tlvEnd(content, offset, limit);
+      if (offset < (short) 0 || offset >= limit || content[offset] != (byte) 0x71) return false;
+      if (tlvValueLength(content, offset, limit) != (short) 1) return false;
+      offset = tlvEnd(content, offset, limit);
+      if (offset < (short) 0 || offset >= limit || content[offset] != (byte) 0xFE) return false;
+      return tlvValueLength(content, offset, limit) == (short) 0
+          && tlvEnd(content, offset, limit) == limit;
+    }
+    if (suffix == (byte) 0x06) {
+      if (content[offset] != (byte) 0xBA) return false;
+      short mappingLength = tlvValueLength(content, offset, limit);
+      if (mappingLength <= (short) 0 || (short) (mappingLength % (short) 3) != (short) 0) {
+        return false;
+      }
+      offset = tlvEnd(content, offset, limit);
+      if (offset < (short) 0
+          || offset >= limit
+          || content[offset] != (byte) 0xBB
+          || tlvValueLength(content, offset, limit) <= (short) 0) return false;
+      offset = tlvEnd(content, offset, limit);
+      if (offset == limit) return true;
+      return offset >= (short) 0
+          && offset < limit
+          && content[offset] == (byte) 0xFE
+          && tlvValueLength(content, offset, limit) == (short) 0
+          && tlvEnd(content, offset, limit) == limit;
+    }
+    while (offset < limit) {
+      offset = tlvEnd(content, offset, limit);
+      if (offset < (short) 0) return false;
+    }
+    return offset == limit;
+  }
+
+  private static short tlvValueLength(byte[] data, short offset, short limit) {
+    short cursor = (short) (offset + (short) 1);
+    if (cursor >= limit) return (short) -1;
+    if ((data[offset] & (byte) 0x1F) == (byte) 0x1F) {
+      do {
+        if (cursor >= limit) return (short) -1;
+      } while ((data[cursor++] & (byte) 0x80) != (byte) 0);
+    }
+    if (cursor >= limit) return (short) -1;
+    short first = (short) (data[cursor++] & 0xFF);
+    if (first < (short) 0x80) return first;
+    short count = (short) (first & (short) 0x7F);
+    if (count == (short) 0 || count > (short) 2 || (short) (cursor + count) > limit) {
+      return (short) -1;
+    }
+    short length = (short) 0;
+    while (count-- > (short) 0) length = (short) ((length << 8) | (data[cursor++] & 0xFF));
+    return length;
+  }
+
+  private static short tlvEnd(byte[] data, short offset, short limit) {
+    short cursor = (short) (offset + (short) 1);
+    if (cursor >= limit) return (short) -1;
+    if ((data[offset] & (byte) 0x1F) == (byte) 0x1F) {
+      do {
+        if (cursor >= limit) return (short) -1;
+      } while ((data[cursor++] & (byte) 0x80) != (byte) 0);
+    }
+    if (cursor >= limit) return (short) -1;
+    short first = (short) (data[cursor++] & 0xFF);
+    short length = first;
+    if (first >= (short) 0x80) {
+      short count = (short) (first & (short) 0x7F);
+      if (count == (short) 0 || count > (short) 2 || (short) (cursor + count) > limit) {
+        return (short) -1;
+      }
+      length = (short) 0;
+      while (count-- > (short) 0) length = (short) ((length << 8) | (data[cursor++] & 0xFF));
+    }
+    return length <= (short) (limit - cursor) ? (short) (cursor + length) : (short) -1;
   }
 }

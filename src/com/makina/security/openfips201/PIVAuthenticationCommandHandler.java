@@ -128,7 +128,8 @@ final class PIVAuthenticationCommandHandler {
 
     // PRE-CONDITION 3 - The access rules must be satisfied for the requested key
     // NOTE: A call to this method automatically clears the PIN ALWAYS status.
-    if (!cspPIV.checkAccessModeObject(key, owner.isVciSatisfied())) {
+    if (!cspPIV.checkAccessModeObject(
+        key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return ZERO; // Keep compiler happy
@@ -281,7 +282,9 @@ final class PIVAuthenticationCommandHandler {
     // 4) The key attribute MUTUAL ONLY is not set
 
     // The client requests a CHALLENGE from the CARD, which returns the CHALLENGE in plaintext
-    else if (challengeOffset != 0 && challengeLength == 0) {
+    else if (challengeOffset != 0
+        && challengeLength == 0
+        && !(witnessOffset != 0 && witnessLength == 0)) {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase2((PIVKeyObjectSYM) key);
       } else {
@@ -1136,6 +1139,13 @@ final class PIVAuthenticationCommandHandler {
     // Reset any other authentication intermediate state
     authenticateReset();
 
+    // SP 800-73-5 Part 2 Section 4.1 assigns key 04 exclusively to OPACITY secure-messaging
+    // establishment. The generic ECDH exponentiation form is for key-management keys.
+    if (key.getId() == PIV.ID_KEY_SECURE_MESSAGING) {
+      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
     // PRE-CONDITION 1 - The key must have the correct role
     if (!key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
@@ -1280,7 +1290,8 @@ final class PIVAuthenticationCommandHandler {
     }
 
     // PRE-CONDITION 6 - The access rules must be satisfied for administrative access
-    if (!cspPIV.checkAccessModeAdmin(key, owner.isVciSatisfied())) {
+    if (!cspPIV.checkAccessModeAdmin(
+        key, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -1336,7 +1347,8 @@ final class PIVAuthenticationCommandHandler {
     if (target == null) {
       ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
-    if (!cspPIV.checkAccessModeObject(target, owner.isVciSatisfied())) {
+    if (!cspPIV.checkAccessModeObject(
+        target, owner.isVciSatisfied(), owner.isGlobalPinAdvertised())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 

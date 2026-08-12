@@ -171,7 +171,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
    * @return true if the privateKey exists and is initialized.
    */
   @Override
-  boolean isInitialised() {
+  boolean hasPrivateMaterial() {
     return (privateKey != null && privateKey.isInitialized());
   }
 
@@ -181,6 +181,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     privateKey.clearKey();
     clearOrigin();
     resetImportedParts();
+    resetImportedPairReady();
   }
 
   @Override
