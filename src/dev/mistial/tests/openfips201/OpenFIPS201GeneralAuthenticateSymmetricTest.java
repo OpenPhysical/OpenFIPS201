@@ -18,6 +18,12 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
   private static final byte ALG_3DES = (byte) 0x03;
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
 
+  /** Provisions its own 3DES 9B key, so the standard (AES-128) test card is not applied. */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
+  }
+
   @Test
   void externalAuthenticateChallengeSucceedsForProvisioned3desManagementKey() {
     provisionManagementKeyOverScp(keyMaterial3des((byte) 0x41), (byte) 0x14);
@@ -131,7 +137,7 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
     }
   }
 
-  private static byte[] keyUpdateData(byte[] keyBytes) {
+  protected static byte[] keyUpdateData(byte[] keyBytes) {
     return concat(
         new byte[] {(byte) 0x30, (byte) (keyBytes.length + 2), (byte) 0x80, (byte) keyBytes.length},
         keyBytes);
@@ -143,13 +149,6 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
       key[i] = toOddParity((byte) (seed + i));
     }
     return key;
-  }
-
-  private static byte[] concat(byte[] prefix, byte[] suffix) {
-    byte[] output = new byte[prefix.length + suffix.length];
-    System.arraycopy(prefix, 0, output, 0, prefix.length);
-    System.arraycopy(suffix, 0, output, prefix.length, suffix.length);
-    return output;
   }
 
   private static byte toOddParity(byte value) {

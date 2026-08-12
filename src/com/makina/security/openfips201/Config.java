@@ -42,8 +42,11 @@ final class Config {
   // a release.
   //
   static final byte[] APPLICATION_NAME =
-      new byte[] {'O', 'p', 'e', 'n', 'F', 'I', 'P', 'S', '2', '0', '1'};
-  static final short LENGTH_APPLICATION_NAME = (short) 11;
+      new byte[] {
+        'O', 'p', 'e', 'n', 'F', 'I', 'P', 'S', '2', '0', '1', '-', 'O', 'p', 'e', 'n', 'P', 'h',
+        'y', 's', 'i', 'c', 'a', 'l'
+      };
+  static final short LENGTH_APPLICATION_NAME = (short) 24;
   static final byte VERSION_MAJOR = (byte) 1;
   static final byte VERSION_MINOR = (byte) 10;
   static final byte VERSION_REVISION = (byte) 2;
@@ -312,7 +315,8 @@ final class Config {
   static final byte OPTION_RESTRICT_CONTACTLESS_GLOBAL = (byte) 20;
   static final byte OPTION_RESTRICT_CONTACTLESS_ADMIN = (byte) 21;
   static final byte OPTION_RESTRICT_ENUMERATION = (byte) 22;
-  static final byte OPTION_RESTRICT_SINGLE_KEY = (byte) 23;
+  // 23 is reserved for the former restrict-single-key option. The one-key-per-reference rule is
+  // now an invariant in PIVSecurityProvider, not configurable policy.
   static final byte OPTION_IGNORE_CONTACTLESS_ACL = (byte) 24;
   static final byte OPTION_READ_EMPTY_DATA_OBJECT = (byte) 25;
   static final byte OPTION_USE_RSA_CRT = (byte) 26;
@@ -410,7 +414,7 @@ final class Config {
   private static final byte TAG_RESTRICT_CONTACTLESS_GLOBAL = (byte) 0x80;
   private static final byte TAG_RESTRICT_CONTACTLESS_ADMIN = (byte) 0x81;
   private static final byte TAG_RESTRICT_ENUMERATION = (byte) 0x82;
-  private static final byte TAG_RESTRICT_SINGLE_KEY = (byte) 0x83;
+  private static final byte TAG_RESTRICT_SINGLE_KEY_RESERVED = (byte) 0x83;
   private static final byte TAG_IGNORE_CONTACTLESS_ACL = (byte) 0x84;
   private static final byte TAG_READ_EMPTY_DATA_OBJECT = (byte) 0x85;
   private static final byte TAG_USE_RSA_CRT = (byte) 0x86;
@@ -689,7 +693,23 @@ final class Config {
     // VCI POLICY
     //
     if (reader.match(TAG_VCI_POLICY)) {
-      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+      // Sanity check for empty constructed tag
+      if (reader.isNull()) {
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      }
+      reader.moveInto();
+
+      // Mode
+      if (reader.match(TAG_VCI_MODE)) {
+        byte value = reader.toByte();
+        if (value != VCI_MODE_DISABLED
+            && value != VCI_MODE_ENABLED
+            && value != VCI_MODE_PAIRING_CODE) {
+          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        config[CONFIG_VCI_MODE] = value;
+        reader.moveNext();
+      }
     }
 
     //
@@ -727,10 +747,10 @@ final class Config {
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
 
-      // Restrict Single Key
-      if (reader.match(TAG_RESTRICT_SINGLE_KEY)) {
-        setBoolean(OPTION_RESTRICT_SINGLE_KEY, reader.toByte());
-        reader.moveNext();
+      // Former restrict-single-key option. This is now a hard key-store invariant, not issuer
+      // policy, so stale config data is rejected instead of silently ignored.
+      if (reader.match(TAG_RESTRICT_SINGLE_KEY_RESERVED)) {
+        ISOException.throwIt(PIV.SW_PUT_DATA_CONFIG_INVALID_VALUE);
       }
 
       // Ignore Contactless ACL

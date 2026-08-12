@@ -66,6 +66,13 @@ final class PIV {
 
   // Data Objects
   static final byte ID_DATA_DISCOVERY = (byte) 0x7E;
+  private static final byte[] ID_DATA_PAIRING_CODE_REFERENCE =
+      {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
+
+  // PIV Secure Messaging key reference.
+  static final byte ID_KEY_SECURE_MESSAGING = (byte) 0x04;
+  // Optional attestation authority key reference.
+  static final byte ID_KEY_ATTESTATION = (byte) 0xF9;
 
   // Keys
   static final byte ID_ALG_DEFAULT = (byte) 0x00; // This maps to TDEA_3KEY
@@ -80,6 +87,17 @@ final class PIV {
   static final byte ID_ALG_ECC_P384 = (byte) 0x14;
   static final byte ID_ALG_ECC_CS2 = (byte) 0x27; // Secure Messaging - ECCP256+SHA256
   static final byte ID_ALG_ECC_CS7 = (byte) 0x2E; // Secure Messaging - ECCP384+SHA384
+  //#if VCI_CS2
+  static final byte ID_ALG_ECC_SM = ID_ALG_ECC_CS2;
+  private static final byte OPACITY_KDF_ALG_ID = (byte) 0x09;
+  private static final short LENGTH_SM_RESPONSE = (short) 320;
+  private static final short OPACITY_HASH_TMP = (short) 160;
+  //#else
+  static final byte ID_ALG_ECC_SM = ID_ALG_ECC_CS7;
+  private static final byte OPACITY_KDF_ALG_ID = (byte) 0x0D;
+  private static final short LENGTH_SM_RESPONSE = (short) 448;
+  private static final short OPACITY_HASH_TMP = (short) 400;
+  //#endif
 
   // Cardholder Verification Methods
   static final byte ID_CVM_GLOBAL_PIN = (byte) 0x00;
@@ -101,6 +119,7 @@ final class PIV {
   //
   static final short SW_RETRIES_REMAINING = (short) 0x63C0;
   static final short SW_AUTHENTICATION_METHOD_BLOCKED = (short) 0x6983;
+  static final short SW_VERIFICATION_FAILED = (short) 0x6300;
 
   /*
    * PIV APPLICATION CONSTANTS
@@ -167,6 +186,12 @@ final class PIV {
   private final PIVSecurityProvider cspPIV;
   // PERSISTENT - Configuration Store
   private final Config config;
+  //#if ATTESTATION_ENABLED
+  // PERSISTENT - Attestation authority state
+  private final PIVAttestation attestation;
+  //#endif
+  // TRANSIENT - PIV secure messaging and VCI state
+  private final PIVSecureMessaging secureMessaging;
   // PERSISTENT - Data Store
   private PIVDataObject firstDataObject;
 
@@ -176,6 +201,17 @@ final class PIV {
   private final ECPointValidator ecPointValidator;
   // TRANSIENT - Holds any authentication related intermediary state
   private final PIVAuthenticationContext authenticationContext;
+  //#if ATTESTATION_ENABLED
+  // TRANSIENT - Response buffer for attestation certificates. Allocated once per applet
+  // selection (CLEAR_ON_DESELECT) and reused for all attestations in the session.
+  private byte[] attestationResponse;
+  //#endif
+  // TRANSIENT - Reusable response/work buffer for OPACITY (CS2/CS7) establishment.
+  private final byte[] smResponse;
+  // TRANSIENT - Reassembled secure-messaging command data.
+  private final byte[] smCommand;
+  // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
+  private final byte[] secureMessagingCommand;
 
   /** Constructor */
   PIV() {
@@ -188,6 +224,9 @@ final class PIV {
     scratch = JCSystem.makeTransientByteArray(LENGTH_SCRATCH, JCSystem.CLEAR_ON_DESELECT);
     ecPointValidator = new ECPointValidator();
     authenticationContext = new PIVAuthenticationContext(LENGTH_AUTH_STATE);
+    smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
+    smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
+    secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
 
     // Create our configuration provider
     config = new Config();
@@ -198,9 +237,19 @@ final class PIV {
     // Create our PIV Security Provider
     cspPIV = new PIVSecurityProvider();
 
+    //#if ATTESTATION_ENABLED
+    // Attestation profile state and response buffer are allocated at install time; strict
+    // JavaCard platforms may reject transient allocations during APDU processing.
+    attestation = new PIVAttestation();
+    attestationResponse = PIVAttestation.allocateResponseBuffer();
+    //#endif
+
+    secureMessaging = new PIVSecureMessaging();
+
     // Create our TLV objects (we don't care about the result, this is just to allocate)
     TLVReader.getInstance();
     TLVWriter.getInstance();
+    DERWriter.initialize();
 
     // NOTE:
     // - Javacard does not specify the behaviour of an OwnerPIN that has not ever been
@@ -235,13 +284,84 @@ final class PIV {
     chainBuffer.processIncomingObject(buffer, offset, length);
   }
 
+  boolean isSecureMessagingCLA(byte cla) {
+    return secureMessaging.isSecureMessagingCla(cla);
+  }
+
+  boolean isSecureMessagingEstablished() {
+    return secureMessaging.isEstablished();
+  }
+
+  boolean isSecureMessagingResponseActive() {
+    return chainBuffer.isSecureOutgoingActive() || secureMessaging.isResponseStreamActive();
+  }
+
+  boolean isSecureMessagingCommand() {
+    return secureMessagingCommand[ZERO] != (byte) 0;
+  }
+
+  void clearSecureMessagingCommand() {
+    secureMessagingCommand[ZERO] = (byte) 0;
+  }
+
+  void clearSecureMessaging() {
+    clearSecureMessagingCommand();
+    secureMessaging.clear();
+  }
+
+  short unwrapSecureMessagingCommand(byte[] buffer, short offset, short length) {
+    boolean commandChaining = (buffer[ISO7816.OFFSET_CLA] & (byte) 0x10) != (byte) 0;
+    Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);
+    length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
+    if (length == ZERO && commandChaining) ISOException.throwIt(ISO7816.SW_NO_ERROR);
+
+    length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
+    secureMessagingCommand[ZERO] = (byte) 1;
+    Util.arrayCopyNonAtomic(smCommand, ZERO, buffer, ZERO, (short) 5);
+    if (length > ZERO) {
+      Util.arrayCopyNonAtomic(smCommand, (short) 5, buffer, offset, length);
+    }
+    return length;
+  }
+
   /**
    * Starts or continues processing for an outgoing buffer being transmitted to the host
    *
    * @param apdu The current APDU buffer to transmit with
    */
   void processOutgoing(APDU apdu) {
+    processOutgoing(apdu, ISO7816.SW_NO_ERROR);
+  }
+
+  void processOutgoing(APDU apdu, short sw) {
+    if (isSecureMessagingCommand()) {
+      processOutgoingSecure(apdu, sw);
+      return;
+    }
+
+    if (sw != ISO7816.SW_NO_ERROR) {
+      ISOException.throwIt(sw);
+    }
+
     chainBuffer.processOutgoing(apdu);
+  }
+
+  void processOutgoingSecure(APDU apdu, short sw) {
+    try {
+      chainBuffer.processOutgoingSecure(apdu, secureMessaging, smResponse, sw);
+    } catch (ISOException ex) {
+      if (secureMessaging.isResponseStreamComplete() && !chainBuffer.isSecureOutgoingActive()) {
+        clearSecureMessagingCommand();
+      }
+      throw ex;
+    }
+  }
+
+  void processOutgoingSecureContinuation(APDU apdu) {
+    if (!chainBuffer.isSecureOutgoingActive() && !secureMessaging.isResponseStreamActive()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    processOutgoingSecure(apdu, ISO7816.SW_NO_ERROR);
   }
 
   /**
@@ -279,10 +399,68 @@ final class PIV {
     }
 
     // STEP 2 - Return the APT
-    Util.arrayCopyNonAtomic(
-        Config.TEMPLATE_APT, ZERO, buffer, offset, (short) Config.TEMPLATE_APT.length);
+    return buildApplicationPropertyTemplate(buffer, offset);
+  }
 
-    return (short) Config.TEMPLATE_APT.length;
+  private short buildApplicationPropertyTemplate(byte[] buffer, short offset) {
+    short length = (short) Config.TEMPLATE_APT.length;
+    Util.arrayCopyNonAtomic(Config.TEMPLATE_APT, ZERO, buffer, offset, length);
+
+    if (!isSecureMessagingAdvertised()) {
+      return length;
+    }
+
+    short acOffset = findChildTlv(buffer, offset, (byte) 0xAC);
+    if (acOffset < (short) 0) {
+      return length;
+    }
+    short end = (short) (offset + length);
+
+    PIVKeyObject smKey = getSecureMessagingKey();
+    if (smKey == null) {
+      return length;
+    }
+
+    short insertOffset =
+        (short)
+            (TLVReader.getDataOffset(buffer, acOffset)
+                + (short) (buffer[(short) (acOffset + 1)] & 0xFF));
+    Util.arrayCopyNonAtomic(
+        buffer, insertOffset, buffer, (short) (insertOffset + 3), (short) (end - insertOffset));
+    buffer[insertOffset++] = (byte) 0x80;
+    buffer[insertOffset++] = (byte) 0x01;
+    // SP 800-73-5 Part 1 Appendix C.3: advertise exactly one of 0x27 or 0x2E.
+    buffer[insertOffset] = smKey.getMechanism();
+
+    buffer[(short) (offset + 2)] += (byte) 3;
+    buffer[(short) (acOffset + 1)] += (byte) 3;
+    return (short) (length + 3);
+  }
+
+  private short findChildTlv(byte[] buffer, short parentOffset, byte tag) {
+    short cursor = TLVReader.getDataOffset(buffer, parentOffset);
+    short end = (short) (cursor + TLVReader.getLength(buffer, parentOffset));
+    while (cursor < end) {
+      if (buffer[cursor] == tag) {
+        return cursor;
+      }
+      short valueOffset = TLVReader.getDataOffset(buffer, cursor);
+      cursor = (short) (valueOffset + TLVReader.getLength(buffer, cursor));
+    }
+    return (short) -1;
+  }
+
+  private boolean isSecureMessagingAdvertised() {
+    return getSecureMessagingKey() != null;
+  }
+
+  /** Returns the initialised SM key (CS2 or CS7), or null if VCI is off / key not ready. */
+  private PIVKeyObject getSecureMessagingKey() {
+    if (!isVciConfigured()) {
+      return null;
+    }
+    PIVKeyObject key = cspPIV.selectKey(ID_KEY_SECURE_MESSAGING, ID_ALG_ECC_SM);
+    return (key != null && key.isInitialised()) ? key : null;
   }
 
   /**
@@ -306,11 +484,13 @@ final class PIV {
     // Reset all security conditions in the security provider
     cspPIV.clearAuthenticatedKey();
     cspPIV.clearVerification();
+    secureMessaging.clear();
   }
 
   private short buildDiscoveryObject(byte[] buffer, short offset) {
 
     short length = (short) Config.TEMPLATE_DISCOVERY.length;
+    boolean vciAdvertised = isVciDiscoveryAdvertised();
 
     // Write the template
     offset = Util.arrayCopyNonAtomic(Config.TEMPLATE_DISCOVERY, ZERO, buffer, offset, length);
@@ -338,12 +518,15 @@ final class PIV {
             // command execution and PIV data object access
             // | (config.readFlag(Config.CONFIG_OCC_MODE) ? (byte) (1 << 4) : (byte) 0)
 
-            // Bit 4 indicates whether the optional VCI is implemented
-            // | (config.readFlag(Config.CONFIG_VCI_MODE) ? (byte) (1 << 3) : (byte) 0)
+            // Bit 4 indicates whether VCI can actually be established: policy enabled, SM key
+            // initialized with its CVC, and pairing reference data present when pairing is used.
+            | (vciAdvertised ? (byte) (1 << 3) : (byte) 0)
 
             // Bit 3 is set to zero if the pairing code is required to establish a VCI and is
             // set to one if a VCI is established without pairing code
-            // | (byte) (0 << 2)
+            | (vciAdvertised && config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_ENABLED
+                ? (byte) (1 << 2)
+                : (byte) 0)
 
             // Bits 2 and 1 of the first byte shall be set to zero
             );
@@ -365,6 +548,34 @@ final class PIV {
     return length;
   }
 
+  private boolean isVciConfigured() {
+    return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
+  }
+
+  private boolean isVciDiscoveryAdvertised() {
+    if (!isSecureMessagingAdvertised()) {
+      return false;
+    }
+    if (config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_PAIRING_CODE) {
+      return true;
+    }
+    PIVDataObject pairing =
+        findDataObject(
+            ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) ID_DATA_PAIRING_CODE_REFERENCE.length);
+    return pairing != null && pairing.isInitialised();
+  }
+
+  private boolean isVciSatisfied() {
+    return isSecureMessagingCommand() && secureMessaging.isVciEstablished();
+  }
+
+  private void rejectUnsupportedOccAccessMode(byte mode) {
+    if (mode != PIVObject.ACCESS_MODE_ALWAYS
+        && (mode & PIVObject.ACCESS_MODE_OCC) == PIVObject.ACCESS_MODE_OCC) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
+  }
+
   /**
    * The GET DATA card command retrieves the data content of the single data object whose tag is
    * given in the data field.
@@ -376,16 +587,6 @@ final class PIV {
   short getData(byte[] buffer, short offset) throws ISOException {
 
     final byte CONST_TAG = (byte) 0x5C;
-
-    final byte CONST_TAG_DISCOVERY = (byte) 0x7E;
-    final byte CONST_TAG_BIOMETRIC_1 = (byte) 0x7F;
-    final byte CONST_TAG_BIOMETRIC_2 = (byte) 0x61;
-    final byte CONST_TAG_NORMAL_1 = (byte) 0x5F;
-    final byte CONST_TAG_NORMAL_2 = (byte) 0xC1;
-
-    final short CONST_LEN_DISCOVERY = (short) 0x01;
-    final short CONST_LEN_BIOMETRIC = (short) 0x02;
-    final short CONST_LEN_NORMAL = (short) 0x03;
 
     //
     // PRE-CONDITIONS
@@ -399,69 +600,30 @@ final class PIV {
 
     //
     // Retrieve the data object TAG identifier
-    // NOTE: All objects in the datastore have had their tag reduced to one byte, which is
-    //		 always the least significant byte of the tag.
+    // NOTE: Data objects retain up to 3 identifier bytes. Shorter identifiers are normalized by
+    // left-padding with zeroes when the object is created and when it is looked up.
     //
 
-    byte id = 0;
-
-    switch (buffer[offset]) {
-
-        //
-        // SPECIAL CASE 1 - DISCOVERY OBJECT
-        //
-      case CONST_LEN_DISCOVERY:
-        offset++; // Move to the 1st byte of the tag
-        if (buffer[offset] != CONST_TAG_DISCOVERY) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        id = CONST_TAG_DISCOVERY; // Store it as our object ID
-        break;
-
-        //
-        // SPECIAL CASE 2 - BIOMETRIC INFORMATION TEMPLATE
-        //
-      case CONST_LEN_BIOMETRIC:
-        offset++; // Move to the 1st byte of the tag
-        if (buffer[offset] != CONST_TAG_BIOMETRIC_1)
-          ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        offset++; // Move to the 2nd byte
-        if (buffer[offset] != CONST_TAG_BIOMETRIC_2)
-          ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        id = CONST_TAG_BIOMETRIC_2; // Store it as our object ID
-        break;
-
-        //
-        // ALL OTHER OBJECTS
-        //
-      case CONST_LEN_NORMAL:
-        offset++; // Move to the 1st byte of the tag
-        if (buffer[offset] != CONST_TAG_NORMAL_1) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-        offset++; // Move to the 2nd byte
-        if (buffer[offset] != CONST_TAG_NORMAL_2) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-
-        offset++; // Move to the 3rd byte
-        id = buffer[offset]; // Store it as our object ID
-        break;
-
-      default:
-        // Unsupported length supplied
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    short idLength = (short) (buffer[offset++] & 0xFF);
+    if (idLength < (short) 0x01 || idLength > (short) 0x03) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    PIVDataObject object = findDataObject(id);
+    PIVDataObject object = findDataObject(buffer, offset, idLength);
     if (object == null) {
       ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       return ZERO; // Keep static analyser happy
     }
 
     // PRE-CONDITION 2 - The access rules must be satisfied for the requested object
-    if (!cspPIV.checkAccessModeObject(object)) {
+    if (!cspPIV.checkAccessModeObject(object, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
     // PRE-CONDITION 3 - The requested object must be initialised with data
     // NOTE: The special discovery object is not included in this check as it is generated
     // for each call.
-    if (id != ID_DATA_DISCOVERY && !object.isInitialised()) {
+    if (!isDiscoveryDataObject(buffer, offset, idLength) && !object.isInitialised()) {
 
       // 4.1.1 Data Object Content
       // Before the card is issued, data objects that are created but not used shall be set to
@@ -473,8 +635,11 @@ final class PIV {
       //
       // TODO: Review what the NIST test cards do in this instance! That should be the default
       if (config.readFlag(Config.OPTION_READ_EMPTY_DATA_OBJECT)) {
-        // We just return an OK response with no data
-        ISOException.throwIt(ISO7816.SW_NO_ERROR);
+        // Return an OK response with no data. This must be a normal return so the outer
+        // secure-messaging dispatch can still wrap the response status when GET DATA was
+        // received inside an established SM session.
+        chainBuffer.setOutgoing(scratch, ZERO, ZERO, false);
+        return ZERO;
       } else {
         ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       }
@@ -490,7 +655,7 @@ final class PIV {
     //
     short length;
     byte[] data;
-    if (id == ID_DATA_DISCOVERY) {
+    if (isDiscoveryDataObject(buffer, offset, idLength)) {
       length = buildDiscoveryObject(scratch, ZERO);
       data = scratch;
     } else {
@@ -521,8 +686,6 @@ final class PIV {
     final byte CONST_TAG_DISCOVERY = (byte) 0x7E;
     final byte CONST_TAG_BIOMETRIC_1 = (byte) 0x7F;
     final byte CONST_TAG_BIOMETRIC_2 = (byte) 0x61;
-    final byte CONST_TAG_NORMAL_1 = (byte) 0x5F;
-    final byte CONST_TAG_NORMAL_2 = (byte) 0xC1;
 
     final short CONST_LEN_NORMAL = (short) 0x03;
 
@@ -538,10 +701,11 @@ final class PIV {
 
     //
     // Retrieve the data object TAG identifier
-    // NOTE: All objects in the datastore have had their tag reduced to one byte, which is
-    //		 always the least significant byte of the tag.
+    // NOTE: Data objects retain up to 3 identifier bytes. The tag-list form therefore accepts
+    // custom namespaces such as 5F FF 01 instead of only the standard 5F C1 xx namespace.
     //
-    byte id = 0;
+    short idOffset = offset;
+    short idLength = (short) 0x00;
 
     switch (buffer[offset]) {
 
@@ -549,7 +713,7 @@ final class PIV {
         // SPECIAL OBJECT - Discovery Object
         //
       case CONST_TAG_DISCOVERY:
-        id = CONST_TAG_DISCOVERY;
+        idLength = (short) 0x01;
         break;
 
         //
@@ -559,27 +723,27 @@ final class PIV {
         if (buffer[(short) (offset + 1)] != CONST_TAG_BIOMETRIC_2) {
           ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
         }
-        id = CONST_TAG_BIOMETRIC_2; // Store it as our object ID
+        idLength = (short) 0x02;
         break;
 
         //
-        // All other objects
+        // Tag-list form: 5C len <1-3 byte object identifier> 53 len <object bytes>
         //
       case CONST_TAG:
         offset++; // Move to the length byte
-        if (buffer[offset] != CONST_LEN_NORMAL) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+        idLength = (short) (buffer[offset] & 0xFF);
+        if (idLength < (short) 0x01 || idLength > CONST_LEN_NORMAL) {
+          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+        }
 
         offset++; // Move to the first tag data byte
-        if (buffer[offset] != CONST_TAG_NORMAL_1) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-
-        offset++; // Move to the second tag data byte
-        if (buffer[offset] != CONST_TAG_NORMAL_2) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
-
-        offset++; // Move to the third tag data byte (which is our identifier)
-        id = buffer[offset]; // Store it as our object ID
+        idOffset = offset;
+        offset += idLength;
+        if ((short) (offset - initialOffset) >= length) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        }
 
         // PRE-CONDITION 2 - For other objects, the 'DATA' tag must be present in the buffer
-        offset++; // Move to the DATA tag
         if (buffer[offset] != CONST_DATA) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return; // Keep static analyser happy
@@ -594,7 +758,7 @@ final class PIV {
     // The offset now holds the correct position for writing the object, including the DATA tag
 
     // PRE-CONDITION 3 - The tag supplied in the 'TAG LIST' element must exist in the data store
-    PIVDataObject object = findDataObject(id);
+    PIVDataObject object = findDataObject(buffer, idOffset, idLength);
     if (object == null) {
       ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
       return; // Keep static analyser happy
@@ -602,7 +766,7 @@ final class PIV {
 
     // PRE-CONDITION 4 - The access rules must be satisfied for write access, either with an
     // administrative role or if the data object has explicit permission to write.
-    if (!cspPIV.checkAccessModeAdmin(object)) {
+    if (!cspPIV.checkAccessModeAdmin(object, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -649,6 +813,11 @@ final class PIV {
     // PRE-CONDITIONS
     //
 
+    if (id == ID_CVM_PAIRING_CODE) {
+      verifyPairingCode(buffer, offset, length);
+      return;
+    }
+
     // PRE-CONDITION 1 - The PIN reference must point to a valid PIN
     PIVPIN pin = cspPIV.getPIN(id);
     if (pin == null) {
@@ -680,6 +849,15 @@ final class PIV {
     if (cspPIV.getIsContactless()
         && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
         && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+
+    // PRE-CONDITION 2B - SP 800-73-5 Part 1 Section 5.5 defines VCI as secure
+    // messaging plus Discovery Object policy. PIN verification over contactless fails closed until
+    // that VCI state is established.
+    if (cspPIV.getIsContactless()
+        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
+        && !isVciSatisfied()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -750,6 +928,15 @@ final class PIV {
     // PRE-CONDITIONS
     //
 
+    if (id == ID_CVM_PAIRING_CODE) {
+      if (!isVciSatisfied()) {
+        // SP 800-85A-4 AS05.16A-R4 maps an incorrect pairing-code VERIFY to 63 00.
+        // A status check before pairing is satisfied is instead the normal security-status failure.
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      }
+      return;
+    }
+
     // PRE-CONDITION 1 - The PIN reference must point to a valid PIN
     PIN pin = cspPIV.getPIN(id);
     if (pin == null) {
@@ -813,6 +1000,13 @@ final class PIV {
     // The security status of the key reference specified in P2 shall be set to FALSE and
     // the retry counter associated with the key reference shall remain unchanged.
 
+    if (id == ID_CVM_PAIRING_CODE) {
+      // VERIFY reset for key reference 0x98 resets pairing security status only. Keep the
+      // established SM session so the application status can still be returned under SM.
+      secureMessaging.resetPairingVerified();
+      return;
+    }
+
     //
     // PRE-CONDITIONS
     //
@@ -856,6 +1050,60 @@ final class PIV {
 
     // Reset the PIN ALWAYS flag
     cspPIV.setPINAlways(false);
+  }
+
+  /**
+   * Verifies the pairing code over secure messaging.
+   *
+   * <p>Aligned with NIST SP 800-73-5 Part 1 Section 5.1.3 (Pairing Code) and Part 2 Table 2
+   * (VERIFY command using Key Reference 0x98 for the pairing code).
+   */
+  private void verifyPairingCode(byte[] buffer, short offset, short length) {
+    if (config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_PAIRING_CODE) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+    }
+    // SP 800-73-5 Part 2 Section 4.2: Pairing code verification must be submitted over secure messaging.
+    if (!isSecureMessagingCommand()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+    if (length != (short) 8) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    for (short i = ZERO; i < (short) 8; i++) {
+      byte value = buffer[(short) (offset + i)];
+      if (value < (byte) 0x30 || value > (byte) 0x39) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+    }
+
+    // Read the Pairing Code Reference Data Container (Tag 0x5FC123) defined in
+    // SP 800-73-5 Part 1 Section 3.3.8 / Table 44.
+    scratch[ZERO] = (byte) 0x5F;
+    scratch[(short) 1] = (byte) 0xC1;
+    scratch[(short) 2] = (byte) 0x23;
+    PIVDataObject object = findDataObject(scratch, ZERO, (short) 3);
+    if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+    
+    // The container data is BER-TLV structured with Tag 0x53 (Part 1 Section 3.3.8 Table 44)
+    if (object.getLength() < (short) 12 || object.content[ZERO] != (byte) 0x53) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
+    // Inside tag 0x53, the pairing code value is carried under tag 0x99 with length 0x08
+    short contentLength = TLVReader.getLength(object.content, ZERO);
+    short contentOffset = TLVReader.getDataOffset(object.content, ZERO);
+    if (contentLength != (short) 10
+        || object.content[contentOffset] != (byte) 0x99
+        || object.content[(short) (contentOffset + 1)] != (byte) 0x08) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
+    // SP 800-73-5 Part 2 / SP 800-85A-4 AS05.16A-R4 require 63 00 for a
+    // well-formed but non-matching pairing code. Pairing has no retry counter.
+    if (!PIVSecurityProvider.arrayEqualsConstantTime(
+        object.content, (short) (contentOffset + 2), buffer, offset, (short) 8)) {
+      ISOException.throwIt(SW_VERIFICATION_FAILED);
+    }
+
+    secureMessaging.markPairingVerified();
   }
 
   /**
@@ -909,7 +1157,9 @@ final class PIV {
         // Check whether we are allowed to operate over contactless if applicable
         if (cspPIV.getIsContactless()
             && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
+            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !isVciSatisfied())) {
+          // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
+          // key references 00/80 only over VCI.
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         }
 
@@ -926,7 +1176,9 @@ final class PIV {
         // Check whether we are allowed to operate over contactless if applicable
         if (cspPIV.getIsContactless()
             && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && !config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)) {
+            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS) || !isVciSatisfied())) {
+          // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
+          // key references 00/80 only over VCI.
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         }
 
@@ -1300,34 +1552,45 @@ final class PIV {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The key reference and mechanism must point to an existing key
-    PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[ISO7816.OFFSET_P1]);
-
-    if (key == null) {
-      // If any key reference value is specified that is not supported by the card, the PIV Card
-      // Application shall return the status word '6A 88'.
-      cspPIV.setPINAlways(false); // Clear the PIN ALWAYS flag
+    // PRE-CONDITION 1 - The key reference and mechanism must point to an existing key.
+    if ((buffer[ISO7816.OFFSET_P2] == ID_KEY_SECURE_MESSAGING
+            || buffer[ISO7816.OFFSET_P1] == ID_ALG_ECC_SM)
+        && (buffer[ISO7816.OFFSET_P2] != ID_KEY_SECURE_MESSAGING
+            || buffer[ISO7816.OFFSET_P1] != ID_ALG_ECC_SM)) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 2 - The access rules must be satisfied for the requested key
+    // PRE-CONDITION 2 - The key reference and mechanism must point to an existing key.
+    // F9 is the attestation authority and is not valid for GENERAL AUTHENTICATE operations; it is
+    // deliberately handled as 'not found' so its presence is not observable through this command.
+    PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[ISO7816.OFFSET_P1]);
+    if (key == null || buffer[ISO7816.OFFSET_P2] == ID_KEY_ATTESTATION) {
+      // If any key reference value is specified that is not supported by the card, the PIV Card
+      // Application shall return the status word '6A 88'.
+      cspPIV.setPINAlways(false); // Clear the PIN ALWAYS flag
+      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      return ZERO; // Keep compiler happy
+    }
+
+    // PRE-CONDITION 3 - The access rules must be satisfied for the requested key
     // NOTE: A call to this method automatically clears the PIN ALWAYS status.
-    if (!cspPIV.checkAccessModeObject(key)) {
+    if (!cspPIV.checkAccessModeObject(key, isVciSatisfied())) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 3 - The key's private or secret values must have been set
+    // PRE-CONDITION 4 - The key's private or secret values must have been set
     if (!key.isInitialised()) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 4 - The Dynamic Authentication Template tag must be present in the data
+    // PRE-CONDITION 5 - The Dynamic Authentication Template tag must be present in the data
     if (!reader.find(CONST_TAG_AUTH_TEMPLATE)) {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -1414,20 +1677,12 @@ final class PIV {
         && challengeLength != 0
         && responseOffset != 0
         && responseLength == 0) {
-      /*
       // Variant A - Secure Messaging
-      if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
-        if (key instanceof PIVKeyObjectECC) {
-          return generalAuthenticateCase1A((PIVKeyObjectECC) key, challengeOffset, challengeLength);
-        } else {
-          authenticateReset();
-          PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-          ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
-        }
+      if (isSecureMessagingAuthenticateKey(key)) {
+        return generalAuthenticateCase1A((PIVKeyObjectECC) key, challengeOffset, challengeLength);
       }
-      */
       // Variant B - Digital Signatures
-      if (key.hasRole(PIVKeyObject.ROLE_SIGN)) {
+      else if (key.hasRole(PIVKeyObject.ROLE_SIGN)) {
         if (key instanceof PIVKeyObjectPKI) {
           return generalAuthenticateCase1B((PIVKeyObjectPKI) key, challengeOffset, challengeLength);
         } else {
@@ -1437,14 +1692,12 @@ final class PIV {
         }
       }
       // Variant C - RSA Key Transport
-      else if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
-        if (key instanceof PIVKeyObjectRSA) {
-          return generalAuthenticateCase1C((PIVKeyObjectRSA) key, challengeOffset, challengeLength);
-        } else {
-          authenticateReset();
-          PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
-          ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
-        }
+      else if (key instanceof PIVKeyObjectRSA && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+        return generalAuthenticateCase1C((PIVKeyObjectRSA) key, challengeOffset, challengeLength);
+      } else if (key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+        authenticateReset();
+        PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2); // The supplied key is incorrect
       }
       // Variant D - Symmetric Internal Authentication
       else if (key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE)) {
@@ -1591,20 +1844,184 @@ final class PIV {
     return ZERO; // Keep compiler happy
   }
 
+  private boolean isSecureMessagingAuthenticateKey(PIVKeyObject key) {
+    return key instanceof PIVKeyObjectECC
+        && key.getId() == ID_KEY_SECURE_MESSAGING
+        && key.getMechanism() == ID_ALG_ECC_SM
+        && key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH);
+  }
+
   // Variant A - Secure Messaging
-  /*
+  /**
+   * OPACITY ZKM key establishment (Part 2 Section 4.1, steps C1–C11).
+   *
+   * <p>CS2 and CS7 share one path. Sizes follow the ECC field length of the SM key (32-byte field
+   * → CS2 / AES-128 / SHA-256; 48-byte field → CS7 / AES-256 / SHA-384) per Section 4.1.4 Table 18.
+   */
   private short generalAuthenticateCase1A(
       PIVKeyObjectECC key, short challengeOffset, short challengeLength) {
-
-    // Reset any other authentication intermediate state
     authenticateReset();
+    secureMessaging.clear();
 
-    // Reset the secure messaging status
-    // TODO - Implement Secure Messaging
+    if (key.getMechanism() != ID_ALG_ECC_SM) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
 
-    return ZERO;
+    // Suite geometry from field length (Table 18).
+    final short field = key.getKeyLengthBytes(); // 32 (CS2) or 48 (CS7)
+    final short pointLen = (short) (1 + field + field); // uncompressed Q_eH
+    final short nLen = (short) (field / 2); // N_ICC
+    final short sessionKeyLen = (short) (field - 16); // AES-128 or AES-256
+    final short xyLen = (short) (field + field); // Q_eH without leading 0x04
+
+    // Witness: CB_H(1,0x00) || ID_sH(8) || Q_eH
+    if (challengeLength != (short) (9 + pointLen)
+        || scratch[challengeOffset] != (byte) 0
+        || scratch[(short) (challengeOffset + 9)] != PIVCrypto.CONST_EC_POINT_UNCOMPRESSED) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    final short offIdH = ZERO;
+    final short offQeh = (short) 8;
+    final short offZ = (short) (offQeh + pointLen);
+    final short offN = (short) (offZ + field);
+    final short offIdSicc = (short) (offN + nLen);
+
+    Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offIdH, (short) 8);
+    Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offQeh, pointLen);
+
+    if (!key.validatePublicPoint(smResponse, offQeh, pointLen, smResponse, offZ)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    key.keyAgreement(smResponse, offQeh, pointLen, smResponse, offZ, ecPointValidator); // C5
+    PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
+
+    // C1: ID_sICC = T_8(SHA-256(C_ICC)) — always SHA-256, both suites
+    short cvcLen = key.getSmCvcLength();
+    //#if VCI_CS2
+    key.getSmCvc(scratch, ZERO);
+    PIVCrypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
+    //#else
+    // CS7 permits SM CVCs larger than the 284-byte scratch buffer. Use the APDU work buffer for
+    // this transient copy and clear it immediately after hashing.
+    key.getSmCvc(smCommand, ZERO);
+    PIVCrypto.doSha256(smCommand, ZERO, cvcLen, smResponse, offIdSicc);
+    PIVSecurityProvider.zeroise(smCommand, ZERO, cvcLen);
+    //#endif
+
+    // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
+    deriveOpacitySessionKeys(field, sessionKeyLen, offZ, offN, nLen, offIdH, offQeh, offIdSicc);
+    secureMessaging.setSessionKeys(scratch, ZERO, sessionKeyLen);
+    PIVSecurityProvider.zeroise(scratch, ZERO, (short) (sessionKeyLen * 4));
+    PIVSecurityProvider.zeroise(smResponse, offZ, field);
+
+    short authLen = buildOpacityAuthCryptogramInput(offIdH, offQeh, offIdSicc, xyLen);
+    secureMessaging.computeConfirmationMac(scratch, ZERO, authLen, scratch, ZERO);
+    secureMessaging.clearConfirmationKey();
+
+    // C11: CB_ICC || N_ICC || AuthCryptogram_ICC(16) || C_ICC
+    TLVWriter writer = TLVWriter.getInstance();
+    writer.init(smResponse, ZERO, LENGTH_SM_RESPONSE, CONST_TAG_AUTH_TEMPLATE);
+    writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
+    writer.writeLength((short) (1 + nLen + 16 + cvcLen));
+    short out = writer.getOffset();
+    smResponse[out++] = (byte) 0;
+    out = Util.arrayCopyNonAtomic(smResponse, offN, smResponse, out, nLen);
+    out = Util.arrayCopyNonAtomic(scratch, ZERO, smResponse, out, (short) 16);
+    out = key.getSmCvc(smResponse, out);
+    writer.setOffset(out);
+    short length = writer.finish();
+
+    secureMessaging.markEstablished(
+        config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE);
+    chainBuffer.setOutgoing(smResponse, ZERO, length, true);
+    return length;
   }
-  */
+
+  /**
+   * Concatenation KDF (Part 2 Section 4.1.6): Hash(i || Z || OtherInfo) rounds until 4 session
+   * keys are filled. Hash is SHA-256 (field=32) or SHA-384 (field=48). Output in {@code
+   * scratch[0..]}.
+   */
+  private void deriveOpacitySessionKeys(
+      short field,
+      short sessionKeyLen,
+      short zOff,
+      short nOff,
+      short nLen,
+      short idHOff,
+      short qehOff,
+      short idSiccOff) {
+    final short outLen = (short) (sessionKeyLen * 4);
+    final short kdfBase = (short) 128; // after max 128-byte key material
+    short written = ZERO;
+    for (byte i = (byte) 1; written < outLen; i++) {
+      short inLen =
+          buildOpacityKdfInput(kdfBase, i, OPACITY_KDF_ALG_ID, zOff, field, nOff, nLen, idHOff, qehOff, idSiccOff);
+      PIVCrypto.doSha(field, scratch, kdfBase, inLen, smResponse, OPACITY_HASH_TMP);
+      short toCopy = field;
+      if ((short) (written + toCopy) > outLen) {
+        toCopy = (short) (outLen - written);
+      }
+      Util.arrayCopyNonAtomic(smResponse, OPACITY_HASH_TMP, scratch, written, toCopy);
+      written += toCopy;
+    }
+  }
+
+  /** Counter || Z || OtherInfo into {@code scratch[base..]}. Returns length. */
+  private short buildOpacityKdfInput(
+      short base,
+      byte counter,
+      byte algIdByte,
+      short zOff,
+      short zLen,
+      short nOff,
+      short nLen,
+      short idHOff,
+      short qehOff,
+      short idSiccOff) {
+    short out = base;
+    scratch[out++] = (byte) 0;
+    scratch[out++] = (byte) 0;
+    scratch[out++] = (byte) 0;
+    scratch[out++] = counter;
+    out = Util.arrayCopyNonAtomic(smResponse, zOff, scratch, out, zLen);
+    scratch[out++] = (byte) 0x04;
+    scratch[out++] = algIdByte;
+    scratch[out++] = algIdByte;
+    scratch[out++] = algIdByte;
+    scratch[out++] = algIdByte;
+    scratch[out++] = (byte) 0x08;
+    out = Util.arrayCopyNonAtomic(smResponse, idHOff, scratch, out, (short) 8);
+    scratch[out++] = (byte) 0x01;
+    scratch[out++] = (byte) 0x00;
+    scratch[out++] = (byte) 0x10;
+    out = Util.arrayCopyNonAtomic(smResponse, (short) (qehOff + 1), scratch, out, (short) 16);
+    scratch[out++] = (byte) 0x08;
+    out = Util.arrayCopyNonAtomic(smResponse, idSiccOff, scratch, out, (short) 8);
+    scratch[out++] = (byte) nLen;
+    out = Util.arrayCopyNonAtomic(smResponse, nOff, scratch, out, nLen);
+    scratch[out++] = (byte) 0x01;
+    scratch[out++] = (byte) 0x00;
+    return (short) (out - base);
+  }
+
+  /** {@code "KC_1_V" || ID_sICC || ID_sH || Q_eH.xy} (Section 4.1.7). */
+  private short buildOpacityAuthCryptogramInput(
+      short idHOff, short qehOff, short idSiccOff, short xyLen) {
+    short out = ZERO;
+    scratch[out++] = (byte) 0x4B;
+    scratch[out++] = (byte) 0x43;
+    scratch[out++] = (byte) 0x5F;
+    scratch[out++] = (byte) 0x31;
+    scratch[out++] = (byte) 0x5F;
+    scratch[out++] = (byte) 0x56;
+    out = Util.arrayCopyNonAtomic(smResponse, idSiccOff, scratch, out, (short) 8);
+    out = Util.arrayCopyNonAtomic(smResponse, idHOff, scratch, out, (short) 8);
+    out = Util.arrayCopyNonAtomic(smResponse, (short) (qehOff + 1), scratch, out, xyLen);
+    return out;
+  }
 
   // Variant B - Digital Signatures
   private short generalAuthenticateCase1B(
@@ -1690,7 +2107,7 @@ final class PIV {
     short length;
     try {
       length = key.sign(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       authenticateReset();
       // Presume that we have a problem with the input data, instead of throwing 6F00.
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -1804,6 +2221,12 @@ final class PIV {
       return ZERO; // Keep static analyser happy
     }
 
+    if (length <= ZERO || isAllZero(scratch, offset, length)) {
+      authenticateReset();
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return ZERO; // Keep static analyser happy
+    }
+
     //
     // The writer object is still pointing to where the length needs to be written, so
     // we can write the length
@@ -1829,6 +2252,13 @@ final class PIV {
 
     // Done, return the length of data we are sending
     return length;
+  }
+
+  private boolean isAllZero(byte[] buffer, short offset, short length) {
+    for (short cursor = offset; cursor < (short) (offset + length); cursor++) {
+      if (buffer[cursor] != (byte) 0) return false;
+    }
+    return true;
   }
 
   // Variant E - Symmetric Internal Authentication
@@ -1878,7 +2308,7 @@ final class PIV {
     short offset = writer.getOffset();
     try {
       offset += key.encrypt(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       authenticateReset();
 
       // Presume that we have a problem with the input data, instead of throwing 6F00.
@@ -2322,13 +2752,18 @@ final class PIV {
     // RSA public exponent is now fixed to 65537 (Section 3.1 PIV Cryptographic Keys).
     // ECC keys have no parameter.
 
-    // PRE-CONDITION 4A - The key reference and mechanism must exist (key test)
+    // PRE-CONDITION 4A - F9 is the imported attestation authority and must never be generated.
+    if (buffer[ISO7816.OFFSET_P2] == ID_KEY_ATTESTATION) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    // PRE-CONDITION 4B - The key reference and mechanism must exist (key test)
     if (!cspPIV.keyExists(buffer[ISO7816.OFFSET_P2])) {
       // The key reference is bad
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // PRE-CONDITION 4B - The key reference and mechanism must exist (mechanism test)
+    // PRE-CONDITION 4C - The key reference and mechanism must exist (mechanism test)
     PIVKeyObject key = cspPIV.selectKey(buffer[ISO7816.OFFSET_P2], buffer[offset]);
     if (key == null) {
       // NOTE: The error message we return here is different dependant on whether the key is bad
@@ -2344,7 +2779,7 @@ final class PIV {
     }
 
     // PRE-CONDITION 6 - The access rules must be satisfied for administrative access
-    if (!cspPIV.checkAccessModeAdmin(key)) {
+    if (!cspPIV.checkAccessModeAdmin(key, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -2355,6 +2790,7 @@ final class PIV {
     // STEP 1 - Generate the key pair
     PIVKeyObjectPKI keyPair = (PIVKeyObjectPKI) key;
     short length = keyPair.generate(scratch, ZERO);
+    keyPair.markGenerated();
 
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
@@ -2606,26 +3042,14 @@ final class PIV {
       return;
     }
 
-    //
-    // IMPLEMENTATION NOTE:
-    // We are progressing through to supporting multi-byte definition of data objects, so until
-    // this is fully completed, we will accept 1-3 byte length identifiers and just use the final
-    // byte as the identifier. This means if you pass through '5FC101' and '6FC101' it will fail
-    // until we support the 3-bytes internally.
-    //
-
-    // PRE-CONDITION 2 - The 'ID' tag have length between 1 and 3
-    short idLength = reader.getLength();
-    if (idLength < (short) 1 || idLength > (short) 3) {
+    // PRE-CONDITION 2 - The 'ID' tag MUST have length between 1 and 3
+    short objectIdLength = reader.getLength();
+    if (objectIdLength < (short) 1 || objectIdLength > (short) 3) {
       ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
       return;
     }
 
-    // Use the last byte of the value as the identifier
-    short offset = reader.getDataOffset();
-    offset += reader.getLength();
-    offset--;
-    byte id = scratch[offset];
+    short idOffset = reader.getDataOffset();
     reader.moveNext();
 
     // PRE-CONDITION 3 - The 'MODE CONTACT' tag MUST be present
@@ -2641,6 +3065,7 @@ final class PIV {
     }
 
     byte modeContact = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContact);
     reader.moveNext();
 
     // PRE-CONDITION 5 - The 'MODE CONTACTLESS' tag MUST be present
@@ -2656,6 +3081,7 @@ final class PIV {
     }
 
     byte modeContactless = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContactless);
     reader.moveNext();
 
     // PRE-CONDITION 7 - The 'ADMIN KEY' tag MAY be present
@@ -2672,10 +3098,12 @@ final class PIV {
       reader.moveNext();
     }
 
-    // PRE-CONDITION 9 - The object referenced by 'id' value must not exist in the data store.
+    // PRE-CONDITION 9 - The object referenced by the full ID value must not exist in the data
+    // store.
     PIVObject obj = firstDataObject;
     while (obj != null) {
-      if (obj.getId() == id) ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      if (obj.match(scratch, idOffset, objectIdLength))
+        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
       obj = obj.nextObject;
     }
 
@@ -2684,7 +3112,9 @@ final class PIV {
     //
 
     // STEP 1 - Create our new key
-    PIVDataObject dataObject = new PIVDataObject(id, modeContact, modeContactless, adminKey);
+    PIVDataObject dataObject =
+        new PIVDataObject(
+            scratch, idOffset, objectIdLength, modeContact, modeContactless, adminKey);
 
     // STEP 2 - Add it to our linked list
     // NOTE: If this is the first key added, just set our firstKey. Otherwise add it to the head
@@ -2711,32 +3141,20 @@ final class PIV {
       return;
     }
 
-    //
-    // IMPLEMENTATION NOTE:
-    // We are progressing through to supporting multi-byte definition of data objects, so until
-    // this is fully completed, we will accept 1-3 byte length identifiers and just use the final
-    // byte as the identifier. This means if you pass through '5FC101' and '6FC101' it will fail
-    // until we support the 3-bytes internally.
-    //
-
-    // PRE-CONDITION 2 - The 'ID' tag have length between 1 and 3
-    short idLength = reader.getLength();
-    if (idLength < (short) 1 || idLength > (short) 3) {
+    // PRE-CONDITION 2 - The 'ID' tag MUST have length between 1 and 3
+    short objectIdLength = reader.getLength();
+    if (objectIdLength < (short) 1 || objectIdLength > (short) 3) {
       ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
       return;
     }
 
-    // Use the last byte of the value as the identifier
-    short offset = reader.getDataOffset();
-    offset += reader.getLength();
-    offset--;
-    byte id = scratch[offset];
+    short idOffset = reader.getDataOffset();
     reader.moveNext();
 
-    // PRE-CONDITION 7 - The object referenced by 'id' value MUST exist in the data store.
+    // PRE-CONDITION 7 - The object referenced by the full ID value MUST exist in the data store.
     PIVDataObject previous = null;
     PIVDataObject object = firstDataObject;
-    while (object != null && object.getId() != id) {
+    while (object != null && !object.match(scratch, idOffset, objectIdLength)) {
       previous = object;
       object = (PIVDataObject) object.nextObject;
     }
@@ -2797,6 +3215,7 @@ final class PIV {
     }
 
     byte modeContact = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContact);
     reader.moveNext();
 
     // PRE-CONDITION 5 - The 'MODE CONTACTLESS' tag MUST be present
@@ -2812,6 +3231,7 @@ final class PIV {
     }
 
     byte modeContactless = reader.toByte();
+    rejectUnsupportedOccAccessMode(modeContactless);
     reader.moveNext();
 
     // PRE-CONDITION 7 - The 'ADMIN KEY' tag MAY be present
@@ -2875,20 +3295,36 @@ final class PIV {
     byte keyAttribute = reader.toByte();
     reader.moveNext();
 
-    if (config.readFlag(Config.OPTION_RESTRICT_SINGLE_KEY)) {
-      // PRE-CONDITION 16A - If CONFIG.RESTRICT_SINGLE_KEY is set, the key referenced by the
-      // 'id' and 'mechanism' pair MUST NOT exist in the key store.
-      if (cspPIV.keyExists(id)) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
-        return;
+    // F9 is reserved for the attestation authority. It is still created through the normal
+    // key-object definition path, but its shape is fixed so provisioning can use CHANGE REFERENCE
+    // DATA without introducing an attestation-specific import APDU.
+    if (id == ID_KEY_ATTESTATION
+        //#if ATTESTATION_ENABLED
+        && (modeContact != PIVObject.ACCESS_MODE_NEVER
+            || modeContactless != PIVObject.ACCESS_MODE_NEVER
+            || keyMechanism != ID_ALG_ECC_P256
+            || keyRole != PIVKeyObject.ROLE_SIGN
+            || keyAttribute != PIVKeyObject.ATTR_IMPORTABLE)
+        //#else
+        && true
+        //#endif
+        ) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    if (id == ID_KEY_SECURE_MESSAGING
+        && (keyMechanism == ID_ALG_ECC_CS2 || keyMechanism == ID_ALG_ECC_CS7)) {
+      if (keyMechanism != ID_ALG_ECC_SM) {
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
-    } else {
-      // PRE-CONDITION 16B - If CONFIG.RESTRICT_SINGLE_KEY is NOT set, the key referenced by
-      // the 'id' and 'mechanism' pair MUST NOT exist in the key store.
-      if (cspPIV.selectKey(id, keyMechanism) != null) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
-        return;
-      }
+    }
+
+    // PRE-CONDITION 16 - The key reference MUST NOT already have a key definition. SP 800-73
+    // commands select a key by reference (P2) and validate the mechanism separately (P1), so
+    // OpenFIPS201 stores exactly one key object for each key reference.
+    if (cspPIV.keyExists(id)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      return;
     }
 
     //
@@ -2926,6 +3362,10 @@ final class PIV {
     byte id = reader.toByte();
     reader.moveNext();
 
+    if (id == ID_KEY_ATTESTATION) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
     // PRE-CONDITION 3 - The 'KEY MECHANISM' tag MUST be present
     if (!reader.match(CONST_TAG_KEY_MECHANISM)) {
       ISOException.throwIt(PIV.SW_PUT_DATA_KEY_MECHANISM_MISSING);
@@ -2940,9 +3380,15 @@ final class PIV {
     byte keyMechanism = reader.toByte();
     reader.moveNext();
 
-    // PRE-CONDITION 5 - the key referenced by the 'id' and 'mechanism' pair MUST exist
+    // PRE-CONDITION 5 - The key reference MUST exist and the supplied mechanism must match the
+    // slot's single key definition.
+    PIVKeyObject key = cspPIV.selectKey(id);
+    if (key == null) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      return;
+    }
     if (cspPIV.selectKey(id, keyMechanism) == null) {
-      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return;
     }
 
@@ -2952,6 +3398,21 @@ final class PIV {
 
     // STEP 1 - Clear related authenticated state, unlink the key, and wipe its material.
     cspPIV.deleteKey(id, keyMechanism);
+  }
+
+  /**
+   * Clears the value of every defined data object without deleting the object definitions.
+   *
+   * <p>This is used when committing a new attestation authority. The object directory remains
+   * personalized, but certificate and data contents from the previous trust root are removed before
+   * the new authority is marked active.
+   */
+  private void clearDataObjects() {
+    PIVDataObject object = firstDataObject;
+    while (object != null) {
+      object.clear();
+      object = (PIVDataObject) object.nextObject;
+    }
   }
 
   /**
@@ -3120,9 +3581,18 @@ final class PIV {
     // COMMAND CHAIN HANDLING
     //
 
+    byte[] commandBuffer = scratch;
+    //#if VCI_CS7
+    // CS7 SM CVCs may be larger than LENGTH_SCRATCH. Keep the advertised CS7 CVC limit
+    // provisionable by reassembling that admin update into the larger OPACITY command buffer.
+    if (id == ID_KEY_SECURE_MESSAGING && mechanism == ID_ALG_ECC_SM) {
+      commandBuffer = smCommand;
+    }
+    //#endif
+
     // Pass the APDU to the chainBuffer instance first. It will return zero if there is store more
     // to of the chain to process, otherwise it will return the length of the large CDATA buffer
-    length = chainBuffer.processIncomingAPDU(buffer, offset, length, scratch, ZERO);
+    length = chainBuffer.processIncomingAPDU(buffer, offset, length, commandBuffer, ZERO);
 
     // If the length is zero, just return so the caller can keep sending
     if (length == 0) return;
@@ -3144,17 +3614,17 @@ final class PIV {
       // We deliberately ignore the value of CONFIG_PIN_ENABLE_LOCAL here as there may be a good
       // reason for setting a pre-defined PIN value with the anticipation of enabling it later
 
-      if (!verifyPinFormat(scratch, ZERO, length)) {
+      if (!verifyPinFormat(commandBuffer, ZERO, length)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
-      if (!verifyPinRules(scratch, ZERO, length)) {
+      if (!verifyPinRules(commandBuffer, ZERO, length)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       // Update the PIN
       // NOTE: We ignore the history check here since this is an administrative update
-      cspPIV.updatePIN(ID_CVM_LOCAL_PIN, scratch, ZERO, (byte) length, ZERO);
+      cspPIV.updatePIN(ID_CVM_LOCAL_PIN, commandBuffer, ZERO, (byte) length, ZERO);
       return; // Done
     }
 
@@ -3172,7 +3642,7 @@ final class PIV {
       // - No format verification required is for the PUK
 
       // Update the PUK
-      cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, (byte) length, ZERO);
+      cspPIV.updatePIN(ID_CVM_PUK, commandBuffer, ZERO, (byte) length, ZERO);
 
       return; // Done
     }
@@ -3196,30 +3666,34 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
-    // This allows either SCP or prior successful authentication with the key's admin key.
-    if (!cspPIV.checkAccessModeAdmin(key)) {
+    // F9 carries the authority private scalar and issuer profile. A prior management-key
+    // authentication may authorize ordinary key rotation, but it must not downgrade authority
+    // import to plaintext.
+    //#if ATTESTATION_ENABLED
+    if (key.getId() == ID_KEY_ATTESTATION && !cspPIV.getIsSecureChannel()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
     }
+    //#endif
 
-    // PRE-CONDITION 3 - The key object MUST have the ATTR_IMPORTABLE attribute
-    if (!key.hasAttribute(PIVKeyObject.ATTR_IMPORTABLE)) {
+    // PRE-CONDITION 2 - Administrative conditions for this key object must be satisfied.
+    // This allows either SCP or prior successful authentication with the key's admin key.
+    if (!cspPIV.checkAccessModeAdmin(key, isVciSatisfied())) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       return; // Keep static analyser happy
     }
 
     // Set up our TLV reader
     TLVReader reader = TLVReader.getInstance();
-    reader.init(scratch, ZERO, length);
+    reader.init(commandBuffer, ZERO, length);
 
-    // PRE-CONDITION 4 - The parent tag MUST be of type SEQUENCE
+    // PRE-CONDITION 3 - The parent tag MUST be of type SEQUENCE
     if (!reader.match(CONST_TAG_SEQUENCE)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
     }
 
-    // PRE-CONDITION 5 - The SEQUENCE length MUST be smaller than the APDU data length
+    // PRE-CONDITION 4 - The SEQUENCE length MUST be smaller than the APDU data length
     if (reader.getLength() > length) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
@@ -3231,38 +3705,100 @@ final class PIV {
       return; // Keep static analyser happy
     }
 
-    //
-    // EXECUTION STEPS
-    //
-
-    // STEP 1 - Capture the key element to update.
-    // We defer mutation until cardinality validation so malformed payloads fail atomically.
+    // PRE-CONDITION 5 - Capture the key element to update from the same parse that will drive the
+    // mutation. This avoids separate CVC-specific parsing of the same command bytes.
     byte elementTag = reader.getTag();
     short elementOffset = reader.getDataOffset();
     short elementLength = reader.getLength();
 
-    // STEP 2 - Reject malformed payloads containing multiple key update elements.
+    // PRE-CONDITION 6 - Reject malformed payloads containing multiple key update elements.
     if (reader.moveNext()) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return; // Keep static analyser happy
     }
 
-    // STEP 3 - Update the relevant key element. Symmetric replacements stage and swap their key
-    // object internally. Asymmetric elements can touch multiple persistent key components, so keep
-    // the published state transactional if a setter fails partway through.
-    if (key instanceof PIVKeyObjectPKI) {
-      JCSystem.beginTransaction();
-      try {
-        key.updateElement(elementTag, scratch, elementOffset, elementLength);
-        JCSystem.commitTransaction();
-      } finally {
-        if (JCSystem.getTransactionDepth() != (byte) 0) {
-          JCSystem.abortTransaction();
+    // PRE-CONDITION 7 - The key object MUST have the ATTR_IMPORTABLE attribute, except that the
+    // post-generation PIV secure messaging CVC can be loaded onto the generated non-exportable VCI
+    // key without enabling private-key import.
+    if (!key.hasAttribute(PIVKeyObject.ATTR_IMPORTABLE)
+        && !(key instanceof PIVKeyObjectECC
+            && key.getId() == ID_KEY_SECURE_MESSAGING
+            && key.getMechanism() == ID_ALG_ECC_SM
+            && elementTag == PIVKeyObjectECC.ELEMENT_SM_CVC
+            && elementLength > ZERO)) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      return; // Keep static analyser happy
+    }
+
+    //
+    // EXECUTION STEPS
+    //
+
+    // STEP 1 - Update the relevant key element.
+    //#if ATTESTATION_ENABLED
+    if (key.getId() == ID_KEY_ATTESTATION
+        && (elementTag == PIVAttestation.ELEMENT_SUBJECT
+            || elementTag == PIVAttestation.ELEMENT_VALIDITY)) {
+      attestation.updateElement(elementTag, scratch, elementOffset, elementLength);
+    } else {
+    //#endif
+      if (key instanceof PIVKeyObjectPKI) {
+        JCSystem.beginTransaction();
+        try {
+          key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
+          JCSystem.commitTransaction();
+        } finally {
+          if (JCSystem.getTransactionDepth() != (byte) 0) {
+            JCSystem.abortTransaction();
+          }
+        }
+      } else {
+        key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
+      }
+      //#if ATTESTATION_ENABLED
+      if (key.getId() == ID_KEY_ATTESTATION) {
+        if (elementTag == PIVKeyObject.ELEMENT_CLEAR) {
+          attestation.clearProfile();
+        } else {
+          attestation.noteKeyElementUpdated(elementTag);
         }
       }
-    } else {
-      key.updateElement(elementTag, scratch, elementOffset, elementLength);
+      //#endif
+    //#if ATTESTATION_ENABLED
     }
+    //#endif
+    if (elementTag != PIVKeyObjectECC.ELEMENT_SM_CVC) {
+      key.markImported();
+    }
+
+    //#if ATTESTATION_ENABLED
+    if (key.getId() == ID_KEY_ATTESTATION) {
+      if (!(key instanceof PIVKeyObjectECC)) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+      PIVKeyObjectECC authority = (PIVKeyObjectECC) key;
+      if (!attestation.isAuthorityActive() && attestation.isAuthorityReadyToCommit(authority)) {
+        attestation.validateAuthority(authority, scratch);
+        // Committing a new authority changes the card's trust root. Keep object definitions, but
+        // clear data contents and non-F9 key material tied to the prior authority.
+        boolean transactionStarted = false;
+        try {
+          JCSystem.beginTransaction();
+          transactionStarted = true;
+          clearDataObjects();
+          cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
+          attestation.markAuthorityActive();
+          JCSystem.commitTransaction();
+          transactionStarted = false;
+        } catch (RuntimeException e) {
+          if (transactionStarted) {
+            JCSystem.abortTransaction();
+          }
+          throw e;
+        }
+      }
+    }
+    //#endif
 
     // STEP 4 - Clear any prior key-authenticated session after a key value change.
       cspPIV.clearAuthenticatedKey();
@@ -3270,6 +3806,74 @@ final class PIV {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
     }
   }
+
+  //#if ATTESTATION_ENABLED
+  /**
+   * Builds an attestation certificate for an on-card generated key.
+   *
+   * <p>Pre-conditions:
+   *
+   * <p>- {@code slot} must be one of the standard PIV authentication/signature/key-management slots
+   * or retired key-management slots.
+   *
+   * <p>- F9 must be an active imported P-256 attestation authority.
+   *
+   * <p>- The target key must exist, be generated on-card, and satisfy its configured contact or
+   * contactless access policy. This intentionally makes ATTEST obey the same interface restrictions
+   * as ordinary object use, even though some vendor implementations expose attestation
+   * unauthenticated.
+   *
+   * <p>Status words: {@code 6A86} for invalid attestation slots, {@code 6985} when the authority or
+   * target state is incomplete, {@code 6A88} when the target key does not exist, and {@code 6982}
+   * when target access policy is not satisfied.
+   *
+   * @param slot The PIV key reference to attest
+   */
+  void attest(byte slot) {
+    if (!isAttestableSlot(slot)) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    PIVKeyObjectECC authority =
+        (PIVKeyObjectECC) cspPIV.selectKey(ID_KEY_ATTESTATION, ID_ALG_ECC_P256);
+    if (authority == null || !attestation.isAuthorityActive()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    PIVKeyObjectPKI target = selectAttestableTarget(slot);
+    if (target == null) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+    }
+    if (!cspPIV.checkAccessModeObject(target, isVciSatisfied())) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+
+    // PIVAttestation enforces generated-key origin. Imported keys may be valid PIV keys, but the
+    // applet cannot truthfully attest that it generated or protected their origin.
+    short length =
+        attestation.buildCertificate(authority, target, slot, scratch, attestationResponse, ZERO);
+    chainBuffer.setOutgoing(attestationResponse, ZERO, length, true);
+  }
+
+  private PIVKeyObjectPKI selectAttestableTarget(byte slot) {
+    PIVKeyObject target = cspPIV.selectKey(slot);
+    if (target instanceof PIVKeyObjectPKI) return (PIVKeyObjectPKI) target;
+    return null;
+  }
+
+  /**
+   * Returns true for PIV slots that may carry generated PKI keys eligible for attestation.
+   *
+   * <p>F9 is deliberately excluded because it is the attestation authority itself, not an
+   * attestable target.
+   */
+  private static boolean isAttestableSlot(byte slot) {
+    if (slot == (byte) 0x9A || slot == (byte) 0x9C || slot == (byte) 0x9D || slot == (byte) 0x9E) {
+      return true;
+    }
+    return slot >= (byte) 0x82 && slot <= (byte) 0x95;
+  }
+  //#endif
 
   private short processGetVersion(TLVWriter writer) {
 
@@ -3334,10 +3938,10 @@ final class PIV {
     writer.write(CONST_TAG_PIN_ALWAYS, cspPIV.getIsPINAlways() ? (byte) 1 : (byte) 0);
 
     // SM State
-    writer.write(CONST_TAG_SM_STATE, (byte) 0); // TODO
+    writer.write(CONST_TAG_SM_STATE, secureMessaging.isEstablished() ? (byte) 1 : (byte) 0);
 
     // VCI State
-    writer.write(CONST_TAG_VCI_STATE, (byte) 0); // TODO
+    writer.write(CONST_TAG_VCI_STATE, secureMessaging.isVciEstablished() ? (byte) 1 : (byte) 0);
 
     // SCP State
     writer.write(CONST_TAG_SCP_STATE, cspPIV.getIsSecureChannel() ? (byte) 1 : (byte) 0);
@@ -3451,16 +4055,18 @@ final class PIV {
   /**
    * Searches for a data object within the local data store
    *
-   * @param id The data object to find
+   * @param idBuffer The buffer containing the requested object identifier
+   * @param idOffset The offset of the identifier in the buffer
+   * @param idLength The length of the identifier, from 1 to 3 bytes
    * @return The relevant data object instance, or null if none was found.
    */
-  private PIVDataObject findDataObject(byte id) {
+  private PIVDataObject findDataObject(byte[] idBuffer, short idOffset, short idLength) {
 
     PIVDataObject data = firstDataObject;
 
     // Traverse the linked list
     while (data != null) {
-      if (data.match(id)) {
+      if (data.match(idBuffer, idOffset, idLength)) {
         return data;
       }
 
@@ -3468,5 +4074,15 @@ final class PIV {
     }
 
     return null;
+  }
+
+  private static boolean isDiscoveryDataObject(byte[] idBuffer, short idOffset, short idLength) {
+    if (idLength < (short) 0x01 || idLength > (short) 0x03) return false;
+
+    short leading = (short) (idLength - (short) 0x01);
+    for (short i = (short) 0x00; i < leading; i++) {
+      if (idBuffer[(short) (idOffset + i)] != (byte) 0x00) return false;
+    }
+    return idBuffer[(short) (idOffset + leading)] == ID_DATA_DISCOVERY;
   }
 }

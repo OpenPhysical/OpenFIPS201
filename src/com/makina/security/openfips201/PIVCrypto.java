@@ -30,7 +30,9 @@ import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.security.CryptoException;
+import javacard.security.AESKey;
 import javacard.security.ECPrivateKey;
+import javacard.security.ECPublicKey;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
@@ -71,16 +73,18 @@ final class PIVCrypto {
   private static Cipher cspTDEA;
   private static Cipher cspRSA;
   private static Cipher cspAES;
+  private static Cipher cspAESCBC;
 
   private static MessageDigest cspSHA256;
+  //#if VCI_CS7
   private static MessageDigest cspSHA384;
+  //#endif
 
   private static KeyAgreement cspECDH;
 
-  private static Signature cspECCSHA1;
   private static Signature cspECCSHA256;
   private static Signature cspECCSHA384;
-  private static Signature cspECCSHA512;
+  private static Signature cspAESCMAC;
 
   private static RandomData cspRNG;
 
@@ -88,14 +92,16 @@ final class PIVCrypto {
     cspRNG = null;
     cspTDEA = null;
     cspAES = null;
+    cspAESCBC = null;
     cspRSA = null;
     cspECDH = null;
-    cspECCSHA1 = null;
     cspECCSHA256 = null;
     cspECCSHA384 = null;
-    cspECCSHA512 = null;
+    cspAESCMAC = null;
     cspSHA256 = null;
+    //#if VCI_CS7
     cspSHA384 = null;
+    //#endif
 
     JCSystem.requestObjectDeletion();
   }
@@ -124,6 +130,12 @@ final class PIVCrypto {
       cspAES = null;
     }
 
+    try {
+      cspAESCBC = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
+    } catch (CryptoException ex) {
+      cspAESCBC = null;
+    }
+
     if (cspRSA == null) {
       try {
         cspRSA = Cipher.getInstance(Cipher.ALG_RSA_NOPAD, false);
@@ -138,14 +150,6 @@ final class PIVCrypto {
         cspECDH = KeyAgreement.getInstance(KeyAgreement.ALG_EC_SVDP_DH_PLAIN, false);
       } catch (CryptoException ex) {
         cspECDH = null;
-      }
-    }
-
-    if (cspECCSHA1 == null) {
-      try {
-        cspECCSHA1 = Signature.getInstance(Signature.ALG_ECDSA_SHA, false);
-      } catch (CryptoException ex) {
-        cspECCSHA1 = null;
       }
     }
 
@@ -165,11 +169,11 @@ final class PIVCrypto {
       }
     }
 
-    if (cspECCSHA512 == null) {
+    if (cspAESCMAC == null) {
       try {
-        cspECCSHA512 = Signature.getInstance(Signature.ALG_ECDSA_SHA_512, false);
+        cspAESCMAC = Signature.getInstance(Signature.ALG_AES_CMAC_128, false);
       } catch (CryptoException ex) {
-        cspECCSHA512 = null;
+        cspAESCMAC = null;
       }
     }
 
@@ -181,6 +185,7 @@ final class PIVCrypto {
       }
     }
 
+    //#if VCI_CS7
     if (cspSHA384 == null) {
       try {
         cspSHA384 = MessageDigest.getInstance(MessageDigest.ALG_SHA_384, false);
@@ -188,6 +193,7 @@ final class PIVCrypto {
         cspSHA384 = null;
       }
     }
+    //#endif
   }
 
   static boolean supportsMechanism(byte mechanism) {
@@ -209,17 +215,32 @@ final class PIVCrypto {
 
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
-        return ((cspECCSHA1 != null)
-            || (cspECCSHA256 != null)
-            || (cspECCSHA384 != null)
-            || (cspECCSHA512 != null)
-            || (cspECDH != null));
+        // SP 800-78 permits only ECDSA P-256 with SHA-256 and P-384 with SHA-384, so SHA-1 and
+        // SHA-512 ECDSA engines are not provided. ECDH support also satisfies ECC mechanisms.
+        return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
-        return (cspECDH != null && cspSHA256 != null);
+        //#if VCI_CS2
+        // OPACITY needs ECDH, AES (ECB/CBC/CMAC), and the suite hash (SHA-256 or SHA-384).
+        return (cspECDH != null
+            && cspAES != null
+            && cspAESCBC != null
+            && cspAESCMAC != null
+            && cspSHA256 != null);
+        //#else
+        return false;
+        //#endif
 
       case PIV.ID_ALG_ECC_CS7:
-        return (cspECDH != null && cspSHA384 != null);
+        //#if VCI_CS7
+        return (cspECDH != null
+            && cspAES != null
+            && cspAESCBC != null
+            && cspAESCMAC != null
+            && cspSHA384 != null);
+        //#else
+        return false;
+        //#endif
 
       default:
         return false;
@@ -322,17 +343,11 @@ final class PIVCrypto {
     Signature signer = null;
 
     switch (inLength) {
-      case MessageDigest.LENGTH_SHA:
-        signer = cspECCSHA1;
-        break;
       case MessageDigest.LENGTH_SHA_256:
         signer = cspECCSHA256;
         break;
       case MessageDigest.LENGTH_SHA_384:
         signer = cspECCSHA384;
-        break;
-      case MessageDigest.LENGTH_SHA_512:
-        signer = cspECCSHA512;
         break;
       default:
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
@@ -341,6 +356,142 @@ final class PIVCrypto {
 
     signer.init(theKey, Signature.MODE_SIGN);
     return signer.signPreComputedHash(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static boolean doVerify(
+      ECPublicKey theKey,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] signature,
+      short signatureOffset,
+      short signatureLength) {
+    Signature verifier = null;
+
+    switch (inLength) {
+      case MessageDigest.LENGTH_SHA_256:
+        verifier = cspECCSHA256;
+        break;
+      case MessageDigest.LENGTH_SHA_384:
+        verifier = cspECCSHA384;
+        break;
+      default:
+        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        return false;
+    }
+
+    verifier.init(theKey, Signature.MODE_VERIFY);
+    return verifier.verifyPreComputedHash(
+        inBuffer, inOffset, inLength, signature, signatureOffset, signatureLength);
+  }
+
+  static short doSha256(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  //#if VCI_CS7
+  static short doSha384(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    return cspSHA384.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+  //#endif
+
+  /**
+   * Suite hash for OPACITY KDF: SHA-256 when {@code fieldLen == 32} (CS2), SHA-384 when {@code
+   * fieldLen == 48} (CS7).
+   */
+  static short doSha(
+      short fieldLen,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    //#if VCI_CS2
+    return doSha256(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    //#else
+    if (fieldLen == (short) 32) {
+      return doSha256(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    }
+    return doSha384(inBuffer, inOffset, inLength, outBuffer, outOffset);
+    //#endif
+  }
+
+  static short doAesCmac(
+      SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    cspAESCMAC.init(key, Signature.MODE_SIGN);
+    return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static void doAesCmacInit(SecretKey key) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    cspAESCMAC.init(key, Signature.MODE_SIGN);
+  }
+
+  static void doAesCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
+    if (inLength != (short) 0) {
+      cspAESCMAC.update(inBuffer, inOffset, inLength);
+    }
+  }
+
+  static short doAesCmacFinal(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static void requireAesCmac(short sw) {
+    if (cspAESCMAC == null) ISOException.throwIt(sw);
+  }
+
+  static short doAesEcbEncrypt(
+      SecretKey key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    cspAES.init(key, Cipher.MODE_ENCRYPT);
+    return cspAES.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static short doAesCbcEncrypt(
+      SecretKey key,
+      byte[] iv,
+      short ivOffset,
+      short ivLength,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    cspAESCBC.init(key, Cipher.MODE_ENCRYPT, iv, ivOffset, ivLength);
+    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static short doAesCbcDecrypt(
+      SecretKey key,
+      byte[] iv,
+      short ivOffset,
+      short ivLength,
+      byte[] inBuffer,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset) {
+    cspAESCBC.init(key, Cipher.MODE_DECRYPT, iv, ivOffset, ivLength);
+    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  static AESKey buildTransientAes128Key() {
+    return buildTransientAesKey(KeyBuilder.LENGTH_AES_128);
+  }
+
+  static AESKey buildTransientAes256Key() {
+    return buildTransientAesKey(KeyBuilder.LENGTH_AES_256);
+  }
+
+  /** Builds a clear-on-deselect AES key of the given bit length (128 or 256). */
+  static AESKey buildTransientAesKey(short keyLengthBits) {
+    return (AESKey)
+        KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, keyLengthBits, false);
   }
 
   /**

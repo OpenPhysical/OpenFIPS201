@@ -353,7 +353,13 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
    * <p>This mirrors OpenFIPS201's documented profile flow: create key object with PUT DATA admin,
    * then inject key value with CHANGE REFERENCE DATA admin.
    */
-  private void provisionManagementKeyOverScp(byte algorithm, byte[] keyBytes) {
+  /** Creates and rotates its own 9B key per algorithm, so the standard test card is not applied. */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
+  }
+
+  protected void provisionManagementKeyOverScp(byte algorithm, byte[] keyBytes) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
@@ -495,7 +501,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     }
   }
 
-  private static byte[] keyUpdateData(byte[] keyBytes) {
+  protected static byte[] keyUpdateData(byte[] keyBytes) {
     return concat(
         new byte[] {(byte) 0x30, (byte) (keyBytes.length + 2), (byte) 0x80, (byte) keyBytes.length},
         keyBytes);
@@ -577,13 +583,6 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
       }
     }
     return key;
-  }
-
-  private static byte[] concat(byte[] prefix, byte[] suffix) {
-    byte[] output = new byte[prefix.length + suffix.length];
-    System.arraycopy(prefix, 0, output, 0, prefix.length);
-    System.arraycopy(suffix, 0, output, prefix.length, suffix.length);
-    return output;
   }
 
   private static byte toOddParity(byte value) {

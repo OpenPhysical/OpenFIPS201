@@ -46,7 +46,9 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     withMockedScp(
         () -> {
           assertSw(0x9000, selectApplet(), "SELECT before object deletion");
-          byte[] request = {(byte) 0x65, 0x03, (byte) 0x8B, 0x01, DATA_ID_NORMAL};
+          byte[] request = {
+            (byte) 0x65, 0x05, (byte) 0x8B, 0x03, (byte) 0x5F, (byte) 0xC1, DATA_ID_NORMAL
+          };
           assertSw(
               0x9000,
               transmit(0x84, 0xDB, 0x3F, 0x00, request),
@@ -83,7 +85,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
               transmit(0x84, 0xDB, 0x3F, 0x00, request),
               "Deleting an existing key should succeed");
           assertSw(
-              ISO7816.SW_RECORD_NOT_FOUND,
+              PIV_SW_REFERENCE_NOT_FOUND,
               transmit(0x84, 0xDB, 0x3F, 0x00, request),
               "Deleting the same key twice should report it missing");
         });
@@ -226,6 +228,26 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @Test
+  void uninitializedObjectCanReturnEmptyPlaintextResponseWhenConfigured() {
+    byte[] managementKey = keyMaterialAes128((byte) 0x42);
+
+    provisionManagementKeyOverScp(managementKey);
+    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before empty-object option update");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A403850101")),
+              "Enable empty-object reads");
+        });
+
+    ResponseAPDU response = getDataNormal(DATA_ID_NORMAL);
+    assertSw(0x9000, response, "Uninitialized object should return empty success when configured");
+    assertEquals(0, response.getData().length, "Empty object response should not include data");
+  }
+
+  @Test
   void putDataIsRejectedWithoutManagementAuthentication() {
     byte[] managementKey = keyMaterialAes128((byte) 0x51);
 
@@ -306,37 +328,56 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     authenticateManagementKey(managementKey);
 
     ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C025FC1"));
-    assertSw(PIV_SW_REFERENCE_NOT_FOUND, response, "Normal-object PUT DATA requires 5C length=3");
+    assertSw(ISO7816.SW_WRONG_DATA, response, "PUT DATA should reject a tag-list without DATA");
   }
 
   @Test
-  void putDataRejectsMalformedNormalTagListPrefixByteOne() {
+  void putDataSupportsCustomThreeByteObjectIdentifier() {
     byte[] managementKey = keyMaterialAes128((byte) 0x75);
+    byte[] customId = hex("00C15A");
 
     provisionManagementKeyOverScp(managementKey);
-    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    createDataObjectOverScp(customId, KEY_REF_CARD_MANAGEMENT);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C0300C15A530101"));
+    byte[] objectBody = hex("5303A1A2A3");
+    assertSw(
+        0x9000,
+        transmit(0x00, 0xDB, 0x3F, 0xFF, concat(tagList(customId), objectBody)),
+        "PUT DATA should accept a non-5FC1 three-byte object identifier");
+
+    ResponseAPDU readBack = getData(customId);
+    assertSw(0x9000, readBack, "GET DATA should find the exact custom three-byte identifier");
+    assertArrayEquals(objectBody, readBack.getData(), "Custom object content should round-trip");
+
     assertSw(
         ISO7816.SW_FILE_NOT_FOUND,
-        response,
-        "Normal-object PUT DATA requires tag prefix byte 0x5F");
+        getDataNormal(DATA_ID_NORMAL),
+        "Custom 00C15A object must not alias standard 5FC15A");
   }
 
   @Test
-  void putDataRejectsMalformedNormalTagListPrefixByteTwo() {
+  void putDataSupportsYubiKeyCompatibleAttestationIssuerCertificateObject() {
     byte[] managementKey = keyMaterialAes128((byte) 0x76);
+    byte[] attestationIssuerObjectId = hex("5FFF01");
 
     provisionManagementKeyOverScp(managementKey);
-    createDataObjectOverScp(DATA_ID_NORMAL, KEY_REF_CARD_MANAGEMENT);
+    createDataObjectOverScp(attestationIssuerObjectId, KEY_REF_CARD_MANAGEMENT);
     authenticateManagementKey(managementKey);
 
-    ResponseAPDU response = transmit(0x00, 0xDB, 0x3F, 0xFF, hex("5C035F005A530101"));
+    byte[] issuerCertObject = hex("5308700101710100FE00");
     assertSw(
-        ISO7816.SW_FILE_NOT_FOUND,
-        response,
-        "Normal-object PUT DATA requires tag prefix byte 0xC1");
+        0x9000,
+        transmit(
+            0x00, 0xDB, 0x3F, 0xFF, concat(tagList(attestationIssuerObjectId), issuerCertObject)),
+        "PUT DATA should accept the YubiKey-compatible attestation issuer certificate object");
+
+    ResponseAPDU readBack = getData(attestationIssuerObjectId);
+    assertSw(0x9000, readBack, "GET DATA should read object 5FFF01");
+    assertArrayEquals(
+        issuerCertObject,
+        readBack.getData(),
+        "Attestation issuer certificate object should round-trip");
   }
 
   @Test
@@ -549,6 +590,14 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         "A restarted challenge flow must clear prior key-authenticated admin state");
   }
 
+  /**
+   * Creates and loads its own 9B key and data objects, so the standard test card is not applied.
+   */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
+  }
+
   private void provisionManagementKeyOverScp(byte[] keyBytes) {
     withMockedScp(
         new Runnable() {
@@ -600,28 +649,32 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   private void createDataObjectOverScp(final byte id, final byte adminKey) {
+    if (id == DATA_ID_DISCOVERY) {
+      createDataObjectOverScp(new byte[] {id}, adminKey);
+    } else if (id == DATA_ID_BIOMETRIC_GROUP) {
+      createDataObjectOverScp(hex("7F61"), adminKey);
+    } else {
+      createDataObjectOverScp(new byte[] {(byte) 0x5F, (byte) 0xC1, id}, adminKey);
+    }
+  }
+
+  private void createDataObjectOverScp(final byte[] id, final byte adminKey) {
     withMockedScp(
         new Runnable() {
           @Override
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before SCP data-object create");
+            byte[] idTlv = tlv((byte) 0x8B, id);
             byte[] createObjectRequest =
-                new byte[] {
-                  (byte) 0x64,
-                  (byte) 0x0C,
-                  (byte) 0x8B,
-                  (byte) 0x01,
-                  id,
-                  (byte) 0x8C,
-                  (byte) 0x01,
-                  (byte) 0x7F,
-                  (byte) 0x8D,
-                  (byte) 0x01,
-                  (byte) 0x7F,
-                  (byte) 0x91,
-                  (byte) 0x01,
-                  adminKey
-                };
+                tlv(
+                    (byte) 0x64,
+                    concat(
+                        idTlv,
+                        new byte[] {
+                          (byte) 0x8C, (byte) 0x01, (byte) 0x7F,
+                          (byte) 0x8D, (byte) 0x01, (byte) 0x7F,
+                          (byte) 0x91, (byte) 0x01, adminKey
+                        }));
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0x00, createObjectRequest),
@@ -659,6 +712,10 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     return transmit(0x00, 0xCB, 0x3F, 0xFF, normalTagList(id));
   }
 
+  private ResponseAPDU getData(byte[] id) {
+    return transmit(0x00, 0xCB, 0x3F, 0xFF, tagList(id));
+  }
+
   private ResponseAPDU getDataBiometricGroup() {
     return transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C027F61"));
   }
@@ -671,18 +728,22 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     return new byte[] {(byte) 0x5C, (byte) 0x03, (byte) 0x5F, (byte) 0xC1, id};
   }
 
-  private static byte[] keyUpdateData(byte[] keyBytes) {
+  protected static byte[] keyUpdateData(byte[] keyBytes) {
     return concat(
         new byte[] {(byte) 0x30, (byte) (keyBytes.length + 2), (byte) 0x80, (byte) keyBytes.length},
         keyBytes);
   }
 
-  private static byte[] keyMaterialAes128(byte seed) {
+  protected static byte[] keyMaterialAes128(byte seed) {
     byte[] key = new byte[16];
     for (int i = 0; i < key.length; i++) {
       key[i] = (byte) (seed + i);
     }
     return key;
+  }
+
+  private static byte[] tagList(byte[] id) {
+    return tlv((byte) 0x5C, id);
   }
 
   private static byte[] extractChallenge(byte[] responseData, int expectedLength) {
@@ -709,7 +770,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
     }
   }
 
-  private void withMockedScp(Runnable action) {
+  protected void withMockedScp(Runnable action) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())

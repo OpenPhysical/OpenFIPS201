@@ -18,6 +18,12 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
 
+  /** Exercises the random boot PIN/PUK state directly, so the standard test card is not applied. */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
+  }
+
   private static final int INS_VERIFY = 0x20;
   private static final int INS_CHANGE_REFERENCE_DATA = 0x24;
   private static final int INS_RESET_RETRY_COUNTER = 0x2C;
@@ -248,12 +254,5 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
 
     assertEquals(9, retriesAfterFirst, "First wrong PUK should consume one retry");
     assertEquals(8, retriesAfterSecond, "Second wrong PUK should consume one additional retry");
-  }
-
-  private static byte[] concat(byte[] left, byte[] right) {
-    byte[] out = new byte[left.length + right.length];
-    System.arraycopy(left, 0, out, 0, left.length);
-    System.arraycopy(right, 0, out, left.length, right.length);
-    return out;
   }
 }

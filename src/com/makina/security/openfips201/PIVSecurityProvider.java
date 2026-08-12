@@ -205,11 +205,19 @@ final class PIVSecurityProvider {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
     }
 
+    PIVKeyObject key = selectKey(id);
+    if (key != null && key.match(id, mechanism)) return key;
+
+    return null;
+  }
+
+  PIVKeyObject selectKey(byte id) {
+
     PIVKeyObject key = firstKey;
 
     // Traverse the linked list
     while (key != null) {
-      if (key.match(id, mechanism)) return key;
+      if (key.match(id)) return key;
       key = (PIVKeyObject) key.nextObject;
     }
 
@@ -217,16 +225,7 @@ final class PIVSecurityProvider {
   }
 
   boolean keyExists(byte id) {
-
-    PIVObject key = firstKey;
-
-    // Traverse the linked list
-    while (key != null) {
-      if (key.match(id)) return true;
-      key = key.nextObject;
-    }
-
-    return false;
+    return selectKey(id) != null;
   }
 
   /**
@@ -252,6 +251,10 @@ final class PIVSecurityProvider {
     // First, map the default mechanism code to TDEA 3KEY
     if (mechanism == PIV.ID_ALG_DEFAULT) {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
+    }
+
+    if (keyExists(id)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
     }
 
     // Create our new key
@@ -306,13 +309,57 @@ final class PIVSecurityProvider {
     key.runGc();
   }
 
+  boolean deleteKey(byte id) {
+
+    PIVKeyObject previous = null;
+    PIVKeyObject key = firstKey;
+
+    while (key != null) {
+      PIVKeyObject next = (PIVKeyObject) key.nextObject;
+      if (key.match(id)) {
+        if (transientState[STATE_AUTH_KEY] == id) {
+          clearAuthenticatedKey();
+        }
+        JCSystem.beginTransaction();
+        if (previous == null) {
+          firstKey = next;
+        } else {
+          previous.nextObject = next;
+        }
+        key.nextObject = null;
+        JCSystem.commitTransaction();
+        key.clear();
+        key.runGc();
+        return true;
+      }
+      previous = key;
+      key = next;
+    }
+
+    return false;
+  }
+
+  void clearKeyMaterialExcept(byte retainedId) {
+    PIVKeyObject key = firstKey;
+    while (key != null) {
+      if (key.getId() != retainedId) {
+        key.clear();
+      }
+      key = (PIVKeyObject) key.nextObject;
+    }
+    // Keep linked-list definitions in place; only sensitive material and authenticated key state
+    // are cleared so provisioning profiles do not need to recreate object metadata.
+    clearAuthenticatedKey();
+  }
+
   /**
    * Validates the current security conditions for administering the specified object.
    *
    * @param object The object to check permissions for
+   * @param vciEstablished True if the Virtual Contact Interface (secure messaging) is established
    * @return True of the access mode check passed
    */
-  boolean checkAccessModeAdmin(PIVObject object) {
+  boolean checkAccessModeAdmin(PIVObject object, boolean vciEstablished) {
 
     //
     // This check can pass by any of the following conditions being true:
@@ -350,7 +397,7 @@ final class PIVSecurityProvider {
     //
     if ((mode != PIVObject.ACCESS_MODE_ALWAYS)
         && ((mode & PIVObject.ACCESS_MODE_USER_ADMIN) == PIVObject.ACCESS_MODE_USER_ADMIN)
-        && checkAccessModeObject(object)) {
+        && checkAccessModeObject(object, vciEstablished)) {
       result = true;
     }
 
@@ -371,39 +418,51 @@ final class PIVSecurityProvider {
    * Validates the current security conditions for access to a given data or key object
    *
    * @param object The object to check permissions for
+   * @param vciEstablished True if the Virtual Contact Interface (secure messaging) is established
    * @return True of the access mode check passed
    */
-  boolean checkAccessModeObject(PIVObject object) {
+  boolean checkAccessModeObject(PIVObject object, boolean vciEstablished) {
 
     boolean valid = false;
 
     // Select the appropriate access mode to check
+    final boolean contactless = (transientState[STATE_IS_CONTACTLESS] == FLAG_TRUE);
     byte mode;
-    if (transientState[STATE_IS_CONTACTLESS] == FLAG_TRUE) {
+    if (contactless) {
       mode = object.getModeContactless();
     } else {
       mode = object.getModeContact();
     }
 
-    // Check for special ALWAYS condition, which ignores PIN_ALWAYS
+    // Check for special ALWAYS condition, which ignores PIN_ALWAYS and VCI
     if (mode == PIVObject.ACCESS_MODE_ALWAYS) {
       valid = true;
     } else {
-      // Check for PIN and GLOBAL PIN
-      if ((mode & PIVObject.ACCESS_MODE_PIN) == PIVObject.ACCESS_MODE_PIN
-          || (mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS) {
-        // At least one PIN type must be both Enabled and Validated or we fail
-        // NOTE: We don't check if they are enabled here, because if they weren't they could
-        // never be valid.
-        if (cardPIN.isValidated() || globalPIN.isValidated()) {
+      // SP 800-73-5 Part 1 Section 5.5 defines VCI as a contactless security condition;
+      // contact-interface rules do not depend on VCI state.
+      final boolean vciRequired =
+          contactless && (mode & PIVObject.ACCESS_MODE_VCI) == PIVObject.ACCESS_MODE_VCI;
+
+      if (!vciRequired || vciEstablished) {
+        // Check for PIN and GLOBAL PIN
+        if ((mode & PIVObject.ACCESS_MODE_PIN) == PIVObject.ACCESS_MODE_PIN
+            || (mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS) {
+          // At least one PIN type must be both Enabled and Validated or we fail
+          // NOTE: We don't check if they are enabled here, because if they weren't they could
+          // never be valid.
+          if (cardPIN.isValidated() || globalPIN.isValidated()) {
+            valid = true;
+          }
+        } else if (vciRequired && (mode & PIVObject.ACCESS_MODE_OCC) == 0) {
+          // VCI-only condition (no PIN/OCC): satisfied once VCI is established.
           valid = true;
         }
-      }
 
-      // Check for PIN_ALWAYS
-      if (((mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS)
-          && transientState[STATE_PIN_ALWAYS] != FLAG_TRUE) {
-        valid = false;
+        // Check for PIN_ALWAYS
+        if (((mode & PIVObject.ACCESS_MODE_PIN_ALWAYS) == PIVObject.ACCESS_MODE_PIN_ALWAYS)
+            && transientState[STATE_PIN_ALWAYS] != FLAG_TRUE) {
+          valid = false;
+        }
       }
     }
 
@@ -520,4 +579,5 @@ final class PIVSecurityProvider {
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0xFF);
     Util.arrayFillNonAtomic(buffer, offset, length, (byte) 0x00);
   }
+
 }

@@ -73,6 +73,7 @@ final class ChainBuffer {
 
   // Indicates whether the chain is operating inside a transaction
   private static final short CONTEXT_TRANSACTION = (short) 6;
+  private static final short CONTEXT_SECURE_OUTGOING = (short) 7;
 
   // The APDU header used for tracking incoming data
   // NOTE: It's cheaper to use 4 shorts in this array than to allocate a separate 4 bytes, as the
@@ -159,6 +160,7 @@ final class ChainBuffer {
     context[CONTEXT_REMAINING] = (short) 0;
     context[CONTEXT_LENGTH] = (short) 0;
     context[CONTEXT_CLEAR_ON_COMPLETE] = (short) 0;
+    context[CONTEXT_SECURE_OUTGOING] = (short) 0;
     context[CONTEXT_APDU_CLASS] = (short) 0;
     context[CONTEXT_APDU_P1P2] = (short) 0;
     context[CONTEXT_TRANSACTION] = (short) 0;
@@ -199,6 +201,14 @@ final class ChainBuffer {
     context[CONTEXT_REMAINING] = length;
     context[CONTEXT_LENGTH] = length;
     context[CONTEXT_CLEAR_ON_COMPLETE] = clearOnCompletion ? (short) 1 : (short) 0;
+  }
+
+  boolean isOutgoingActive() {
+    return context[CONTEXT_STATE] == STATE_OUTGOING;
+  }
+
+  boolean isSecureOutgoingActive() {
+    return isOutgoingActive() && context[CONTEXT_SECURE_OUTGOING] != (short) 0;
   }
 
   /**
@@ -262,6 +272,7 @@ final class ChainBuffer {
       // We have been called in the middle of another operation! call resetAbort in case there is
       // some outstanding transaction
       resetAbort();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
     //
@@ -536,8 +547,74 @@ final class ChainBuffer {
     // Transmit the next frame up to a maximum of 'LE' bytes
     //
 
-    short le = apdu.setOutgoing();
+    short le = outgoingLength(apdu);
+    short length = (context[CONTEXT_REMAINING] > le) ? le : context[CONTEXT_REMAINING];
 
+    sendOutgoing(apdu, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
+    advanceOutgoing(length);
+
+    // If we have nothing left to send, clear our context and return 9000
+    ISOException.throwIt(outgoingStatusWord());
+  }
+
+  void processOutgoingSecure(
+      APDU apdu, PIVSecureMessaging secureMessaging, byte[] buffer, short sw) throws ISOException {
+
+    byte[] apduBuffer = apdu.getBuffer();
+    short plaintextOffset = (short) 0;
+    short plaintextRemaining = (short) 0;
+
+    if (context[CONTEXT_STATE] == STATE_OUTGOING) {
+      if (apduBuffer[ISO7816.OFFSET_INS] != INS_GET_RESPONSE
+          && context[CONTEXT_SECURE_OUTGOING] != (short) 0) {
+        reset();
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+
+      plaintextOffset = context[CONTEXT_OFFSET];
+      plaintextRemaining = context[CONTEXT_REMAINING];
+      if (context[CONTEXT_SECURE_OUTGOING] == (short) 0) {
+        secureMessaging.beginResponseStream(plaintextRemaining, sw);
+        context[CONTEXT_SECURE_OUTGOING] = (short) 1;
+      }
+    } else if (context[CONTEXT_STATE] != STATE_NONE) {
+      resetAbort();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    } else {
+      if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) {
+        if (!secureMessaging.isResponseStreamActive()) {
+          ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+        }
+      } else {
+        secureMessaging.beginResponseStream((short) 0, sw);
+        context[CONTEXT_SECURE_OUTGOING] = (short) 1;
+      }
+    }
+
+    short le = outgoingLength(apdu);
+    short length =
+        secureMessaging.writeResponseStreamChunk(
+            context[CONTEXT_STATE] == STATE_OUTGOING ? (byte[]) dataPtr[0] : buffer,
+            plaintextOffset,
+            buffer,
+            (short) 0,
+            le);
+    short consumed = secureMessaging.getResponseStreamPlaintextConsumed();
+    if (consumed > (short) 0) {
+      advanceOutgoing(consumed);
+    }
+
+    sendOutgoing(apdu, buffer, (short) 0, length);
+    short responseSw = secureMessaging.getResponseStreamStatusWord();
+    if (secureMessaging.isResponseStreamComplete()) {
+      reset();
+    }
+
+    ISOException.throwIt(responseSw);
+  }
+
+  private short outgoingLength(APDU apdu) {
+    short le = apdu.setOutgoing();
     //
     // !! HACK !!
     // Most applets completely ignore this value and so interface developers have gotten lazy about
@@ -545,28 +622,28 @@ final class ChainBuffer {
     // This treats the absence of an LE byte (case 3) as if it were a case 4 byte with LE == '00',
     // which maps to 256 bytes.
     //
-    if (le == 0) le = 256;
+    return le == (short) 0 ? (short) 256 : le;
+  }
 
-    short length = (context[CONTEXT_REMAINING] > le) ? le : context[CONTEXT_REMAINING];
-
+  private void sendOutgoing(APDU apdu, byte[] buffer, short offset, short length) {
     apdu.setOutgoingLength(length);
-    apdu.sendBytesLong((byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
+    apdu.sendBytesLong(buffer, offset, length);
+  }
 
+  private void advanceOutgoing(short length) {
     context[CONTEXT_REMAINING] -= length;
     context[CONTEXT_OFFSET] += length;
+  }
 
-    // If we have nothing left to send, clear our context and return 9000
-    if (context[CONTEXT_REMAINING] == 0) {
+  private short outgoingStatusWord() {
+    if (context[CONTEXT_REMAINING] == (short) 0) {
       reset();
-      ISOException.throwIt(ISO7816.SW_NO_ERROR);
+      return ISO7816.SW_NO_ERROR;
     }
-    // Otherwise, notify the caller we have xx remaining bytes (up to 255)
-    else {
-      short sw2 =
-          (context[CONTEXT_REMAINING] > (short) 0x00FF)
-              ? (short) 0x00FF
-              : context[CONTEXT_REMAINING];
-      ISOException.throwIt((short) (ISO7816.SW_BYTES_REMAINING_00 | sw2));
-    }
+    short sw2 =
+        (context[CONTEXT_REMAINING] > (short) 0x00FF)
+            ? (short) 0x00FF
+            : context[CONTEXT_REMAINING];
+    return (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
   }
 }

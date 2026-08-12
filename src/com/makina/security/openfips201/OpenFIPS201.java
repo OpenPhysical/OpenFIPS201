@@ -38,6 +38,10 @@ import org.globalplatform.SecureChannel;
 /**
  * The main applet class, which is responsible for handling APDU's and dispatching them to the PIV
  * provider.
+ *
+ * <p>The applet also exposes INS F9 ATTEST for generated-key attestation. The command has no
+ * request body, requires P2=00, and returns a DER X.509 certificate through the standard outgoing
+ * response chaining path.
  */
 public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLength {
   /*
@@ -63,6 +67,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
   private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
   private static final byte INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR = (byte) 0x47;
+  //#if ATTESTATION_ENABLED
+  // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key.
+  private static final byte INS_PIV_ATTEST = (byte) 0xF9;
+  //#endif
   // Helper constants
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
@@ -135,13 +143,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
   @Override
   public void uninstall() {
-    //
-    // NOTE:
-    // - Get rid of all static instances that would prevent GP from deleting the applet instance
-    //   without also deleting the corresponding package
-    // - TODO: Change TLVReader and TLVWriter to an instance
+    // Release package-level singleton references so cards that enforce object reachability can
+    // delete this applet instance and package cleanly.
     TLVReader.terminate();
     TLVWriter.terminate();
+    DERWriter.terminate();
     PIVCrypto.terminate();
   }
 
@@ -193,12 +199,25 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       return;
     }
 
-    validateCommandClass(buffer);
+    validateCommandClass(apdu, buffer);
 
-    // SPECIAL CASE 1 - GET RESPONSE
-    // We handle the GET RESPONSE command differently because it is the only ISO 7816 Case 1 / 3
-    // command this applet supports and we don't care about secure channel processing.
-    if (buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE) {
+    boolean pivSecureMessagingCla = piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA]);
+    boolean gpSecureMessagingCla = apdu.isSecureMessagingCLA();
+    boolean plaintextGetResponse =
+        buffer[ISO7816.OFFSET_INS] == INS_GP_GET_RESPONSE
+            && !pivSecureMessagingCla
+            && !gpSecureMessagingCla;
+
+    // SPECIAL CASE 1 - plaintext GET RESPONSE
+    // We handle plaintext GET RESPONSE before incoming-data processing because it carries no
+    // command data. A GP SCP-protected GET RESPONSE must not take this shortcut: the platform
+    // secure-channel layer has to unwrap it so the host and card SCP state stay synchronized.
+    if (plaintextGetResponse) {
+      piv.clearSecureMessagingCommand();
+      if (piv.isSecureMessagingResponseActive()) {
+        piv.processOutgoingSecureContinuation(apdu);
+        return;
+      }
       piv.processOutgoing(apdu);
       return;
     }
@@ -225,10 +244,21 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // 3) The current command indicates it is transmitting a SCP protected command
     // 4) The command unwrap method successfully completed
 
-    // Always default to false for secure channel until proven otherwise
+    // Default to no secure channel until the APDU unwrap confirms one.
     piv.setIsSecureChannel(false);
+    piv.clearSecureMessagingCommand();
 
-    if (apdu.isSecureMessagingCLA()) {
+    if (pivSecureMessagingCla) {
+      length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
+    } else if (piv.isSecureMessagingEstablished()
+        && !gpSecureMessagingCla
+        && !isPlaintextOpacityEstablishment(buffer)) {
+      // OpenFIPS201 keeps a fail-closed policy for plaintext PIV APDUs while PIV secure
+      // messaging is live. The exception is the SP 800-73-5 Part 2 Section 4.1.8 OPACITY
+      // re-establishment command, which is sent as plaintext GENERAL AUTHENTICATE.
+      piv.clearSecureMessaging();
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    } else if (gpSecureMessagingCla) {
       SecureChannel secureChannel = GPSystem.getSecureChannel();
       if ((secureChannel.getSecurityLevel() & SC_MASK) == SC_MASK) {
         // Validate and unwrap the APDU, including the header bytes
@@ -240,73 +270,110 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
 
     //
-    // Process any outstanding chain requests
-    //
-    // NOTES:
-    // - If there is an outstanding chain request to process, this method will throw an ISOException
-    //	 (including SW_NO_ERROR) and no further processing will occur.
-    // - It is important that this command is handled before any GP SCP authentication is called to
-    //   prevent a downgrade attack where the attacker waits for a sensitive large-command to be
-    //   executed and then intercepts the session and cancels the secure channel (thus removing
-    //   session encryption).
-    // - TODO: Make sure that if we are supposed to be receiving this data under SCP, that it is
-    //   	   definitely still set.
-
-    // We pass the byte array, offset and length here because the previous call to unwrap() may have
-    // altered the length
-    piv.processIncomingObject(buffer, apdu.getOffsetCdata(), length);
-
-    //
     // Normal APDU processing
     //
-    switch (buffer[ISO7816.OFFSET_INS]) {
-      case INS_GP_INITIALIZE_UPDATE: // Case 4
-        processGP_SECURECHANNEL(apdu, true);
-        break;
+    try {
+      //
+      // Process any outstanding chain requests
+      //
+      // NOTES:
+      // - If there is an outstanding chain request to process, this method will throw an ISOException
+      //   (including SW_NO_ERROR) and no further processing will occur.
+      // - It is important that this command is handled before any GP SCP authentication is called to
+      //   prevent a downgrade attack where the attacker waits for a sensitive large-command to be
+      //   executed and then intercepts the session and cancels the secure channel (thus removing
+      //   session encryption).
+      // - TODO: Make sure that if we are supposed to be receiving this data under SCP, that it is
+      //   definitely still set.
+      //
+      // We pass the byte array, offset and length here because the previous call to unwrap() may
+      // have altered the length.
+      piv.processIncomingObject(buffer, apdu.getOffsetCdata(), length);
 
-      case INS_GP_EXTERNAL_AUTHENTICATE: // Case 4
-        processGP_SECURECHANNEL(apdu, false);
-        break;
+      // PIV secure messaging is handled as a transport wrapper here. Command-specific access
+      // checks below still decide whether the unwrapped command is allowed in the current profile
+      // and interface state.
+      switch (buffer[ISO7816.OFFSET_INS]) {
+        case INS_GP_INITIALIZE_UPDATE: // Case 4
+          processGP_SECURECHANNEL(apdu);
+          break;
 
-        // Application Commands
-      case INS_PIV_SELECT: // Case 4
-        processPIV_SELECT(apdu);
-        break;
+        case INS_GP_EXTERNAL_AUTHENTICATE: // Case 4
+          processGP_SECURECHANNEL(apdu);
+          break;
 
-      case INS_PIV_GET_DATA: // Case 4
-        processPIV_GET_DATA(apdu, length);
-        break;
+        case INS_GP_GET_RESPONSE:
+          piv.processOutgoing(apdu);
+          return;
 
-      case INS_PIV_VERIFY: // Case 2
-        processPIV_VERIFY(apdu, length);
-        break;
+          // Application Commands
+        case INS_PIV_SELECT: // Case 4
+          processPIV_SELECT(apdu);
+          break;
 
-      case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
-        processPIV_CHANGE_REFERENCE_DATA(apdu, length);
-        break;
+        case INS_PIV_GET_DATA: // Case 4
+          processPIV_GET_DATA(apdu, length);
+          break;
 
-      case INS_PIV_RESET_RETRY_COUNTER: // Case 2
-        processPIV_RESET_RETRY_COUNTER(apdu, length);
-        break;
+        case INS_PIV_VERIFY: // Case 2
+          processPIV_VERIFY(apdu, length);
+          break;
 
-      case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
-        processPIV_GENERAL_AUTHENTICATE(apdu, length);
-        break;
+        case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
+          processPIV_CHANGE_REFERENCE_DATA(apdu, length);
+          break;
 
-      case INS_PIV_PUT_DATA: // Case 2
-        processPIV_PUT_DATA(apdu, length);
-        break;
+        case INS_PIV_RESET_RETRY_COUNTER: // Case 2
+          processPIV_RESET_RETRY_COUNTER(apdu, length);
+          break;
 
-      case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
-        processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
-        break;
+        case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
+          processPIV_GENERAL_AUTHENTICATE(apdu, length);
+          break;
 
-      default:
-        ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+        case INS_PIV_PUT_DATA: // Case 2
+          processPIV_PUT_DATA(apdu, length);
+          break;
+
+        case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
+          processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu);
+          break;
+
+        //#if ATTESTATION_ENABLED
+        case INS_PIV_ATTEST:
+          processPIV_ATTEST(apdu, length);
+          break;
+        //#endif
+
+        default:
+          ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+      }
+
+      if (piv.isSecureMessagingCommand()) {
+        piv.processOutgoing(apdu);
+      }
+    } catch (ISOException ex) {
+      short reason = ex.getReason();
+      if (!piv.isSecureMessagingCommand()
+          || reason == ISO7816.SW_NO_ERROR
+          || (short) (reason & (short) 0xFF00) == ISO7816.SW_BYTES_REMAINING_00) {
+        throw ex;
+      }
+      // An error status produced by command processing inside a verified secure messaging
+      // exchange is an application status, not a secure messaging error. SP 800-73-5 Part 2
+      // Section 4.2.6 requires it to be returned encapsulated in the '99' status template of a
+      // wrapped response, and the SW processing status of that exchange (Section 4.2.7) is
+      // '90 00' because the secure messaging itself was performed successfully. Session key
+      // destruction (Section 4.3) applies only when the SW processing status is other than
+      // '61 XX' or '90 00' - that is, to the secure messaging error statuses of Section 4.2.7,
+      // which are returned without wrapping - so the session keys are retained here and the
+      // session continues. Secure messaging processing errors are zeroized at the point they
+      // are detected, in PIVSecureMessaging.unwrapCommand().
+      piv.processOutgoing(apdu, ex.getReason());
     }
   }
 
-  private static void validateCommandClass(byte[] buffer) {
+  private void validateCommandClass(APDU apdu, byte[] buffer) {
     byte cla = buffer[ISO7816.OFFSET_CLA];
     byte ins = buffer[ISO7816.OFFSET_INS];
 
@@ -319,6 +386,23 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       return;
     }
 
+    if (piv.isSecureMessagingCLA(cla)) {
+      if (!piv.isSecureMessagingEstablished()) {
+        ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+      }
+      return;
+    }
+
+    // GlobalPlatform may protect an interindustry PIV command by setting the ISO secure-messaging
+    // bit on its original class (00 -> 04). Accept that form only when the runtime identifies the
+    // APDU as GP secure messaging; plaintext CLA 04 remains unsupported.
+    if ((byte) (cla & (byte) 0xEF) == (byte) 0x04 && apdu.isSecureMessagingCLA()) {
+      SecureChannel secureChannel = GPSystem.getSecureChannel();
+      if (secureChannel != null && (secureChannel.getSecurityLevel() & SC_MASK) == SC_MASK) {
+        return;
+      }
+    }
+
     // PIV uses the interindustry class. Administrative commands may use GP SCP (84), and either
     // class may carry the ISO command-chaining bit (10).
     byte baseCla = (byte) (cla & (byte) 0xEF);
@@ -327,13 +411,18 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
   }
 
+  private boolean isPlaintextOpacityEstablishment(byte[] buffer) {
+    return buffer[ISO7816.OFFSET_INS] == INS_PIV_GENERAL_AUTHENTICATE
+        && buffer[ISO7816.OFFSET_P1] == PIV.ID_ALG_ECC_SM
+        && buffer[ISO7816.OFFSET_P2] == PIV.ID_KEY_SECURE_MESSAGING;
+  }
+
   /**
    * Processes the GlobalPlatform Secure Channel Protocol (SCP) authentication mechanisms
    *
    * @param apdu The APDU to process.
-   * @param reset If true, reset the secure channel
    */
-  private void processGP_SECURECHANNEL(APDU apdu, boolean reset) {
+  private void processGP_SECURECHANNEL(APDU apdu) {
 
     /*
      * PRE-CONDITIONS
@@ -350,11 +439,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     SecureChannel secureChannel = GPSystem.getSecureChannel();
 
-    if (reset) {
-      secureChannel.resetSecurity();
-    }
-
-    // STEP 1 - Call the PIV 'SELECT' command
+    // STEP 1 - Call the GlobalPlatform secure-channel command handler. INITIALIZE UPDATE starts a
+    // new SCP session; the platform implementation owns any required session reset.
     short length = secureChannel.processSecurity(apdu);
     short offset = apdu.getOffsetCdata();
 
@@ -717,4 +803,23 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // STEP 2 - Process the first frame of the chainBuffer for this response
     piv.processOutgoing(apdu);
   }
+
+  //#if ATTESTATION_ENABLED
+  private void processPIV_ATTEST(APDU apdu, short length) {
+    byte[] buffer = apdu.getBuffer();
+
+    if (buffer[ISO7816.OFFSET_P2] != (byte) 0x00) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    // ATTEST is a no-body command. Reject unexpected command data after any SCP unwrap instead of
+    // silently ignoring it.
+    if (length != ZERO_SHORT) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+
+    piv.attest(buffer[ISO7816.OFFSET_P1]);
+    piv.processOutgoing(apdu);
+  }
+  //#endif
 }

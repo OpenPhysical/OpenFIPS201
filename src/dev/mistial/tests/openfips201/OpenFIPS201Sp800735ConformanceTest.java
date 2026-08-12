@@ -3,6 +3,7 @@ package dev.mistial.tests.openfips201;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeUnit;
+import javacard.framework.APDU;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
@@ -98,6 +99,34 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
     ResponseAPDU response =
         transmit(0x00, 0x2C, 0x00, 0x80, hex("3031323334353637393837363534FFFF"));
     assertSw(0x63C9, response, "RESET RETRY COUNTER must still consume two eight-byte fields");
+  }
+
+  @Test
+  void contactlessChangeReferenceDataRequiresVciEvenWhenContactlessPinChangeIsEnabled() {
+    assertSw(0x9000, selectApplet(), "SELECT before contactless PIN change config");
+    assertSw(
+        0x9000,
+        updateConfigOverMockedScp(hex("68 05 A0 03 83 01 FF")),
+        "Enable contactless PIN change");
+
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu
+          .when(APDU::getProtocol)
+          .thenReturn((byte) (APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A | APDU.PROTOCOL_T1));
+      assertSw(0x9000, selectApplet(), "SELECT over contactless");
+
+      ResponseAPDU response =
+          transmit(
+              0x00,
+              0x24,
+              0x00,
+              0x80,
+              hex("313233343536FFFFFF363534333231FFFFFF"));
+      assertSw(
+          0x6982,
+          response,
+          "Contactless CHANGE REFERENCE DATA for key ref 80 requires VCI, not plaintext");
+    }
   }
 
   private ResponseAPDU updateConfigOverMockedScp(byte[] payload) {

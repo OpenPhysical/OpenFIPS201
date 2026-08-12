@@ -44,9 +44,21 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   // The ECC private key element tag
   private static final byte ELEMENT_ECC_SECRET = (byte) 0x87;
 
+  // The PIV secure messaging CVC element tag (OpenFIPS201 ASN.1 smCVC [10]).
+  static final byte ELEMENT_SM_CVC = (byte) 0x8A;
+
+  //#if VCI_CS2
+  private static final short LENGTH_SM_CVC_MAX = (short) 256;
+  //#else
+  // CS7 (P-384) production CVCs are ~275 bytes; allow headroom for encoding variance.
+  private static final short LENGTH_SM_CVC_MAX = (short) 384;
+  //#endif
+
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
   private KeyPair keyPair = null;
+  private byte[] smCvc = null;
+  private short smCvcLength = (short) 0;
 
   // TODO: Refactor to remove the need for a permanent ECParams object
   private final ECParams params;
@@ -82,9 +94,11 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     // where the length of the X and Y coordinates is the byte length of the key.
     // TODO: We can use 2 consts and decide which to compare against based on the mechanism!
     marshaledPubKeyLen = (short) (getKeyLengthBytes() * 2 + 1);
-
     allocatePrivate();
     allocatePublic();
+    if (isSecureMessagingMechanism()) {
+      smCvc = new byte[LENGTH_SM_CVC_MAX];
+    }
   }
 
   /**
@@ -135,6 +149,19 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         allocatePrivate();
 
         privateKey.setS(buffer, offset, length);
+        break;
+
+      case ELEMENT_SM_CVC:
+        if (!isSecureMessagingMechanism()) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          return;
+        }
+        if (length <= (short) 0 || length > LENGTH_SM_CVC_MAX) {
+          ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+          return;
+        }
+        javacard.framework.Util.arrayCopyNonAtomic(buffer, offset, smCvc, (short) 0, length);
+        smCvcLength = length;
         break;
 
         // Clear all key parts
@@ -257,8 +284,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
       case PIV.ID_ALG_ECC_CS2:
       case PIV.ID_ALG_ECC_CS7:
-        // At a minimum we need the private key AND the Card Verifiable Certificate object
-        return (privateKey != null && privateKey.isInitialized());
+        return (privateKey != null && privateKey.isInitialized() && smCvcLength > (short) 0);
 
       default:
         return false; // Satisfy the compiler
@@ -271,6 +297,184 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     privateKey.clearKey();
     setPublicParams();
     setPrivateParams();
+    if (smCvc != null) {
+      PIVSecurityProvider.zeroise(smCvc, (short) 0, (short) smCvc.length);
+    }
+    smCvcLength = (short) 0;
+    clearOrigin();
+  }
+
+  short getSmCvc(byte[] buffer, short offset) throws ISOException {
+    if (smCvcLength <= (short) 0) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0;
+    }
+    return javacard.framework.Util.arrayCopyNonAtomic(
+        smCvc, (short) 0, buffer, offset, smCvcLength);
+  }
+
+  short getSmCvcLength() {
+    return smCvcLength;
+  }
+
+  boolean validatePublicPoint(byte[] buffer, short offset, short length, byte[] work, short workOffset) {
+    short fieldLength = getKeyLengthBytes();
+    if (length != (short) (1 + fieldLength + fieldLength)
+        || buffer[offset] != CONST_POINT_UNCOMPRESSED) {
+      return false;
+    }
+
+    byte[] p = params.getP();
+    byte[] b = params.getB();
+    short xOff = workOffset;
+    short yOff = (short) (xOff + fieldLength);
+    short lhsOff = (short) (yOff + fieldLength);
+    short rhsOff = (short) (lhsOff + fieldLength);
+    short tmpOff = (short) (rhsOff + fieldLength);
+
+    javacard.framework.Util.arrayCopyNonAtomic(
+        buffer, (short) (offset + 1), work, xOff, fieldLength);
+    javacard.framework.Util.arrayCopyNonAtomic(
+        buffer, (short) (offset + 1 + fieldLength), work, yOff, fieldLength);
+
+    if (compareUnsigned(work, xOff, p, (short) 0, fieldLength) >= (byte) 0
+        || compareUnsigned(work, yOff, p, (short) 0, fieldLength) >= (byte) 0) {
+      return false;
+    }
+
+    // SP 800-73-5 Part 2 step C4 requires partial validation of Q_eH before ECDH.
+    // For P-256/P-384 (cofactor 1), check that y^2 == x^3 - 3x + b over Fp.
+    modMultiply(work, lhsOff, work, yOff, work, yOff, p, fieldLength, tmpOff);
+    modMultiply(work, rhsOff, work, xOff, work, xOff, p, fieldLength, tmpOff);
+    modMultiply(work, rhsOff, work, rhsOff, work, xOff, p, fieldLength, tmpOff);
+    modDouble(work, tmpOff, work, xOff, p, fieldLength);
+    modAdd(work, tmpOff, work, tmpOff, work, xOff, p, fieldLength);
+    modSubtract(work, rhsOff, work, rhsOff, work, tmpOff, p, fieldLength);
+    modAdd(work, rhsOff, work, rhsOff, b, (short) 0, p, fieldLength);
+
+    return compareUnsigned(work, lhsOff, work, rhsOff, fieldLength) == (byte) 0;
+  }
+
+  private static void modMultiply(
+      byte[] out,
+      short outOff,
+      byte[] left,
+      short leftOff,
+      byte[] right,
+      short rightOff,
+      byte[] p,
+      short length,
+      short tmpOff) {
+    javacard.framework.Util.arrayCopyNonAtomic(left, leftOff, out, tmpOff, length);
+    javacard.framework.Util.arrayFillNonAtomic(out, outOff, length, (byte) 0);
+
+    for (short i = (short) (length - 1); i >= (short) 0; i--) {
+      byte value = right[(short) (rightOff + i)];
+      for (byte mask = (byte) 1; mask != (byte) 0; mask = (byte) (mask << 1)) {
+        if ((value & mask) != (byte) 0) {
+          modAdd(out, outOff, out, outOff, out, tmpOff, p, length);
+        }
+        modDouble(out, tmpOff, out, tmpOff, p, length);
+      }
+    }
+  }
+
+  private static void modDouble(
+      byte[] out, short outOff, byte[] value, short valueOff, byte[] p, short length) {
+    short carry = (short) 0;
+    for (short i = (short) (length - 1); i >= (short) 0; i--) {
+      short sum = (short) (((value[(short) (valueOff + i)] & 0xFF) << 1) + carry);
+      out[(short) (outOff + i)] = (byte) sum;
+      carry = (short) ((sum >> 8) & 0x01);
+    }
+    if (carry != (short) 0 || compareUnsigned(out, outOff, p, (short) 0, length) >= (byte) 0) {
+      subtractInPlace(out, outOff, p, (short) 0, length);
+    }
+  }
+
+  private static void modAdd(
+      byte[] out,
+      short outOff,
+      byte[] left,
+      short leftOff,
+      byte[] right,
+      short rightOff,
+      byte[] p,
+      short length) {
+    short carry = (short) 0;
+    for (short i = (short) (length - 1); i >= (short) 0; i--) {
+      short sum =
+          (short)
+              ((left[(short) (leftOff + i)] & 0xFF)
+                  + (right[(short) (rightOff + i)] & 0xFF)
+                  + carry);
+      out[(short) (outOff + i)] = (byte) sum;
+      carry = (short) ((sum >> 8) & 0x01);
+    }
+    if (carry != (short) 0 || compareUnsigned(out, outOff, p, (short) 0, length) >= (byte) 0) {
+      subtractInPlace(out, outOff, p, (short) 0, length);
+    }
+  }
+
+  private static void modSubtract(
+      byte[] out,
+      short outOff,
+      byte[] left,
+      short leftOff,
+      byte[] right,
+      short rightOff,
+      byte[] p,
+      short length) {
+    short borrow = subtract(out, outOff, left, leftOff, right, rightOff, length);
+    if (borrow != (short) 0) {
+      short carry = (short) 0;
+      for (short i = (short) (length - 1); i >= (short) 0; i--) {
+        short sum = (short) ((out[(short) (outOff + i)] & 0xFF) + (p[i] & 0xFF) + carry);
+        out[(short) (outOff + i)] = (byte) sum;
+        carry = (short) ((sum >> 8) & 0x01);
+      }
+    }
+  }
+
+  private static void subtractInPlace(
+      byte[] left, short leftOff, byte[] right, short rightOff, short length) {
+    subtract(left, leftOff, left, leftOff, right, rightOff, length);
+  }
+
+  private static short subtract(
+      byte[] out,
+      short outOff,
+      byte[] left,
+      short leftOff,
+      byte[] right,
+      short rightOff,
+      short length) {
+    short borrow = (short) 0;
+    for (short i = (short) (length - 1); i >= (short) 0; i--) {
+      short diff =
+          (short)
+              ((left[(short) (leftOff + i)] & 0xFF)
+                  - (right[(short) (rightOff + i)] & 0xFF)
+                  - borrow);
+      out[(short) (outOff + i)] = (byte) diff;
+      borrow = diff < (short) 0 ? (short) 1 : (short) 0;
+    }
+    return borrow;
+  }
+
+  private static byte compareUnsigned(
+      byte[] left, short leftOff, byte[] right, short rightOff, short length) {
+    for (short i = (short) 0; i < length; i++) {
+      short a = (short) (left[(short) (leftOff + i)] & 0xFF);
+      short b = (short) (right[(short) (rightOff + i)] & 0xFF);
+      if (a < b) return (byte) -1;
+      if (a > b) return (byte) 1;
+    }
+    return (byte) 0;
+  }
+
+  private boolean isSecureMessagingMechanism() {
+    return getMechanism() == PIV.ID_ALG_ECC_CS2 || getMechanism() == PIV.ID_ALG_ECC_CS7;
   }
 
   /** Set ECC domain parameters. */
@@ -344,4 +548,60 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       throws ISOException {
     return PIVCrypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
+
+  boolean verify(
+      byte[] hash,
+      short hashOffset,
+      short hashLength,
+      byte[] signature,
+      short signatureOffset,
+      short signatureLength)
+      throws ISOException {
+    return PIVCrypto.doVerify(
+        publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
+  }
+
+  @Override
+  short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {
+    if (publicKey == null || !publicKey.isInitialized()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0x00;
+    }
+
+    DERWriter writer = DERWriter.getNestedInstance();
+    writer.init(outBuffer, outOffset);
+    writer.begin((byte) 0x30);
+    writer.begin((byte) 0x30);
+    writer.writeTlv((byte) 0x06, OID_EC_PUBLIC_KEY, (short) 0x00, (short) OID_EC_PUBLIC_KEY.length);
+    if (getKeyLengthBits() == KeyBuilder.LENGTH_EC_FP_256) {
+      writer.writeTlv((byte) 0x06, OID_PRIME256V1, (short) 0x00, (short) OID_PRIME256V1.length);
+    } else {
+      writer.writeTlv((byte) 0x06, OID_SECP384R1, (short) 0x00, (short) OID_SECP384R1.length);
+    }
+    writer.end();
+    writer.write((byte) 0x03);
+    writer.writeLength((short) (marshaledPubKeyLen + 1));
+    writer.write((byte) 0x00);
+    short pointOffset = writer.getOffset();
+    writer.setOffset((short) (pointOffset + publicKey.getW(outBuffer, pointOffset)));
+    writer.end();
+    return (short) (writer.getOffset() - outOffset);
+  }
+
+  private static final byte[] OID_EC_PUBLIC_KEY = {
+    (byte) 0x2A, (byte) 0x86, (byte) 0x48, (byte) 0xCE, (byte) 0x3D, (byte) 0x02, (byte) 0x01
+  };
+  private static final byte[] OID_PRIME256V1 = {
+    (byte) 0x2A,
+    (byte) 0x86,
+    (byte) 0x48,
+    (byte) 0xCE,
+    (byte) 0x3D,
+    (byte) 0x03,
+    (byte) 0x01,
+    (byte) 0x07
+  };
+  private static final byte[] OID_SECP384R1 = {
+    (byte) 0x2B, (byte) 0x81, (byte) 0x04, (byte) 0x00, (byte) 0x22
+  };
 }

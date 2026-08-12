@@ -23,16 +23,7 @@ class ConfigDefaultsTest {
 
   @Test
   void rsa3072HasRequiredKeyLengthAndIsAdvertised() {
-    PIVKeyObjectRSA key =
-        new PIVKeyObjectRSA(
-            (byte) 0x9A,
-            PIVObject.ACCESS_MODE_ALWAYS,
-            PIVObject.ACCESS_MODE_NEVER,
-            (byte) 0x9B,
-            PIV.ID_ALG_RSA_3072,
-            PIVKeyObject.ROLE_SIGN,
-            (byte) 0);
-    assertEquals(3072, key.getKeyLengthBits());
+    assertEquals(3072, PIVKeyObjectRSA.keyLengthBitsForMechanism(PIV.ID_ALG_RSA_3072));
 
     boolean advertised = false;
     for (int i = 0; i + 2 < Config.TEMPLATE_APT.length; i++) {

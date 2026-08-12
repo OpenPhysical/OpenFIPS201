@@ -126,7 +126,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     };
   }
 
-  private void withMockedScp(Runnable action) {
+  protected void withMockedScp(Runnable action) {
     try (MockedStatic<GPSystem> mocked = Mockito.mockStatic(GPSystem.class)) {
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())

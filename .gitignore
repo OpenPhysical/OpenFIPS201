@@ -123,3 +123,6 @@ tools/format.bat
 /piv_tests/
 tools/piv_test_runner/local/
 tools/piv_test_runner/piv_tests/
+
+# Local issuer/emulator run output
+build/cardstock-receipts/

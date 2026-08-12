@@ -17,6 +17,14 @@ import org.mockito.Mockito;
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
 class OpenFIPS201SecureChannelAndExtendedLengthTest extends OpenFIPS201TestSupport {
 
+  /**
+   * Asserts exact GP secure-channel dispatch behaviour, so the standard test card is not applied.
+   */
+  @Override
+  protected boolean provisionsStandardCard() {
+    return false;
+  }
+
   @Test
   void secureChannelHandlersUseUnwrappedPayloadLength() {
     // This guards the regression where command handlers used APDU.getIncomingLength() after unwrap,
@@ -84,7 +92,8 @@ class OpenFIPS201SecureChannelAndExtendedLengthTest extends OpenFIPS201TestSuppo
           transmit(new CommandAPDU(0x80, 0x50, 0x00, 0x00, hex("0102030405060708")));
       assertSw(
           0x9000, initUpdate, "INITIALIZE UPDATE should route to SecureChannel.processSecurity");
-      Mockito.verify(secureChannel).resetSecurity();
+      Mockito.verify(secureChannel).processSecurity(Mockito.any());
+      Mockito.verify(secureChannel, Mockito.never()).resetSecurity();
 
       ResponseAPDU extAuth =
           transmit(new CommandAPDU(0x84, 0x82, 0x00, 0x00, hex("0000000000000000")));

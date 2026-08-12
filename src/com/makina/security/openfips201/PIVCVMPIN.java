@@ -44,27 +44,33 @@ final class PIVCVMPIN implements PIVPIN {
 
   @Override
   public byte getTriesRemaining() {
+    if (cvm == null) return (byte) 0x00;
     return cvm.getTriesRemaining();
   }
 
   @Override
   public boolean check(byte[] pin, short offset, byte length)
       throws ArrayIndexOutOfBoundsException, NullPointerException {
+    if (cvm == null) return false;
     return (CVM.CVM_SUCCESS == cvm.verify(pin, offset, length, CVM.FORMAT_HEX));
   }
 
   @Override
   public boolean isValidated() {
-    return cvm.isVerified();
+    return cvm != null && cvm.isVerified();
   }
 
   @Override
   public void reset() {
-    cvm.resetState();
+    if (cvm != null) cvm.resetState();
   }
 
   @Override
   public void update(byte[] pin, short offset, byte length) throws PINException {
+    if (cvm == null) {
+      PINException.throwIt(PINException.ILLEGAL_VALUE);
+      return;
+    }
     cvm.update(pin, offset, length, CVM.FORMAT_HEX);
   }
 

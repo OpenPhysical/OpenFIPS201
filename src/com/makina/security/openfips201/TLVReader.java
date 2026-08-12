@@ -83,45 +83,7 @@ final class TLVReader {
    * @return The length of the data element
    */
   static short getLength(byte[] data, short offset) throws ISOException {
-
-    //
-    // Skip the TAG element
-    //
-
-    // If bits B5-B1 of the leading byte are not all 1, they encode the tag number.
-    // an integer equal to the tag number which therefore lies in the range from 0 to 30.
-    // Then the tag field consists of a single byte.
-    // Otherwise (B5-B1 set to 1 in the leading byte), the tag field shall continue on one or more
-    // subsequent bytes.
-    if ((data[offset] & TLV.MASK_TAG_MULTI_BYTE) == TLV.MASK_TAG_MULTI_BYTE) {
-      while ((data[++offset] & TLV.MASK_HIGH_TAG_MOREDATA) == TLV.MASK_HIGH_TAG_MOREDATA) {
-        // Do nothing, just skip
-      }
-    }
-    offset++; // We now know we can move to the length byte
-
-    // Is this a short-form length byte?
-    if ((data[offset] & TLV.MASK_LONG_LENGTH) != TLV.MASK_LONG_LENGTH) {
-      // short-form length
-      return (short) (data[offset] & 0xFF);
-    }
-
-    // Is there more than 1 byte?
-    if ((data[offset] & TLV.MASK_LENGTH) == 1) {
-      // Values 0-255
-      offset++;
-      return (short) (data[offset] & 0xFF);
-    } else if ((data[offset] & TLV.MASK_LENGTH) == 2) {
-      // Values 0-65535
-      // NOTE: Since we're assigning to a signed short, we don't
-      // support anything greater than +32766.
-      offset++;
-      return Util.getShort(data, offset);
-    } else {
-      // We don't support multi-byte length definitions > 2
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      return (short) -1; // Dummy for compiler
-    }
+    return TLV.readLength(data, offset, (short) data.length, false);
   }
 
   /**
@@ -132,33 +94,7 @@ final class TLVReader {
    * @return The data element offset
    */
   static short getDataOffset(byte[] data, short offset) {
-
-    //
-    // Skip the TAG element
-    //
-
-    // If bits B5-B1 of the leading byte are not all 1, they encode the tag number.
-    // an integer equal to the tag number which therefore lies in the range from 0 to 30.
-    // Then the tag field consists of a single byte.
-    // Otherwise (B5-B1 set to 1 in the leading byte), the tag field shall continue on one or more
-    // subsequent bytes.
-    if ((data[offset] & TLV.MASK_TAG_MULTI_BYTE) == TLV.MASK_TAG_MULTI_BYTE) {
-      while ((data[++offset] & TLV.MASK_HIGH_TAG_MOREDATA) == TLV.MASK_HIGH_TAG_MOREDATA) {
-        // Do nothing, just skip
-      }
-    }
-    offset++; // We now know we can move to the length byte
-
-    // Skip through the LENGTH element
-
-    // Is this a long-form length byte?
-    if ((data[offset] & TLV.MASK_LONG_LENGTH) == TLV.MASK_LONG_LENGTH) {
-      // Skip the additional length bytes
-      offset += (byte) (data[offset] & TLV.MASK_LENGTH);
-    }
-    offset++; // Skip the initial length byte
-
-    return offset;
+    return TLV.dataOffset(data, offset, (short) data.length, false);
   }
 
   /**
