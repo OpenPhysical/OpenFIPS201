@@ -2,6 +2,13 @@ bin
 docs
 test-bin
 test-reports
+coverage
+cardstock-receipts
+preprocessed-src
 lib
 ivy
 ivy2
+jpp-bin
+jpp.jar
+tool-bin
+debug-cap-classes

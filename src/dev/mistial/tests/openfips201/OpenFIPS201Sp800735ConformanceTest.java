@@ -1,17 +1,16 @@
 package dev.mistial.tests.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.concurrent.TimeUnit;
+import javax.smartcardio.CommandAPDU;
+import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
-
-import javax.smartcardio.CommandAPDU;
-import javax.smartcardio.ResponseAPDU;
-import java.util.concurrent.TimeUnit;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * SP 800-73-5 conformance assertions.
@@ -102,7 +101,9 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
       Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
       Mockito.when(secureChannel.getSecurityLevel()).thenReturn(SC_MASK);
-      Mockito.when(secureChannel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+      Mockito.when(
+              secureChannel.unwrap(
+                  Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
           .thenAnswer(invocation -> (short) invocation.getArgument(2));
 
       byte[] apdu = new byte[5 + payload.length];

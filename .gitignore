@@ -110,11 +110,16 @@ bin/*
 *.iml
 .metadata
 
-# Local developer environment
-.envrc
-
 .jcop
 
 vendor_libs/*
 /.apt_generated/
 tools/format.bat
+
+# Local environment and external NIST PIV Test Runner artifacts.
+.env
+.env.*
+.envrc
+/piv_tests/
+tools/piv_test_runner/local/
+tools/piv_test_runner/piv_tests/

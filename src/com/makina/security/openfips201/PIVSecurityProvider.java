@@ -38,6 +38,19 @@ import javacard.framework.Util;
  */
 final class PIVSecurityProvider {
 
+  /** Compares the entire requested range without returning early on a mismatch. */
+  static boolean arrayEqualsConstantTime(
+      byte[] first, short firstOffset, byte[] second, short secondOffset, short length) {
+    short difference = 0;
+    for (short index = 0; index < length; index++) {
+      difference |=
+          (short)
+              ((first[(short) (firstOffset + index)] ^ second[(short) (secondOffset + index)])
+                  & 0xFF);
+    }
+    return difference == 0;
+  }
+
   //
   // Constants - Security Flags
   //
@@ -265,17 +278,38 @@ final class PIVSecurityProvider {
     }
   }
 
-  void clearKeyMaterialExcept(byte retainedId) {
+  /** Atomically removes a key from the store, then wipes its detached key material. */
+  void deleteKey(byte id, byte mechanism) {
+    if (mechanism == PIV.ID_ALG_DEFAULT) {
+      mechanism = PIV.ID_ALG_TDEA_3KEY;
+    }
+
+    PIVKeyObject previous = null;
     PIVKeyObject key = firstKey;
-    while (key != null) {
-      if (key.getId() != retainedId) {
-        key.clear();
-      }
+    while (key != null && !key.match(id, mechanism)) {
+      previous = key;
       key = (PIVKeyObject) key.nextObject;
     }
-    // Keep linked-list definitions in place; only sensitive material and authenticated key state
-    // are cleared so provisioning profiles do not need to recreate object metadata.
-    clearAuthenticatedKey();
+    if (key == null) {
+      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+      return;
+    }
+
+    if (transientState[STATE_AUTH_KEY] == id) {
+      clearAuthenticatedKey();
+    }
+
+    JCSystem.beginTransaction();
+    if (previous == null) {
+      firstKey = (PIVKeyObject) key.nextObject;
+    } else {
+      previous.nextObject = key.nextObject;
+    }
+    key.nextObject = null;
+    JCSystem.commitTransaction();
+
+    key.clear();
+    key.runGc();
   }
 
   /**

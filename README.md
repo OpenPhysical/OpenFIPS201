@@ -18,7 +18,7 @@ The original upstream README is preserved at
 ## Relationship to Upstream
 
 The upstream project is maintained at
-[makinako/OpenFIPS201](https://github.com/makinako/OpenFIPS201/tree/master).
+[Mistial-Dev/OpenFIPS201](https://github.com/Mistial-Dev/OpenFIPS201/tree/master).
 This repository is a downstream fork used by OpenPhysical to integrate and test
 changes before they are proposed upstream or carried as OpenPhysical-specific
 maintenance.
@@ -29,19 +29,15 @@ GitHub renders the documentation directory consistently.
 
 ## OpenPhysical Changes
 
-This fork includes the following notable changes beyond the upstream
+This fork currently includes the following notable changes beyond the upstream
 baseline:
 
 - Expanded APDU conformance tests using JCardEngine.
-- Additional negative-path coverage for PIV management operations.
-- Test coverage for secure channel and extended APDU handling.
+- Additional unhappy-path coverage for PIV management operations.
+- Regression coverage for secure channel and extended APDU handling.
 - Enforcement of SP 800-73-5 retry counter and PIN length requirements.
 - PIV-style `CHANGE REFERENCE DATA` support for the management key.
 - Symmetric cipher selection by management key type for `GENERAL AUTHENTICATE`.
-- Full one-to-three byte PIV data object identifiers for GET DATA, PUT DATA,
-  create, and delete operations.
-- PIV-style attestation authority support with host provisioning tooling for
-  SCP03/SCP02-protected F9 import and issuer certificate publication.
 - Java Card 3.0.5 build targeting with a JDK 11-compatible Ant toolchain.
 - Ivy-based test dependency resolution and removal of stale checked-in test
   dependency jars.
@@ -51,16 +47,16 @@ baseline:
 ## Repository Layout
 
 - `src/com/makina/security/openfips201/` contains the Java Card applet source.
-- `src/dev/mistial/tests/openfips201/` contains the JCardEngine-based conformance
-  and behavior tests.
-- `src/dev/mistial/tools/openfips201/` contains host-side utilities, including
-  attestation provisioning tooling.
+- `src/dev/mistial/tests/openfips201/` contains the JCardEngine-based regression
+  and conformance tests.
 - `build/` contains the Ant build, Ivy dependency metadata, and generated build
   output.
 - `tools/` contains checked-in build tools and Java Card test harness jars that
   are not resolved through Ivy.
 - `docs/` contains project documentation, ASN.1 fixtures, and the preserved
   upstream README.
+- `tools/piv_test_runner/` contains OpenPhysical-fork configuration for the
+  external NIST SP 800-73-4 PIV Test Runner and the repo-owned headless harness.
 
 ## Building and Testing
 
@@ -72,6 +68,12 @@ ant -f build/build.xml test
 
 The test target resolves Maven dependencies through Ivy into `build/lib` and
 runs the JCardEngine-backed JUnit suite.
+
+The NIST SP 800-73-4 PIV Test Runner is supported as an external local tool.
+The encrypted NIST archive, extracted tool, archive password, generated logs,
+and runner output are not tracked. A headless harness can run selected NIST APDU
+vectors against the in-process emulator through a SmartcardIO adapter. See
+[tools/piv_test_runner/README.md](tools/piv_test_runner/README.md).
 
 ## License
 

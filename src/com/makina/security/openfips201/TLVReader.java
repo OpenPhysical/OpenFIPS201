@@ -61,6 +61,15 @@ final class TLVReader {
     context = JCSystem.makeTransientShortArray(LENGTH_CONTEXT, JCSystem.CLEAR_ON_DESELECT);
   }
 
+  private TLVReader(Object[] dataStorage, short[] contextStorage) {
+    dataPtr = dataStorage;
+    context = contextStorage;
+  }
+
+  static TLVReader createForTest() {
+    return new TLVReader(new Object[1], new short[LENGTH_CONTEXT]);
+  }
+
   static TLVReader getInstance() {
 
     if (instance == null) {
@@ -119,7 +128,7 @@ final class TLVReader {
       return Util.getShort(data, offset);
     } else {
       // We don't support multi-byte length definitions > 2
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (short) -1; // Dummy for compiler
     }
   }
@@ -170,6 +179,13 @@ final class TLVReader {
    */
   void init(byte[] buffer, short offset, short length) {
 
+    if (buffer == null
+        || offset < (short) 0
+        || length <= (short) 0
+        || offset > (short) (buffer.length - length)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
     dataPtr[0] = buffer;
     context[CONTEXT_POSITION] = offset;
     context[CONTEXT_POSITION_RESET] = offset;
@@ -177,13 +193,65 @@ final class TLVReader {
 
     if (!validate()) {
       clear();
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
   }
 
   private boolean validate() {
-    // TODO: Implement basic TLV validation
-    return true;
+    byte[] data = (byte[]) dataPtr[0];
+    short start = context[CONTEXT_POSITION_RESET];
+    short end = (short) (start + context[CONTEXT_LENGTH]);
+    return validateRange(data, start, end, (byte) 0);
+  }
+
+  private static boolean validateRange(byte[] data, short start, short end, byte depth) {
+    if (depth > (byte) 8) return false;
+
+    short position = start;
+    while (position < end) {
+      short tagStart = position;
+      byte firstTag = data[position++];
+      if ((firstTag & TLV.MASK_TAG_MULTI_BYTE) == TLV.MASK_TAG_MULTI_BYTE) {
+        byte tagBytes = 0;
+        byte value;
+        do {
+          if (position >= end || tagBytes == (byte) 2) return false;
+          value = data[position++];
+          if (tagBytes == 0 && (value & 0x7F) == 0) return false;
+          tagBytes++;
+        } while ((value & TLV.MASK_HIGH_TAG_MOREDATA) == TLV.MASK_HIGH_TAG_MOREDATA);
+      }
+
+      if (position >= end) return false;
+      short valueLength;
+      short lengthByte = (short) (data[position++] & 0xFF);
+      if ((lengthByte & 0x80) == 0) {
+        valueLength = lengthByte;
+      } else {
+        short lengthBytes = (short) (lengthByte & 0x7F);
+        if (lengthBytes == 0 || lengthBytes > 2 || position > (short) (end - lengthBytes)) {
+          return false;
+        }
+        if (lengthBytes == 1) {
+          valueLength = (short) (data[position++] & 0xFF);
+          if (valueLength <= 127) return false;
+        } else {
+          valueLength = Util.getShort(data, position);
+          position += 2;
+          if (valueLength <= 255) return false;
+        }
+      }
+
+      if (valueLength < 0 || position > (short) (end - valueLength)) return false;
+      short valueEnd = (short) (position + valueLength);
+      if ((data[tagStart] & (byte) 0x20) != 0
+          && valueLength != 0
+          && !validateRange(data, position, valueEnd, (byte) (depth + 1))) {
+        return false;
+      }
+      position = valueEnd;
+    }
+    return position == end;
   }
 
   /***

@@ -31,7 +31,6 @@ import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
-import javacard.security.ECPublicKey;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
@@ -78,19 +77,24 @@ final class PIVCrypto {
 
   private static KeyAgreement cspECDH;
 
+  private static Signature cspECCSHA1;
   private static Signature cspECCSHA256;
   private static Signature cspECCSHA384;
+  private static Signature cspECCSHA512;
 
   private static RandomData cspRNG;
 
   static void terminate() {
+    ECPointValidator.terminate();
     cspRNG = null;
     cspTDEA = null;
     cspAES = null;
     cspRSA = null;
     cspECDH = null;
+    cspECCSHA1 = null;
     cspECCSHA256 = null;
     cspECCSHA384 = null;
+    cspECCSHA512 = null;
     cspSHA256 = null;
     cspSHA384 = null;
 
@@ -138,6 +142,14 @@ final class PIVCrypto {
       }
     }
 
+    if (cspECCSHA1 == null) {
+      try {
+        cspECCSHA1 = Signature.getInstance(Signature.ALG_ECDSA_SHA, false);
+      } catch (CryptoException ex) {
+        cspECCSHA1 = null;
+      }
+    }
+
     if (cspECCSHA256 == null) {
       try {
         cspECCSHA256 = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
@@ -151,6 +163,14 @@ final class PIVCrypto {
         cspECCSHA384 = Signature.getInstance(Signature.ALG_ECDSA_SHA_384, false);
       } catch (CryptoException ex) {
         cspECCSHA384 = null;
+      }
+    }
+
+    if (cspECCSHA512 == null) {
+      try {
+        cspECCSHA512 = Signature.getInstance(Signature.ALG_ECDSA_SHA_512, false);
+      } catch (CryptoException ex) {
+        cspECCSHA512 = null;
       }
     }
 
@@ -189,9 +209,11 @@ final class PIVCrypto {
 
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
-        // SP 800-78 permits only ECDSA P-256 with SHA-256 and P-384 with SHA-384, so SHA-1 and
-        // SHA-512 ECDSA engines are not provided. ECDH support also satisfies ECC mechanisms.
-        return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
+        return ((cspECCSHA1 != null)
+            || (cspECCSHA256 != null)
+            || (cspECCSHA384 != null)
+            || (cspECCSHA512 != null)
+            || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
         return (cspECDH != null && cspSHA256 != null);
@@ -300,11 +322,17 @@ final class PIVCrypto {
     Signature signer = null;
 
     switch (inLength) {
+      case MessageDigest.LENGTH_SHA:
+        signer = cspECCSHA1;
+        break;
       case MessageDigest.LENGTH_SHA_256:
         signer = cspECCSHA256;
         break;
       case MessageDigest.LENGTH_SHA_384:
         signer = cspECCSHA384;
+        break;
+      case MessageDigest.LENGTH_SHA_512:
+        signer = cspECCSHA512;
         break;
       default:
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
@@ -313,38 +341,6 @@ final class PIVCrypto {
 
     signer.init(theKey, Signature.MODE_SIGN);
     return signer.signPreComputedHash(inBuffer, inOffset, inLength, outBuffer, outOffset);
-  }
-
-  static boolean doVerify(
-      ECPublicKey theKey,
-      byte[] inBuffer,
-      short inOffset,
-      short inLength,
-      byte[] signature,
-      short signatureOffset,
-      short signatureLength) {
-    Signature verifier = null;
-
-    switch (inLength) {
-      case MessageDigest.LENGTH_SHA_256:
-        verifier = cspECCSHA256;
-        break;
-      case MessageDigest.LENGTH_SHA_384:
-        verifier = cspECCSHA384;
-        break;
-      default:
-        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-        return false;
-    }
-
-    verifier.init(theKey, Signature.MODE_VERIFY);
-    return verifier.verifyPreComputedHash(
-        inBuffer, inOffset, inLength, signature, signatureOffset, signatureLength);
-  }
-
-  static short doSha256(
-      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
-    return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   /**
@@ -455,10 +451,18 @@ final class PIVCrypto {
             && (inLength != LENGTH_PUBLIC_EC_384))) {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       return (short) 0; // Keep compiler happy
-    } else {
-      cspECDH.init(theKey);
-      return cspECDH.generateSecret(inBuffer, inOffset, inLength, outBuffer, outOffset);
     }
+
+    ECParams params =
+        theKey.getSize() == KeyBuilder.LENGTH_EC_FP_256
+            ? ECParamsP256.getInstance()
+            : ECParamsP384.getInstance();
+    if (!ECPointValidator.isValid(inBuffer, inOffset, inLength, params)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    cspECDH.init(theKey);
+    return cspECDH.generateSecret(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   /**
