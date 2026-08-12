@@ -34,6 +34,9 @@ import dev.mistial.tools.openfips201.producer.CardProductionService;
 import dev.mistial.tools.openfips201.producer.ProducerSetupService;
 import dev.mistial.tools.openfips201.profiles.IssuerProfile;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
+import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
+import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
+import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
@@ -66,6 +69,7 @@ import pro.javacard.gp.keys.PlaintextKeys;
       OpenFips201Tool.Producer.class,
       OpenFips201Tool.Batch.class,
       OpenFips201Tool.Card.class,
+      OpenFips201Tool.Provision.class,
       OpenFips201Tool.Interactive.class
     })
 public final class OpenFips201Tool implements Callable<Integer> {
@@ -106,6 +110,70 @@ public final class OpenFips201Tool implements Callable<Integer> {
         CardTarget.listPcscReaders();
         return 0;
       }
+    }
+  }
+
+  @Command(
+      name = "provision",
+      mixinStandardHelpOptions = true,
+      description =
+          "Provision OpenFIPS201 from a GSA ICAM card folder (native) over SCP03. "
+              + "Example: openfips201 provision --icam .../46_Golden_FIPS_201-2_PIV "
+              + "--target zmq:tcp://127.0.0.1:5555")
+  static final class Provision implements Callable<Integer> {
+    @Option(
+        names = "--icam",
+        required = true,
+        description =
+            "Path to a GSA ICAM card-builder card folder "
+                + "(e.g. .../ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV).")
+    Path icam;
+
+    @Option(
+        names = "--target",
+        required = true,
+        description = "Card target: zmq:tcp://host:port or pcsc:<reader>.")
+    String target;
+
+    @Option(
+        names = "--scp-key",
+        description = "SCP03 master key hex; defaults to the GlobalPlatform test key.")
+    String scpKey;
+
+    @Option(
+        names = "--p12-password",
+        description =
+            "PKCS#12 password for ICAM .p12 files; defaults to empty (GSA ICAM corpus).")
+    String p12Password;
+
+    @Override
+    public Integer call() throws Exception {
+      char[] password =
+          p12Password == null ? IcamCardFolder.DEFAULT_P12_PASSWORD : p12Password.toCharArray();
+      ConformancePackage pkg = IcamCardFolder.load(icam, password);
+      System.out.println(
+          "Loaded ICAM folder "
+              + pkg.credentialId
+              + ": "
+              + pkg.dataObjects.size()
+              + " objects, "
+              + pkg.keys.size()
+              + " keys");
+      ScpConfig scp =
+          scpKey == null
+              ? ScpConfig.defaultTestScp03()
+              : ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 0, HexUtil.parse(scpKey));
+      ConformanceProvisioner.ProvisionReport report =
+          ConformanceProvisioner.provision(CardTarget.parse(target), scp, pkg, System.out);
+      System.out.println(
+          "Done: "
+              + report.objectsCreated
+              + " objects, "
+              + report.keysImported
+              + " keys ("
+              + report.credentialId
+              + ")");
+      return 0;
     }
   }
 

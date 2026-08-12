@@ -16,4 +16,5 @@ Sources:
 
 - NISTIR 8347 Version 2, Table 1, Table 2, and Appendix C.1.
 - NIST SP 800-85B, Sections 2.2 through 2.4 and test areas 8 through 11.
-- NIST SP 800-73-5 Part 1, PIV data-object identifiers and data model.
+- Draft NIST SP 800-85B-4, test areas 8.11, 8.13, and 8.14 for Discovery and Key History.
+- NIST SP 800-73-5 Part 1, Table 3, for PIV data-object identifiers.

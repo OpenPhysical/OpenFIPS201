@@ -1,9 +1,14 @@
 # object-id	object-name	SP800-85B-test-area	golden-input-prefix	finished-object-source
 5FC107	Card Capability Container	8.1	ccc.	issuer/card capture
-5FC102	Cardholder Unique Identifier	8.2	chuid.	issuer/card capture
+5FC102	Cardholder Unique Identifier	8.2 and 10.1	chuid.	issuer/card capture
 5FC105	PIV Authentication Certificate	8.3 and 11.1	certificates.9A	issuer/card capture
-5FC103	Cardholder Fingerprints	8.4, 9.1, and 10.2	fingerprints.	issuer biometric system/card capture
+5FC103	Cardholder Fingerprints	8.4, 9.1, 9.3, and 10.2	fingerprints.	issuer biometric system/card capture
 5FC109	Printed Information	8.5	printed.	issuer/card capture
-5FC108	Cardholder Facial Image	8.6, 9.2, and 10.3	facial-image.	issuer biometric system/card capture
-5FC10A	Security Object	8.10	security-object.	issuer/card capture
+5FC108	Cardholder Facial Image	8.6, 9.2, 9.4, and 10.3	facial-image.	issuer biometric system/card capture
+5FC10A	Digital Signature Certificate	8.7 and 11.2	certificates.9C	issuer/card capture
+5FC10B	Key Management Certificate	8.8 and 11.3	certificates.9D	issuer/card capture
 5FC101	Card Authentication Certificate	8.9 and 11.4	certificates.9E	issuer/card capture
+5FC106	Security Object	8.10 and 10.4	security-object.	issuer/card capture
+7E	Discovery Object	8.11	discovery.	issuer/card capture
+5FC10D	Retired Key Management Certificate 1	8.13	key-history.	issuer/card capture
+5FC10C	Key History Object	8.14	key-history.	issuer/card capture

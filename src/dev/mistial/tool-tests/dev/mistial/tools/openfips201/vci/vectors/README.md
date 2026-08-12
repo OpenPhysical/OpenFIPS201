@@ -26,5 +26,5 @@ These files may include plaintext PINs, pairing codes, OPACITY ephemeral private
 shared secrets, and derived session keys. Do **not** use any value as operational secret
 material. SD33 Card 8 (`vci_vectors_sd33-08.json`) supports SM but not VCI.
 
-The applet currently implements CS2 only; CS7 vectors exercise host-side OPACITY/SM
-parity so a future CS7 applet change can land against known-good wire format.
+The applet supports CS2 and CS7 as separate build profiles. The vector suite exercises both
+profiles against known-good OPACITY and secure-messaging wire formats.

@@ -4,10 +4,7 @@ This document records how OpenFIPS201 (OpenPhysical fork) maps to NIST PIV
 specifications, what automated tests cover today, and what remains for formal
 NPIVP listing and SP 800-85B data-model validation.
 
-It is documentation only: it does not change applet behaviour. Unless explicitly
-stated otherwise, claims in this document apply only to the OpenFIPS201
-OpenPhysical fork in this repository and should not be read as claims about the
-upstream `makinako/OpenFIPS201` project.
+The scope is the OpenFIPS201 OpenPhysical fork in this repository.
 
 ## Reference specifications
 
@@ -45,7 +42,7 @@ Therefore:
 | System under test | Primary standards | Typical tooling |
 | ----------------- | ----------------- | --------------- |
 | Applet CAP + command logic | SP 800-73-5, SP 800-78-5, parts of SP 800-85A | JUnit / JCardEngine (`ant test`), NIST PIV Test Runner configs under `tools/piv_test_runner/` |
-| Fully personalised card + issuer content | SP 800-85B / 85B-4 data model | NIST PIV Data Model Tester / personalisation golden fixtures (not yet in CI) |
+| Fully personalised card + issuer content | SP 800-85B / 85B-4 data model | Deterministic issuer-input corpus in CI; NIST PIV Data Model Tester remains external |
 | NPIVP product listing | 85A + 85B evidence + vendor docs | Test Summary spreadsheet + VE package ([NPIVP_VENDOR_EVIDENCE.md](NPIVP_VENDOR_EVIDENCE.md)) |
 
 ## Product posture (listing-oriented claims)
@@ -77,16 +74,10 @@ actually submitted.
 
 ### Coverage evidence boundary
 
-`ant -f build/build.xml coverage` enforces a **55% applet line-coverage floor**. This is a
-regression guard against broad test loss, chosen from the measured simulator baseline. It is not a
-security target and must not be raised or lowered to imply assurance that the percentage cannot
-provide.
-
-The JaCoCo result does **not** prove that security boundaries, failure paths, cryptographic state
-transitions, Java Card transaction behavior, or every supported platform primitive were exercised.
-It is also not NPIVP, SP 800-85A, SP 800-85B, CMVP, or FIPS 140 validation evidence. Those claims
-require the named external suites, complete requirement matrices, platform evidence, and retained
-test artifacts described below.
+`ant -f build/build.xml coverage` enforces a **55% applet line-coverage floor**, based on the
+measured simulator baseline. The metric records executed source lines. Security boundaries,
+failure paths, cryptographic state transitions, transaction behavior, and platform primitives are
+tracked through the requirement-specific tests and external gates below.
 
 ### Secure-messaging release gate
 
@@ -187,6 +178,44 @@ Configuration and notes: [tools/piv_test_runner/README.md](../tools/piv_test_run
 - **Not** integrated into this repository’s CI.
 - Requires issuer golden data (or NIST test personalisation material) that
   matches SP 800-78 and FIPS 201 certificate/biometric profiles.
+
+## External release and validation gates
+
+### Gate 1: SP 800-85A and NPIVP interface evidence
+
+Freeze the source commit, exact CAP and SHA-256 digest, profile sidecar, platform descriptor,
+personalisation inputs, reader model, card platform, and Test Runner version/configuration. Run the
+official NIST PIV Test Runner against disposable, fully personalised physical cards over every
+claimed interface. Every applicable vector must pass; an applicable test may not be filtered,
+disabled, aborted, or replaced with an emulator assertion.
+
+The submission configuration must also exercise application selection on the actual multi-app card:
+initial PIV SELECT, repeated PIV SELECT, selection of another installed application, PIV re-selection,
+and selection of a nonexistent AID. Retain status words and evidence that PIV application security
+state is preserved or cleared as SP 800-73 requires.
+
+### Gate 2: Claimed key and algorithm matrix
+
+Exercise every claimed combination of key reference, algorithm, legal role, and operation. This
+includes key `04`, keys `9A` through `9E`, every claimed retired key-management slot `82` through
+`95`, and extension key `F9` in a separate non-NPIVP matrix. Cover generation and import where each
+is supported, plus contact, contactless, and secure-messaging access policy. Sampled algorithms or
+one representative slot do not establish the other listing cells.
+
+### Gate 3: SP 800-85B personalised-card evidence
+
+Run the official NIST PIV Data Model Tester against the final personalised physical-card profile.
+The checked-in corpus under `test-vectors/sp800-85b-personalization/` freezes issuer inputs only; it
+does not contain synthetic card objects and is not Data Model Tester evidence. Retain the tester
+version and configuration, complete results, actual GET DATA captures, CMS verification evidence,
+CBEFF and certificate-profile results, and input-to-card consistency checks. Keep secrets outside
+the evidence archive.
+
+### Gate 4: FIPS 140 / CMVP evidence
+
+Bind the exact FIPS-profile CAP to the claimed Java Card platform and module boundary, approved
+algorithm implementations, entropy evidence, integrity mechanism, startup and conditional
+self-tests, and the laboratory/CMVP evidence required for the target validation.
 
 ## Evidence Priorities
 

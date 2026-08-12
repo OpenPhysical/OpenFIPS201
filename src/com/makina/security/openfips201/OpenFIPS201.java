@@ -76,6 +76,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
       SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC;
+  private static final byte FIPS_STATE_PASSED = (byte) 1;
+  private static final byte FIPS_STATE_FAILED = (byte) 2;
   private final PIV piv;
   private final byte[] fipsState;
 
@@ -92,11 +94,13 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   private void ensureFipsOperational() {
-    if (!FipsPolicy.ENABLED || fipsState[0] == (byte) 1) return;
-    if (!piv.runFipsSelfTests()) {
+    if (!FipsPolicy.ENABLED || fipsState[0] == FIPS_STATE_PASSED) return;
+    if (fipsState[0] == FIPS_STATE_FAILED) {
       ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
-    fipsState[0] = (byte) 1;
+    fipsState[0] = FIPS_STATE_FAILED;
+    if (!piv.runFipsSelfTests()) ISOException.throwIt(ISO7816.SW_UNKNOWN);
+    fipsState[0] = FIPS_STATE_PASSED;
   }
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {

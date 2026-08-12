@@ -539,7 +539,7 @@ final class PIVAdministrationCommandHandler {
 
   /**
    * This method is the equivalent of the CHANGE REFERENCE DATA command, however it is intended to
-   * operate on key references that are NOT listed in SP800-37-4. This is the primary method by
+   * operate on key references that are NOT listed in SP 800-73-5. This is the primary method by
    * which administrative key references are updated and is intended to fill in the gap in PIV that
    * does not cover how pre-personalisation is implemented.
    *

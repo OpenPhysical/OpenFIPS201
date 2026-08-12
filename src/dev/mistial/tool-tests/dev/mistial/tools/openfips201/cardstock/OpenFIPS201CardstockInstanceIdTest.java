@@ -71,6 +71,7 @@ class OpenFIPS201CardstockInstanceIdTest {
         "cardstock F9 instance-id e2e requires -Dattestation.enabled=true");
 
     IssuerProfile profile = ProfileLoader.emulatorDev();
+    profile.applet.capPath = System.getProperty("cap.path");
     profile.receipts.directory = tempDir.resolve("receipts").toString();
     profile.attestation.issuerSubject = "O=OpenPhysical,CN=Cardstock F9";
     profile.attestation.rootSubject = "O=OpenPhysical,CN=Cardstock Root";

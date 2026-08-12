@@ -460,6 +460,10 @@ platform.id=${build.platform.id}
         <path refid="test.runtime.classpath"/>
       </classpath>
       <jvmarg value="${jacoco.agent.vmparam}" />
+      <sysproperty key="vci.suite" value="${vci.suite}"/>
+      <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+      <sysproperty key="fips.mode" value="${fips.mode}"/>
+      <sysproperty key="cap.path" value="${build.outputpath}/${build.outputfile}"/>
       <arg value="execute" />
       <arg value="--exclude-tag" />
       <arg value="slow" />

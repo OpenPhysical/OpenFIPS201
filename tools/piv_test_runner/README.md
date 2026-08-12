@@ -159,6 +159,27 @@ Before NPIVP or formal regression:
 5. Prefer AES management keys and RSA-2048 / ECC P-256/P-384 over RSA-1024 or
    3TDEA for new listing matrices.
 
+## Formal evidence run
+
+For a listing evidence run:
+
+1. Record the source commit, exact CAP SHA-256, profile sidecar, card platform, reader, runner
+   version, and the SHA-256 of the final runner configuration.
+2. Use disposable, fully personalised physical cards and enable every test applicable to the
+   claimed features. Run every claimed contact and contactless interface without treating filtered,
+   disabled, or aborted applicable tests as passes.
+3. On the real multi-application card, capture initial and repeated PIV SELECT, selection of another
+   installed application, PIV re-selection, and selection of a nonexistent AID. Verify the required
+   security-state preservation and clearing after each transition.
+4. Execute every claimed key-reference × algorithm × legal-role × operation cell, including each
+   claimed retired key-management slot. Cover generation/import and interface/SM policy wherever
+   supported.
+5. Archive the immutable runner configuration, complete logs, results, card personalisation record,
+   and matrix. Store the evidence outside git and review it before preparing vendor statements.
+
+Run the NIST Data Model Tester on the same final personalised profile and retain its actual card
+captures and report as the separate SP 800-85B gate.
+
 ## Relationship to in-repo JUnit tests
 
 | Harness | Strengths | Limitations |

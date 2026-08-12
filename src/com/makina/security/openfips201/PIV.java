@@ -321,9 +321,11 @@ final class PIV {
 
   boolean runFipsSelfTests() {
     if (!FipsPolicy.ENABLED) return true;
-    boolean passed = fipsSelfTest.run(scratch);
-    PIVSecurityProvider.zeroise(scratch, ZERO, (short) 64);
-    return passed;
+    try {
+      return fipsSelfTest.run(scratch);
+    } finally {
+      PIVSecurityProvider.zeroise(scratch, ZERO, (short) 64);
+    }
   }
 
   /**

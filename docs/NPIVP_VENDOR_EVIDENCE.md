@@ -104,7 +104,8 @@ Related: [CONFORMANCE_AND_NPIVP.md](CONFORMANCE_AND_NPIVP.md).
 
 ## How to use this checklist in a listing package
 
-1. Freeze the **CAP build** (JC version, `vci.suite`, attestation on/off).
+1. Freeze the **CAP build** (source commit, exact CAP SHA-256, profile sidecar,
+   Java Card platform, `vci.suite`, and attestation on/off).
 2. Freeze the **personalisation profile** (object list, ACRs, keys, algorithms).
 3. For each VE row you will mark Pass on the Test Summary, copy a final
    statement into the formal vendor document and attach the test log that
@@ -114,6 +115,16 @@ Related: [CONFORMANCE_AND_NPIVP.md](CONFORMANCE_AND_NPIVP.md).
 5. Keep SP 800-85B data-model evidence in a separate annex (personalisation
    golden values + Data Model Tester results); VE rows above are primarily
    interface and documentation evidence.
+6. Retain the exact formal Test Runner version and configuration, unfiltered
+   applicable results, reader/card-platform identity, and contact/contactless
+   logs. Development configs and the repository headless harness are not formal
+   listing evidence.
+7. Attach multi-application SELECT evidence covering repeated PIV selection,
+   another real installed application, PIV re-selection, and a nonexistent AID.
+8. Attach a complete claimed key-reference × algorithm × role × operation
+   matrix. One representative key slot or algorithm does not prove another.
+9. Attach the external Data Model Tester report and actual personalised-card
+   captures. The checked-in deterministic corpus records issuer inputs only.
 
 ## Document control
 
