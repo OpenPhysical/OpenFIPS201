@@ -496,6 +496,8 @@ final class Config {
 
   void update(TLVReader reader) {
 
+    validateUpdateEncoding(reader);
+
     // NOTES:
     // - Due to all configuration parameters being optional, pre-conditions are evaluated
     //   in each section on-the-fly rather than all prior to execution.
@@ -803,5 +805,90 @@ final class Config {
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
     }
+  }
+
+  /**
+   * Validates the complete configuration update before any setting changes.
+   *
+   * <p>The administrative format permits each policy once, in tag order, as a non-empty constructed
+   * TLV. Rejecting duplicates and out-of-order fields gives each accepted byte string one meaning
+   * and prevents a later parser stage from ignoring trailing policy data.
+   *
+   * @param reader reader positioned at the first policy TLV
+   * @throws ISOException with {@link ISO7816#SW_DATA_INVALID} if the encoding is not canonical
+   */
+  private static void validateUpdateEncoding(TLVReader reader) {
+    byte[] data = reader.getBuffer();
+    short cursor = reader.getOffset();
+    short end = reader.getEndOffset();
+    short previousPolicy = (short) 0x9F;
+
+    while (cursor < end) {
+      short policy = (short) (data[cursor] & 0xFF);
+      if (policy < (short) (TAG_PIN_POLICY & 0xFF)
+          || policy > (short) (TAG_OPTIONS & 0xFF)
+          || policy <= previousPolicy
+          || (data[cursor] & TLV.MASK_CONSTRUCTED) == (byte) 0) {
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      }
+
+      short policyEnd = TLV.objectEnd(data, cursor, end, false);
+      short child = TLV.dataOffset(data, cursor, policyEnd, false);
+      if (child == policyEnd) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      validatePolicyChildren(data, child, policyEnd, (byte) policy);
+      previousPolicy = policy;
+      cursor = policyEnd;
+    }
+
+    if (cursor != end) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+  }
+
+  /**
+   * Validates the primitive settings inside one configuration policy.
+   *
+   * <p>Every setting must be a known, one-byte primitive TLV. Tags must be strictly increasing, so
+   * a policy cannot repeat a setting or hide an unsupported setting after a recognized one.
+   *
+   * @param data buffer that contains the policy
+   * @param cursor offset of the first child TLV
+   * @param end exclusive end offset of the policy
+   * @param policy enclosing policy tag
+   * @throws ISOException with {@link ISO7816#SW_DATA_INVALID} if a child is malformed or unknown
+   */
+  private static void validatePolicyChildren(byte[] data, short cursor, short end, byte policy) {
+    short previousTag = (short) 0x7F;
+    short maximumTag;
+    switch (policy) {
+      case TAG_PIN_POLICY:
+        maximumTag = (short) (TAG_PIN_RULE_DISTINCT & 0xFF);
+        break;
+      case TAG_PUK_POLICY:
+        maximumTag = (short) (TAG_PUK_RESTRICT_UPDATE & 0xFF);
+        break;
+      case TAG_VCI_POLICY:
+      case TAG_OCC_POLICY:
+        maximumTag = (short) 0x80;
+        break;
+      case TAG_OPTIONS:
+        maximumTag = (short) (TAG_USE_RSA_CRT & 0xFF);
+        break;
+      default:
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        return;
+    }
+
+    while (cursor < end) {
+      short tag = (short) (data[cursor] & 0xFF);
+      if (tag < (short) 0x80
+          || tag > maximumTag
+          || tag <= previousTag
+          || (data[cursor] & TLV.MASK_CONSTRUCTED) != (byte) 0
+          || TLV.readLength(data, cursor, end, false) != (short) 1) {
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      }
+      previousTag = tag;
+      cursor = TLV.objectEnd(data, cursor, end, false);
+    }
+    if (cursor != end) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
   }
 }

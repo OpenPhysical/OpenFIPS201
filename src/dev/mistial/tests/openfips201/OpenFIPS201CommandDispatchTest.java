@@ -75,8 +75,9 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   @Test
   void getDataRejectsWrongP2() {
     assertSw(0x9000, selectApplet(), "SELECT before GET DATA checks");
-    ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0x01, hex("5C017E"));
-    assertSw(0x6A86, response, "GET DATA requires P2=0xFF or extended P2=0x00");
+    ResponseAPDU response = transmit(0x00, 0xCB, 0x3F, 0x00, hex("5C017E"));
+    assertSw(
+        0x6A86, response, "SP 800-73-5 Part 2 Section 3.1.2 requires P2=0xFF for PIV GET DATA");
   }
 
   @Test

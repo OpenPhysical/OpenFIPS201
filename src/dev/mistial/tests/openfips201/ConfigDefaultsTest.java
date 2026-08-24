@@ -21,7 +21,7 @@ class ConfigDefaultsTest {
   }
 
   @Test
-  void fipsProfileExcludesLegacyMechanisms() {
+  void fipsProfileExcludesDisallowedMechanisms() {
     assertEquals(!FipsPolicy.ENABLED, FipsPolicy.allowsMechanism(PIV.ID_ALG_TDEA_3KEY));
     assertEquals(!FipsPolicy.ENABLED, FipsPolicy.allowsMechanism(PIV.ID_ALG_RSA_1024));
   }
@@ -62,7 +62,7 @@ class ConfigDefaultsTest {
         config,
         new byte[] {
           (byte) 0xA0,
-          0x26,
+          0x24,
           (byte) 0x80,
           0x01,
           0x01,
@@ -98,9 +98,7 @@ class ConfigDefaultsTest {
           0x03,
           (byte) 0x8B,
           0x01,
-          0x04,
-          (byte) 0x8C,
-          0x00
+          0x04
         });
     assertEquals(2, config.getIntermediatePINRetries());
     assertEquals(6, config.readValue(Config.CONFIG_PIN_MIN_LENGTH));
@@ -111,7 +109,7 @@ class ConfigDefaultsTest {
         config,
         new byte[] {
           (byte) 0xA1,
-          0x11,
+          0x0F,
           (byte) 0x80,
           0x01,
           0x01,
@@ -126,9 +124,7 @@ class ConfigDefaultsTest {
           0x08,
           (byte) 0x84,
           0x01,
-          0x05,
-          (byte) 0x86,
-          0x00
+          0x05
         });
     assertEquals(3, config.getIntermediatePUKRetries());
   }
@@ -136,14 +132,14 @@ class ConfigDefaultsTest {
   @Test
   void issuerCanApplyVciAndStrictInterfaceOptions() {
     Config config = new Config();
-    update(config, new byte[] {(byte) 0xA2, 0x05, (byte) 0x80, 0x01, 0x01, (byte) 0x81, 0x00});
+    update(config, new byte[] {(byte) 0xA2, 0x03, (byte) 0x80, 0x01, 0x01});
     assertEquals(Config.VCI_MODE_ENABLED, config.readValue(Config.CONFIG_VCI_MODE));
 
     update(
         config,
         new byte[] {
           (byte) 0xA4,
-          0x0B,
+          0x09,
           (byte) 0x80,
           0x01,
           0x01,
@@ -152,8 +148,6 @@ class ConfigDefaultsTest {
           0x01,
           (byte) 0x84,
           0x01,
-          0x00,
-          (byte) 0x87,
           0x00
         });
     assertTrue(config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL));
@@ -170,6 +164,41 @@ class ConfigDefaultsTest {
     assertThrows(
         RuntimeException.class,
         () -> update(config, new byte[] {(byte) 0xA1, 0x03, (byte) 0x83, 0x01, 0x03}));
+  }
+
+  @Test
+  void rejectsAConfigurationPolicyNestedInsideAnotherPolicy() {
+    Config config = new Config();
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            update(
+                config,
+                new byte[] {
+                  (byte) 0xA0,
+                  0x0A,
+                  (byte) 0x80,
+                  0x01,
+                  0x01,
+                  (byte) 0xA2,
+                  0x05,
+                  (byte) 0x80,
+                  0x01,
+                  0x01,
+                  (byte) 0x81,
+                  0x00
+                }));
+  }
+
+  @Test
+  void rejectsUnknownConfigurationFields() {
+    Config config = new Config();
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            update(
+                config,
+                new byte[] {(byte) 0xA2, 0x06, (byte) 0x80, 0x01, 0x01, (byte) 0x81, 0x01, 0x01}));
   }
 
   private static void update(Config config, byte[] encoded) {

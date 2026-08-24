@@ -65,6 +65,7 @@ final class PIV {
 
   // Data Objects
   static final byte ID_DATA_DISCOVERY = (byte) 0x7E;
+  private static final byte INS_PUT_DATA = (byte) 0xDB;
   private static final byte[] ID_DATA_PAIRING_CODE_REFERENCE = {
     (byte) 0x5F, (byte) 0xC1, (byte) 0x23
   };
@@ -390,11 +391,36 @@ final class PIV {
   }
 
   short unwrapSecureMessagingCommand(byte[] buffer, short offset, short length) {
-    // SP 800-73-5 Part 2 AS05.36C requires an interrupted command chain to have no
-    // residual effect. Abort a different pending command before SM reassembly uses
-    // the shared chain buffer.
+    // ISO/IEC 7816-4 command chaining discards an incomplete logical command when another command
+    // arrives. Abort that state before secure-messaging reassembly uses the shared chain buffer.
     chainBuffer.checkIncomingAPDU(buffer);
     boolean commandChaining = (buffer[ISO7816.OFFSET_CLA] & (byte) 0x10) != (byte) 0;
+
+    if (secureMessaging.isRejectedCommandStreamActive()
+        && !secureMessaging.rejectedCommandStreamMatches(buffer)) {
+      // Discard only the incomplete logical command. Keep the authenticated session so the next
+      // protected command can use the current command MCV.
+      secureMessaging.clearRejectedCommandStream();
+    }
+
+    boolean streamRejectedPutData =
+        secureMessaging.isRejectedCommandStreamActive()
+            || (mustRejectContactlessPutData()
+                && commandChaining
+                && buffer[ISO7816.OFFSET_INS] == INS_PUT_DATA);
+    if (streamRejectedPutData) {
+      // Section 4.2.4 says the card "reconstructs and processes the entire command." Authenticate
+      // and decrypt every frame before Table 2 supplies protected status 6A81. The bounded parser
+      // keeps one plaintext block and does not place rejected data in the command chain buffer.
+      boolean complete =
+          secureMessaging.processRejectedCommandFragment(
+              buffer, offset, length, !commandChaining, smResponse, ZERO);
+      if (!complete) ISOException.throwIt(ISO7816.SW_NO_ERROR);
+      secureMessagingCommand[ZERO] = (byte) 1;
+      buffer[ISO7816.OFFSET_CLA] = (byte) (buffer[ISO7816.OFFSET_CLA] & (byte) 0xF3);
+      return ZERO;
+    }
+
     Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);
     length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
     if (length == ZERO && commandChaining) ISOException.throwIt(ISO7816.SW_NO_ERROR);
@@ -470,6 +496,14 @@ final class PIV {
     //
     // EXECUTION STEPS
     //
+
+    // Recover persistent staging that can outlive transient ChainBuffer state after an implicit
+    // reset, where the JCRE does not call deselect().
+    chainBuffer.abort();
+    dataStore.abortPendingUpdates();
+    // #if ATTESTATION_ENABLED
+    completeAttestationActivation();
+    // #endif
 
     // STEP 1 - Evaluate whether any PIV state needs to be updated as a result of
     //          configuration changes
@@ -573,8 +607,27 @@ final class PIV {
     // Reset all security conditions in the security provider
     cspPIV.clearAuthenticatedKey();
     cspPIV.clearApplicationVerification();
+    chainBuffer.abort();
+    dataStore.abortPendingUpdates();
     secureMessaging.clear();
   }
+
+  // #if ATTESTATION_ENABLED
+  /**
+   * Completes an interrupted attestation-authority activation before command processing resumes.
+   *
+   * <p>The pending flag is persistent. Repeating the data and key clearing operations is safe, so
+   * selection can finish a power-interrupted destructive rotation before F9 becomes active.
+   */
+  void completeAttestationActivation() {
+    if (!attestation.isAuthorityActivationPending()) return;
+    // Clearing is intentionally idempotent and outside a transaction. If power is lost, the
+    // persistent pending flag survives and selection resumes before F9 can become active.
+    dataStore.clearContents();
+    cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
+    attestation.completeAuthorityActivation();
+  }
+  // #endif
 
   private boolean isVciConfigured() {
     return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
@@ -777,6 +830,16 @@ final class PIV {
   }
 
   /**
+   * Returns true when Table 2 requires PUT DATA to fail on the contactless interface.
+   *
+   * <p>Contactless card management is an issuer configuration. Secure-messaging parsing does not
+   * depend on the build profile.
+   */
+  boolean mustRejectContactlessPutData() {
+    return isContactless() && !isInterfacePermittedForAdmin();
+  }
+
+  /**
    * Allows the applet to provide security state information to PIV for access control
    *
    * @param value Sets whether the current command was issued over a GlobalPlatform Secure Channel
@@ -802,7 +865,7 @@ final class PIV {
     return pinCommands.verifyPinFormat(buffer, offset, length);
   }
 
-  static final byte CONST_TAG_LEGACY_OPERATION = (byte) 0x8A;
+  static final byte CONST_TAG_COMPATIBILITY_OPERATION = (byte) 0x8A;
   static final byte CONST_TAG_ID = (byte) 0x8B;
   static final byte CONST_TAG_MODE_CONTACT = (byte) 0x8C;
   static final byte CONST_TAG_MODE_CONTACTLESS = (byte) 0x8D;
@@ -811,7 +874,7 @@ final class PIV {
   static final byte CONST_TAG_KEY_MECHANISM = (byte) 0x8E;
   static final byte CONST_TAG_KEY_ROLE = (byte) 0x8F;
   static final byte CONST_TAG_KEY_ATTRIBUTE = (byte) 0x90;
-  static final byte CONST_TAG_LEGACY = (byte) 0x30;
+  static final byte CONST_TAG_COMPATIBILITY = (byte) 0x30;
   static final byte CONST_TAG_CREATE_OBJECT = (byte) 0x64;
   static final byte CONST_TAG_DELETE_OBJECT = (byte) 0x65;
   static final byte CONST_TAG_CREATE_KEY = (byte) 0x66;

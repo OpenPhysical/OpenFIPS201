@@ -34,7 +34,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
           @Override
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before VCI config update");
-            ResponseAPDU response = transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A2 03 80 01 03"));
+            ResponseAPDU response = transmit(0x84, 0xDB, 0xFF, 0xFF, hex("68 05 A2 03 80 01 03"));
             assertSw(0x6984, response, "VCI mode must be disabled, enabled, or pairing-code");
           }
         });
@@ -47,7 +47,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
           @Override
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before OCC config update");
-            ResponseAPDU config = transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A3 03 80 01 01"));
+            ResponseAPDU config = transmit(0x84, 0xDB, 0xFF, 0xFF, hex("68 05 A3 03 80 01 01"));
             assertSw(0x6A81, config, "OCC configuration must remain unsupported");
 
             byte[] objectWithOcc =
@@ -71,7 +71,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                       (byte) 0x00,
                       (byte) 0x0E
                     });
-            ResponseAPDU object = transmit(0x84, 0xDB, 0x3F, 0x00, objectWithOcc);
+            ResponseAPDU object = transmit(0x84, 0xDB, 0xFF, 0xFF, objectWithOcc);
             assertSw(0x6A81, object, "OCC-bearing ACLs are unsupported until OCC CVM exists");
           }
         });
@@ -92,7 +92,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
             assertSw(0x9000, selectApplet(), "SELECT before VCI pairing-required config");
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A2 03 80 01 02")),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("68 05 A2 03 80 01 02")),
                 "Enable VCI with pairing code");
             createDiscoveryObject();
           }
@@ -141,7 +141,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
           public void run() {
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("68 05 A2 03 80 01 01")),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("68 05 A2 03 80 01 01")),
                 "Enable VCI without pairing code");
             assertSw(
                 0x9000,
@@ -297,8 +297,8 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                 transmit(
                     0x84,
                     0xDB,
-                    0x3F,
-                    0x00,
+                    0xFF,
+                    0xFF,
                     hex("68 05 A2 03 80 01 " + String.format("%02X", mode))),
                 "Update VCI mode");
           }
@@ -333,7 +333,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                           (byte) 0x8F, (byte) 0x01, ROLE_KEY_ESTABLISH,
                           (byte) 0x90, (byte) 0x01, attributes
                         }));
-            response[0] = transmit(0x84, 0xDB, 0x3F, 0x00, request);
+            response[0] = transmit(0x84, 0xDB, 0xFF, 0xFF, request);
           }
         });
     return response[0];
@@ -361,7 +361,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
               (byte) 0x00,
               (byte) 0x20
             });
-    assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, request), "Create Discovery Object");
+    assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, request), "Create Discovery Object");
   }
 
   private void createOperationalVciKey() {
@@ -414,7 +414,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                     });
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, createObject),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, createObject),
                 "Create Pairing Code Reference Data object");
 
             byte[] content =

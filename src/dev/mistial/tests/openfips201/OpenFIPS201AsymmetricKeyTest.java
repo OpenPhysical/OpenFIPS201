@@ -100,7 +100,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
           assertSw(0x9000, selectApplet(), "SELECT before conflicting-role test");
           assertSw(
               ISO7816.SW_WRONG_DATA,
-              transmit(0x84, 0xDB, 0x3F, 0x00, createKeyRequest(0x11, 0x06)),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, createKeyRequest(0x11, 0x06)),
               "SIGN and KEY_ESTABLISH roles must be mutually exclusive");
         });
   }
@@ -233,7 +233,7 @@ class OpenFIPS201AsymmetricKeyTest extends OpenFIPS201TestSupport {
     assertSw(0x9000, selectApplet(), "SELECT before asymmetric provisioning");
     assertSw(
         0x9000,
-        transmit(0x84, 0xDB, 0x3F, 0x00, createKeyRequest(keyReference, mechanism, role)),
+        transmit(0x84, 0xDB, 0xFF, 0xFF, createKeyRequest(keyReference, mechanism, role)),
         "Create asymmetric key object");
   }
 

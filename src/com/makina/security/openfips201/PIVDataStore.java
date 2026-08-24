@@ -78,10 +78,29 @@ final class PIVDataStore {
     object.runGc();
   }
 
+  /**
+   * Erases every defined data object's value without deleting its directory entry.
+   *
+   * <p>Attestation-authority rotation uses this operation before the new authority becomes active,
+   * so card data issued under another authority cannot remain published.
+   */
   void clearContents() {
     PIVDataObject object = first;
     while (object != null) {
       object.clear();
+      object = (PIVDataObject) object.getNext();
+    }
+  }
+
+  /**
+   * Erases every unpublished data-object replacement after deselection or reset recovery.
+   *
+   * <p>This operation leaves published object contents unchanged.
+   */
+  void abortPendingUpdates() {
+    PIVDataObject object = first;
+    while (object != null) {
+      object.abortUpdate();
       object = (PIVDataObject) object.getNext();
     }
   }

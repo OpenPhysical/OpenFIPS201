@@ -76,7 +76,7 @@ final class FipsPolicy {
 
     if (isRetiredKeyManagement(id)) {
       // SP 800-78-5 Table 10 retains RSA-1024 identifier 06 only for retired
-      // key-management references. FIPS mode deliberately omits that legacy compatibility.
+      // key-management references. The FIPS profile deliberately omits RSA-1024 compatibility.
       return (isCardholderAsymmetric(mechanism) || (!ENABLED && mechanism == PIV.ID_ALG_RSA_1024))
           && role == PIVKeyObject.ROLE_KEY_ESTABLISH;
     }

@@ -82,8 +82,8 @@ abstract class PIVObject {
   private PIVObject nextObject;
   protected final byte[] header;
 
-  // Data objects are addressed by 1-3 byte PIV object identifiers.  Key objects still use
-  // single-byte key references, so HEADER_ID remains the final byte for legacy callers.
+  // Data objects are addressed by 1-3 byte PIV object identifiers. Key objects use single-byte
+  // key references, so HEADER_ID remains the final byte for callers that address a key.
   protected final byte[] idBytes;
 
   /**

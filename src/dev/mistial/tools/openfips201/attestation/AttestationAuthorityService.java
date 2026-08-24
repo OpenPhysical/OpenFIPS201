@@ -160,7 +160,7 @@ public final class AttestationAuthorityService {
       transmitExpect(
           session,
           new apdu4j.core.CommandAPDU(
-              0x84, 0xDB, 0x3F, 0x00, AttestationSupport.createF9KeyDefinition()),
+              0x84, 0xDB, 0xFF, 0xFF, AttestationSupport.createF9KeyDefinition()),
           true);
       transmitExpect(
           session,
@@ -180,8 +180,8 @@ public final class AttestationAuthorityService {
           new apdu4j.core.CommandAPDU(
               0x84,
               0xDB,
-              0x3F,
-              0x00,
+              0xFF,
+              0xFF,
               AttestationSupport.createDataObjectDefinition(issuerObjectId)),
           true);
       sendChainedPutData(

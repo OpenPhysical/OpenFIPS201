@@ -310,6 +310,7 @@ final class TLVReader {
    * @return True if the current tag matches the supplied one
    */
   boolean match(byte tag) {
+    if (isEOF()) return false;
     byte[] data = (byte[]) dataPtr[0];
     return (tag == data[context[CONTEXT_POSITION]]);
   }
@@ -367,6 +368,7 @@ final class TLVReader {
    * @return True if the current tag matches the supplied one
    */
   boolean match(short tag) {
+    if (isEOF()) return false;
     return (tag == Util.getShort((byte[]) dataPtr[0], context[CONTEXT_POSITION]));
   }
 
@@ -423,6 +425,15 @@ final class TLVReader {
    */
   short getOffset() {
     return context[CONTEXT_POSITION];
+  }
+
+  /**
+   * Returns the exclusive end of the reader's current top-level input range.
+   *
+   * @return reset position plus the validated input length
+   */
+  short getEndOffset() {
+    return (short) (context[CONTEXT_POSITION_RESET] + context[CONTEXT_LENGTH]);
   }
 
   public byte[] getBuffer() {

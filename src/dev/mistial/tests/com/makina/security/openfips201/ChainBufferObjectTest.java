@@ -27,7 +27,7 @@ class ChainBufferObjectTest {
       byte[] destination = new byte[4];
       chain.setIncomingObject(destination, (short) 0, (short) 4, true);
 
-      byte[] first = {(byte) 0x10, (byte) 0xDB, 0x3F, 0x00, 0x02, 0x11, 0x22};
+      byte[] first = {(byte) 0x10, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x11, 0x22};
       ISOException firstStatus =
           assertThrows(
               ISOException.class,
@@ -37,7 +37,7 @@ class ChainBufferObjectTest {
       assertEquals(0x9000, firstStatus.getReason() & 0xFFFF);
       assertArrayEquals(new byte[] {0x11, 0x22, 0x00, 0x00}, destination);
 
-      byte[] last = {0x00, (byte) 0xDB, 0x3F, 0x00, 0x02, 0x33, 0x44};
+      byte[] last = {0x00, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x33, 0x44};
       ISOException finalStatus =
           assertThrows(
               ISOException.class,
@@ -65,7 +65,7 @@ class ChainBufferObjectTest {
 
       ChainBuffer chain = new ChainBuffer();
       chain.setIncomingObject(new byte[4], (short) 0, (short) 4, false);
-      byte[] first = {(byte) 0x10, (byte) 0xDB, 0x3F, 0x00, 0x02, 0x11, 0x22};
+      byte[] first = {(byte) 0x10, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x11, 0x22};
       assertEquals(
           0x9000,
           assertThrows(
@@ -76,7 +76,7 @@ class ChainBufferObjectTest {
                   .getReason()
               & 0xFFFF);
 
-      byte[] last = {0x00, (byte) 0xDB, 0x3F, 0x00, 0x02, 0x33, 0x44};
+      byte[] last = {0x00, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x33, 0x44};
       assertEquals(
           0x6982,
           assertThrows(

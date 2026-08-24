@@ -619,6 +619,139 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
+   * Verifies bounded processing of a protected PUT DATA command that is larger than the secure
+   * messaging work buffer.
+   *
+   * <p>SP 800-73-5 Part 2, Section 4.2.4 says the card "reconstructs and processes the entire
+   * command." Table 2 requires {@code 6A81} for contactless PUT DATA. The applet must authenticate
+   * every frame before it returns that protected application status.
+   */
+  @Test
+  void largeContactlessPutDataChainReturnsProtectedFunctionNotSupported() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before the protected PUT DATA chain");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+      method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
+    }
+
+    byte[] plaintext = new byte[600];
+    for (short i = 0; i < (short) plaintext.length; i++) {
+      plaintext[i] = (byte) i;
+    }
+    byte[] command = authenticatedEncryptedDataCommand(plaintext);
+    int bodyOffset = 5;
+    int firstLength = 220;
+    int secondLength = 220;
+    byte[] first = commandFragment(command, bodyOffset, firstLength, false);
+    byte[] second = commandFragment(command, bodyOffset + firstLength, secondLength, false);
+    byte[] last =
+        commandFragment(
+            command,
+            bodyOffset + firstLength + secondLength,
+            command.length - bodyOffset - firstLength - secondLength,
+            true);
+
+    assertSw(0x9000, transmit(new CommandAPDU(first)), "first protected PUT DATA frame");
+    assertSw(0x9000, transmit(new CommandAPDU(second)), "second protected PUT DATA frame");
+    ResponseAPDU response = transmit(new CommandAPDU(last));
+
+    assertSw(0x9000, response, "protected PUT DATA policy response");
+    assertEncapsulatedStatus(
+        (short) 0x6A81,
+        response,
+        "Table 2 contactless PUT DATA status after complete command authentication");
+    assertEquals(
+        true,
+        method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+        "A protected application status must retain the secure messaging session");
+  }
+
+  @Test
+  void largeContactlessPutDataChainRejectsBadFinalCmacAndClearsSession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before the invalid protected PUT DATA chain");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+    try (AutoCloseable ignored = enterEngineContext()) {
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+      method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
+    }
+
+    byte[] command = authenticatedEncryptedDataCommand(new byte[600]);
+    command[command.length - 1] ^= (byte) 0x01;
+    byte[] first = commandFragment(command, 5, 220, false);
+    byte[] second = commandFragment(command, 225, 220, false);
+    byte[] last = commandFragment(command, 445, command.length - 445, true);
+
+    assertSw(0x9000, transmit(new CommandAPDU(first)), "first invalid-C-MAC frame");
+    assertSw(0x9000, transmit(new CommandAPDU(second)), "second invalid-C-MAC frame");
+    assertSw(
+        0x6988,
+        transmit(new CommandAPDU(last)),
+        "Section 4.2.7 status for an incorrect secure messaging data object");
+    assertEquals(
+        false,
+        method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+        "Section 4.3 requires key destruction after a secure messaging error");
+  }
+
+  @Test
+  void differentProtectedCommandAbortsIncompleteRejectedPutDataChain() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before interrupted protected PUT DATA");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+    try (AutoCloseable ignored = enterEngineContext()) {
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+      method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
+    }
+
+    byte[] command = authenticatedEncryptedDataCommand(new byte[600]);
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(commandFragment(command, 5, 220, false))),
+        "incomplete protected PUT DATA frame");
+
+    ResponseAPDU response =
+        transmit(
+            new CommandAPDU(macOnlySecureCommand((byte) 0x0C, (byte) 0xFE, (byte) 0, (byte) 0)));
+    assertSw(0x9000, response, "replacement protected command");
+    assertEncapsulatedStatus(
+        ISO7816.SW_INS_NOT_SUPPORTED,
+        response,
+        "ISO/IEC 7816-4 replacement command after an interrupted chain");
+    assertEquals(
+        true,
+        method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
+        "Interrupting a command chain must not create a secure messaging error");
+  }
+
+  /**
    * Verifies that a secure messaging processing error immediately zeroizes the session keys.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Sections 4.2.7 and 4.3. A C-MAC ('8E') that fails
@@ -1349,7 +1482,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
     byte[] iv = aesEcb(zeroSessionKey(), counter);
     byte[] ciphertext = aesCbcEncrypt(zeroSessionKey(), iv, paddedPlaintext);
     short encryptedValueLength = (short) (1 + ciphertext.length);
-    byte[] command = new byte[5 + 2 + encryptedValueLength + 10];
+    short lengthFieldSize =
+        encryptedValueLength < (short) 0x80
+            ? (short) 1
+            : (encryptedValueLength <= (short) 0x00FF ? (short) 2 : (short) 3);
+    byte[] command = new byte[5 + 1 + lengthFieldSize + encryptedValueLength + 10];
     command[ISO7816.OFFSET_CLA] = (byte) 0x0C;
     command[ISO7816.OFFSET_INS] = (byte) 0xDB;
     command[ISO7816.OFFSET_P1] = (byte) 0x3F;
@@ -1358,7 +1495,16 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     short cursor = 5;
     command[cursor++] = (byte) 0x87;
-    command[cursor++] = (byte) encryptedValueLength;
+    if (lengthFieldSize == (short) 1) {
+      command[cursor++] = (byte) encryptedValueLength;
+    } else if (lengthFieldSize == (short) 2) {
+      command[cursor++] = (byte) 0x81;
+      command[cursor++] = (byte) encryptedValueLength;
+    } else {
+      command[cursor++] = (byte) 0x82;
+      command[cursor++] = (byte) (encryptedValueLength >> 8);
+      command[cursor++] = (byte) encryptedValueLength;
+    }
     command[cursor++] = (byte) 0x01;
     System.arraycopy(ciphertext, 0, command, cursor, ciphertext.length);
     cursor = (short) (cursor + ciphertext.length);
@@ -1368,6 +1514,33 @@ class OpenFIPS201SecureMessagingDispatchTest {
     byte[] mac = commandMac(command, (short) 5, (short) (cursor - 2));
     System.arraycopy(mac, 0, command, cursor, 8);
     return command;
+  }
+
+  /**
+   * Builds one APDU fragment from a complete protected command body.
+   *
+   * <p>Every fragment keeps INS, P1, and P2 unchanged. The CLA chaining bit is set until the final
+   * fragment so the fixture exercises one logical command rather than independent commands.
+   *
+   * @param complete complete protected APDU
+   * @param bodyOffset first body octet to copy
+   * @param bodyLength number of body octets to copy
+   * @param finalFrame {@code true} for the last fragment
+   * @return short-length command APDU for the requested fragment
+   */
+  private static byte[] commandFragment(
+      byte[] complete, int bodyOffset, int bodyLength, boolean finalFrame) {
+    if (bodyLength > 255) {
+      throw new IllegalArgumentException("A short command APDU frame cannot exceed 255 bytes");
+    }
+    byte[] fragment = new byte[5 + bodyLength];
+    fragment[ISO7816.OFFSET_CLA] = finalFrame ? (byte) 0x0C : (byte) 0x1C;
+    fragment[ISO7816.OFFSET_INS] = complete[ISO7816.OFFSET_INS];
+    fragment[ISO7816.OFFSET_P1] = complete[ISO7816.OFFSET_P1];
+    fragment[ISO7816.OFFSET_P2] = complete[ISO7816.OFFSET_P2];
+    fragment[ISO7816.OFFSET_LC] = (byte) bodyLength;
+    System.arraycopy(complete, bodyOffset, fragment, 5, bodyLength);
+    return fragment;
   }
 
   private static byte[] iso7816Padded(byte[] plaintext) {

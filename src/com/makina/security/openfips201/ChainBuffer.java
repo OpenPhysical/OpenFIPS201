@@ -125,6 +125,16 @@ final class ChainBuffer {
     reset();
   }
 
+  /**
+   * Discards an incomplete command chain and aborts its outstanding transaction.
+   *
+   * <p>ISO/IEC 7816-4 command chaining treats an interrupted chain as incomplete. The applet also
+   * aborts any staged object update so the incomplete logical command is not published.
+   */
+  void abort() {
+    resetAbort();
+  }
+
   /** Resets the ChainBuffer, committing any outstanding transaction */
   private void resetCommit() {
 
@@ -469,9 +479,8 @@ final class ChainBuffer {
       return;
     }
 
-    // A same-command protection change is a downgrade attempt. Check this only after
-    // distinguishing an unrelated command, which SP 800-73-5 Part 2 AS05.36C requires
-    // to execute after the incomplete chain is discarded.
+    // A same-command protection change is a downgrade attempt. Check this after distinguishing an
+    // unrelated ISO/IEC 7816-4 command, which first discards the incomplete logical command.
     if (!firstFrame && context[CONTEXT_PROTECTION] != (short) protection) {
       resetAbort();
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
@@ -537,22 +546,8 @@ final class ChainBuffer {
    * @param apdu The current APDU buffer to transmit with
    */
   void processOutgoing(APDU apdu) throws ISOException {
-
-    //
-    // NOTE:
-    // In previous implementations, this command was intended to be executed every time process()
-    // was called and it would decide if it did anything or not. This has now changed to be only
-    // executed when a GET RESPONSE is explicitly requested.
-    //
-    // The implication of this is that instead of silently leaving, this will throw an exception
-    // if it is in the wrong state because it indicates the user requested more data intentionally
-    // in the wrong state.
-    //
-    // The NIST SP-33 reference database uses ID One PIV 2.4 cards and this implementation
-    // returns 9000 if you try to issue a GET RESPONSE when there was nothing to get. Yubikey
-    // however returns SW_WRONG_DATA. I believe Yubikey is handling it the more correct way and
-    // so we will raise an error unless someone out there provides a compelling reason not to.
-    //
+    // GET RESPONSE is valid only while an outgoing response is pending. Rejecting an idle request
+    // exposes a host state error instead of reporting a successful command with no response data.
 
     // Check if we are in the correct state
     if (context[CONTEXT_STATE] != STATE_OUTGOING) {

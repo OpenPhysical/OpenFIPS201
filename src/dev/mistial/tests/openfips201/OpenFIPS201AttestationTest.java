@@ -176,7 +176,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
             0xF9,
             tlv((byte) 0x30, tlv((byte) 0x86, authority.publicPoint)));
     assertSw(
-        FIPS_MODE ? 0x6A86 : 0x6982,
+        0x6A86,
         response,
         "F9 authority material must not be accepted outside encrypted and MACed SCP");
   }
@@ -368,7 +368,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
             assertSw(0x9000, selectApplet(), "SELECT before delete-key");
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("67068B01828E0111")),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("67068B01828E0111")),
                 "Administrative delete-key should remove retired slot 82");
           }
         });
@@ -756,7 +756,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                 };
             assertSw(
                 0x6A80,
-                transmit(0x84, 0xDB, 0x3F, 0x00, request),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, request),
                 "F9 definition must be rejected when the " + reason);
           }
         });
@@ -974,7 +974,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
           (byte) 0x01,
           (byte) 0x10
         };
-    assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, request), "Create F9 authority key");
+    assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, request), "Create F9 authority key");
   }
 
   private void createAsymmetricKeyOverScp(final byte slot, final byte algorithm) {
@@ -1028,7 +1028,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                 };
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, request),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, request),
                 "Create target key should succeed");
           }
         });
@@ -1092,7 +1092,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                           (byte) 0x10,
                           (byte) 0x00
                         }));
-            assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, create), "Create data object");
+            assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, create), "Create data object");
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0xFF, concat(normalTagList(id), hex("530101"))),
@@ -1161,7 +1161,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                   (byte) 0x01,
                   (byte) 0x14
                 };
-            assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, createManagementKey), "Create 9B");
+            assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, createManagementKey), "Create 9B");
             assertSw(
                 0x9000,
                 transmit(

@@ -592,7 +592,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     final byte P1 = (byte) 0x3F;
     final byte P2 = (byte) 0xFF;
-    final byte P2_EXTENDED = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
     boolean proprietary =
@@ -619,13 +618,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // PRE-CONDITION 2 - The P2 value must be equal to the constant 'FF'
-    boolean extended = false;
-    if (FipsPolicy.ENABLED && buffer[ISO7816.OFFSET_P2] != P2) {
-      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
-    } else if (buffer[ISO7816.OFFSET_P2] == P2_EXTENDED) {
-      extended = true;
-    } else if (buffer[ISO7816.OFFSET_P2] != P2) {
+    // SP 800-73-5 Part 2, Section 3.1.2 command syntax: "P1 '3F'; P2 'FF'."
+    // Administrative queries use the proprietary FF/FF form handled above.
+    if (buffer[ISO7816.OFFSET_P2] != P2) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
@@ -635,11 +630,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // STEP 1 - Call the PIV 'GET DATA' command
     short offset = apdu.getOffsetCdata();
-    if (extended) {
-      piv.getDataExtended(buffer, offset, length);
-    } else {
-      piv.getData(buffer, offset, length);
-    }
+    piv.getData(buffer, offset, length);
 
     // NOTE: If no exception occurred during processing, the ChainBuffer now contains a reference
     //		 to a data object to write to the client.
@@ -658,10 +649,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     final byte CONST_P1 = (byte) 0x3F;
     final byte CONST_P2 = (byte) 0xFF;
-    final byte CONST_P2_ADMIN = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
-    if (FipsPolicy.ENABLED && piv.isContactless()) {
+    // SP 800-73-5 Part 2, Table 2 specifies 6A81 when PUT DATA is not available on the
+    // contactless interface. Issuer-enabled contactless card management is the stated exception.
+    if (piv.mustRejectContactlessPutData()) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
@@ -696,17 +688,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // PRE-CONDITION 3 - The P2 value must be equal to the constant CONST_P2 or CONST_P2_ADMIN
-    boolean admin = false;
-
-    if (FipsPolicy.ENABLED
-        && (byte) (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x00
-        && buffer[ISO7816.OFFSET_P2] != CONST_P2) {
-      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
-    } else if (buffer[ISO7816.OFFSET_P2] == CONST_P2_ADMIN) {
-      // This is an administrative command
-      admin = true;
-    } else if (buffer[ISO7816.OFFSET_P2] != CONST_P2) {
+    // SP 800-73-5 Part 2, Section 3.3.1 command syntax: "P1 '3F'; P2 'FF'."
+    // Structural and configuration changes use the proprietary FF/FF form handled above.
+    if (buffer[ISO7816.OFFSET_P2] != CONST_P2) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
@@ -716,11 +700,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     // STEP 1 - Call the applicable PIV 'PUT DATA' command
     short offset = apdu.getOffsetCdata();
-    if (admin) {
-      piv.putDataAdmin(buffer, offset, length);
-    } else {
-      piv.putData(buffer, offset, length);
-    }
+    piv.putData(buffer, offset, length);
   }
 
   /**
@@ -794,15 +774,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private void processPIV_CHANGE_REFERENCE_DATA(APDU apdu, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
-    final byte CONST_P1_ADMIN = (byte) 0xFF;
 
     byte[] buffer = apdu.getBuffer();
 
-    boolean proprietary =
-        isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
-            || (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84
-                && buffer[ISO7816.OFFSET_P1] == (byte) 0x01;
-    if (proprietary) {
+    boolean proprietaryPinUpdate =
+        (isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
+                || (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84)
+            && buffer[ISO7816.OFFSET_P1] == (byte) 0x01;
+    if (proprietaryPinUpdate) {
       if (buffer[ISO7816.OFFSET_P1] != (byte) 0x01
           || (buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_LOCAL_PIN
               && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_PUK)) {
@@ -813,52 +792,51 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       return;
     }
 
-    if (FipsPolicy.ENABLED
-        && (byte) (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x00
-        && buffer[ISO7816.OFFSET_P1] != CONST_P1) {
-      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    // A protected issuer key import uses the algorithm in P1 and a non-CVM key reference in P2.
+    // Keep this SCP-only form separate from the SP 800-73-5 CHANGE REFERENCE DATA syntax below.
+    boolean protectedKeyUpdate =
+        (buffer[ISO7816.OFFSET_CLA] & (byte) 0xEF) == (byte) 0x84
+            && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_GLOBAL_PIN
+            && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_LOCAL_PIN
+            && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_PUK;
+    if (protectedKeyUpdate) {
+      piv.changeReferenceDataAdmin(
+          buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
+      return;
     }
 
     /*
      * PRE-CONDITIONS
      */
 
-    // PRE-CONDITION 1 - The P2 value must be set to one of the standard PIN references
-    // Either: '00' (Global PIN), '80' (PIV APP PIN) or '81' (PUK)
-    boolean isStandard =
-        (buffer[ISO7816.OFFSET_P2] == PIV.ID_CVM_GLOBAL_PIN
-            || buffer[ISO7816.OFFSET_P2] == PIV.ID_CVM_LOCAL_PIN
-            || buffer[ISO7816.OFFSET_P2] == PIV.ID_CVM_PUK);
-
-    // PRE-CONDITION 2 - If the P2 value is set to one of the standard PIN references but the P1
-    // value is set to CONST_P1_ADMIN, we consider this an administrative command for the purposes
-    // of changing the PINs over SCP
-    if (isStandard && buffer[ISO7816.OFFSET_P1] == CONST_P1_ADMIN) {
-      isStandard = false;
+    // SP 800-73-5 Part 2, Section 3.2.2 command syntax: "P1 '00'."
+    // Issuer replacement uses the proprietary P1=01 form handled above.
+    if (buffer[ISO7816.OFFSET_P1] != CONST_P1) {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // PRE-CONDITION 3 - If the P2 value is set to one of the standard PIN references, the P1 value
-    // must be equal to the constant CONST_P1
-    if (isStandard && buffer[ISO7816.OFFSET_P1] != CONST_P1) {
-      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    // The command syntax permits only the Global PIN, PIV Card Application PIN, and PUK.
+    if (buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_GLOBAL_PIN
+        && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_LOCAL_PIN
+        && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_PUK) {
+      ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
     }
 
     /*
      * EXECUTION STEPS
      */
 
-    // STEP 1 - Call the appropriate method
+    // STEP 1 - Change the selected standard reference data.
     short offset = apdu.getOffsetCdata();
-    if (isStandard) {
-      // CASE 1 - If the value of P2 is one of our standard PIN references, we handle this according
-      // the SP800-73-4
-      piv.changeReferenceData(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
-    } else {
-      // CASE 2 - Otherwise, we pass it to the administrative command handler
-      piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
-    }
+    piv.changeReferenceData(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
   }
 
+  /**
+   * Replaces an issuer-managed key value through the proprietary administrative command.
+   *
+   * @param apdu incoming APDU
+   * @param length command-data length
+   */
   private void processADMIN_UPDATE_KEY(APDU apdu, short length) {
     byte[] buffer = apdu.getBuffer();
     if (!piv.isInterfacePermittedForAdmin()) {

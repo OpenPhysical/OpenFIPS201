@@ -38,6 +38,11 @@ import javacard.security.AESKey;
  * command/response protection, and error handling. This class implements that APDU wrapping for
  * Cipher Suites 2 and 7 (Section 4.1.4 Table 18): AES-128 (CS2) or AES-256 (CS7) session keys with
  * a 128-bit AES block for CMAC/CBC.
+ *
+ * <p>A bounded parser handles a contactless PUT DATA command that policy must reject. Section 4.2.4
+ * requires the card to "reconstruct and process[] the entire command" before it applies the command
+ * policy. The parser authenticates and decrypts the logical command across APDU frames. It stores
+ * only one plaintext block and does not retain the rejected value.
  */
 final class PIVSecureMessaging {
   private static final short OFFSET_SM_ESTABLISHED = (short) 0;
@@ -59,6 +64,37 @@ final class PIVSecureMessaging {
   private static final short OFFSET_RESPONSE_BLOCK_OFFSET = (short) 6;
   private static final short OFFSET_RESPONSE_PLAIN_CONSUMED = (short) 7;
   private static final short LENGTH_RESPONSE_STATE = (short) 8;
+  /*
+   * Bounded rejected-command parser state.
+   *
+   * The accepted object order is:
+   *   87 length 01 ciphertext [97 01 00] 8E 08 command-mac
+   *
+   * A state can end at any APDU boundary. Length, ciphertext, and MAC counters therefore remain
+   * explicit. No offset points into an APDU buffer because the JCRE can replace that buffer between
+   * calls.
+   */
+  private static final short OFFSET_COMMAND_STREAM_PHASE = (short) 0;
+  private static final short OFFSET_COMMAND_STREAM_LENGTH_BYTES = (short) 1;
+  private static final short OFFSET_COMMAND_STREAM_VALUE_LENGTH = (short) 2;
+  private static final short OFFSET_COMMAND_STREAM_CIPHER_REMAINING = (short) 3;
+  private static final short OFFSET_COMMAND_STREAM_BLOCK_LENGTH = (short) 4;
+  private static final short OFFSET_COMMAND_STREAM_MAC_LENGTH = (short) 5;
+  private static final short OFFSET_COMMAND_STREAM_PADDING_VALID = (short) 6;
+  private static final short LENGTH_COMMAND_STREAM_STATE = (short) 7;
+  private static final short COMMAND_STREAM_NONE = (short) 0;
+  private static final short COMMAND_STREAM_ENCRYPTED_TAG = (short) 1;
+  private static final short COMMAND_STREAM_LENGTH = (short) 2;
+  private static final short COMMAND_STREAM_LONG_LENGTH = (short) 3;
+  private static final short COMMAND_STREAM_PADDING_INDICATOR = (short) 4;
+  private static final short COMMAND_STREAM_CIPHERTEXT = (short) 5;
+  private static final short COMMAND_STREAM_AFTER_ENCRYPTED = (short) 6;
+  private static final short COMMAND_STREAM_LE_LENGTH = (short) 7;
+  private static final short COMMAND_STREAM_LE_VALUE = (short) 8;
+  private static final short COMMAND_STREAM_MAC_TAG = (short) 9;
+  private static final short COMMAND_STREAM_MAC_LENGTH = (short) 10;
+  private static final short COMMAND_STREAM_MAC_VALUE = (short) 11;
+  private static final short COMMAND_STREAM_COMPLETE = (short) 12;
   private static final short RESPONSE_PHASE_NONE = (short) 0;
   private static final short RESPONSE_PHASE_HEADER = (short) 1;
   private static final short RESPONSE_PHASE_DATA = (short) 2;
@@ -91,10 +127,20 @@ final class PIVSecureMessaging {
   private final byte[] responseMcv;
   private final byte[] encCounter;
   private final short[] responseState;
+  /** Parser phase and counters that survive command-chain APDU boundaries. */
+  private final short[] commandStreamState;
+
   private final byte[] responseIv;
   private final byte[] responseBlock;
   private final byte[] responseCandidateMcv;
   private final byte[] responseTail;
+  /** INS, P1, and P2 of the logical command. Each chained frame must match them. */
+  private final byte[] commandStreamHeader;
+  /** One AES block for bounded CBC decryption. */
+  private final byte[] commandStreamBlock;
+  /** The received eight-byte command MAC. */
+  private final byte[] commandStreamMac;
+
   private final AESKey skCfrm;
   private final AESKey skMac;
   private final AESKey skEnc;
@@ -107,11 +153,19 @@ final class PIVSecureMessaging {
     encCounter = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseState =
         JCSystem.makeTransientShortArray(LENGTH_RESPONSE_STATE, JCSystem.CLEAR_ON_DESELECT);
+    commandStreamState =
+        JCSystem.makeTransientShortArray(LENGTH_COMMAND_STREAM_STATE, JCSystem.CLEAR_ON_DESELECT);
     responseIv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseBlock = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseCandidateMcv =
         JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
     responseTail = JCSystem.makeTransientByteArray((short) 14, JCSystem.CLEAR_ON_DESELECT);
+    // Transient storage limits rejected-command plaintext to one AES block. It also ensures that a
+    // deselection removes the parser state, partial ciphertext, and received MAC.
+    commandStreamHeader = JCSystem.makeTransientByteArray((short) 3, JCSystem.CLEAR_ON_DESELECT);
+    commandStreamBlock = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
+    commandStreamMac =
+        JCSystem.makeTransientByteArray(LENGTH_SHORT_MAC, JCSystem.CLEAR_ON_DESELECT);
     // #if VCI_CS2
     skCfrm = PIVCrypto.buildTransientAes128Key();
     skMac = PIVCrypto.buildTransientAes128Key();
@@ -132,6 +186,7 @@ final class PIVSecureMessaging {
     Util.arrayFillNonAtomic(responseMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(encCounter, (short) 0, LENGTH_BLOCK, (byte) 0);
     clearResponseState();
+    clearRejectedCommandStream();
     state[OFFSET_LAST_CLA] = (byte) 0;
     state[OFFSET_LAST_INS] = (byte) 0;
     skCfrm.clearKey();
@@ -155,6 +210,7 @@ final class PIVSecureMessaging {
     Util.arrayFillNonAtomic(responseMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(encCounter, (short) 0, LENGTH_BLOCK, (byte) 0);
     clearResponseState();
+    clearRejectedCommandStream();
     encCounter[(short) 15] = (byte) 1;
     state[OFFSET_LAST_CLA] = (byte) 0;
     state[OFFSET_LAST_INS] = (byte) 0;
@@ -181,6 +237,7 @@ final class PIVSecureMessaging {
     Util.arrayFillNonAtomic(responseMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
     Util.arrayFillNonAtomic(encCounter, (short) 0, LENGTH_BLOCK, (byte) 0);
     clearResponseState();
+    clearRejectedCommandStream();
     skCfrm.setKey(buffer, offset);
     offset += keyLength;
     skMac.setKey(buffer, offset);
@@ -224,6 +281,359 @@ final class PIVSecureMessaging {
       clear();
       throw ex;
     }
+  }
+
+  /**
+   * Reports whether the bounded parser holds an incomplete rejected logical command.
+   *
+   * @return {@code true} after the first chained fragment and before completion or explicit clear
+   */
+  boolean isRejectedCommandStreamActive() {
+    return commandStreamState[OFFSET_COMMAND_STREAM_PHASE] != COMMAND_STREAM_NONE;
+  }
+
+  /**
+   * Confirms that an APDU continues the command recorded by the bounded parser.
+   *
+   * <p>ISO/IEC 7816-4 command chaining carries one logical command. INS, P1, and P2 therefore
+   * remain bound to the first fragment.
+   *
+   * @param apdu candidate continuation APDU
+   * @return {@code true} when an active stream and all three command fields match
+   */
+  boolean rejectedCommandStreamMatches(byte[] apdu) {
+    return isRejectedCommandStreamActive()
+        && commandStreamHeader[(short) 0] == apdu[ISO7816.OFFSET_INS]
+        && commandStreamHeader[(short) 1] == apdu[ISO7816.OFFSET_P1]
+        && commandStreamHeader[(short) 2] == apdu[ISO7816.OFFSET_P2];
+  }
+
+  /**
+   * Erases all bounded-parser data without changing the secure-messaging session.
+   *
+   * <p>This operation discards an incomplete ISO/IEC 7816-4 command while preserving the
+   * authenticated session and current command MCV for the next protected command.
+   */
+  void clearRejectedCommandStream() {
+    Util.arrayFillNonAtomic(
+        commandStreamHeader, (short) 0, (short) commandStreamHeader.length, (byte) 0);
+    Util.arrayFillNonAtomic(
+        commandStreamBlock, (short) 0, (short) commandStreamBlock.length, (byte) 0);
+    Util.arrayFillNonAtomic(commandStreamMac, (short) 0, (short) commandStreamMac.length, (byte) 0);
+    for (short i = (short) 0; i < LENGTH_COMMAND_STREAM_STATE; i++) {
+      commandStreamState[i] = (short) 0;
+    }
+  }
+
+  /**
+   * Authenticates and decrypts a rejected contactless command without retaining its plaintext.
+   *
+   * <p>SP 800-73-5 Part 2, Section 4.2.4 says the card "reconstructs and processes the entire
+   * command." This bounded stream preserves that logical-command rule when the wrapped data is
+   * larger than the transient command buffer. The caller applies the Table 2 policy only after this
+   * method verifies the final C-MAC and padding.
+   *
+   * <p>Each non-final frame returns {@code false}. A final, authenticated frame returns {@code
+   * true}. A malformed object, invalid C-MAC, invalid padding, or missing session causes an
+   * ISOException. Section 4.3 requires session-key destruction after a secure-messaging error, so
+   * this method clears the session before it propagates that exception.
+   *
+   * @param apdu current APDU buffer, including its four-byte command header
+   * @param offset first byte of protected command data in this frame
+   * @param length protected command data length in this frame
+   * @param finalFrame true only for the last frame of the logical command
+   * @param work scratch buffer with at least one AES block at {@code workOffset}
+   * @param workOffset first scratch-buffer byte available to this method
+   * @return true only after complete C-MAC and padding validation
+   */
+  boolean processRejectedCommandFragment(
+      byte[] apdu, short offset, short length, boolean finalFrame, byte[] work, short workOffset) {
+    PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
+    try {
+      return processRejectedCommandFragmentChecked(
+          apdu, offset, length, finalFrame, work, workOffset);
+    } catch (ISOException ex) {
+      // Section 4.3 requires session-key destruction after a secure messaging error.
+      clear();
+      throw ex;
+    }
+  }
+
+  /**
+   * Advances the protected-command parser for one APDU fragment.
+   *
+   * <p>SP 800-73-5 Part 2, Sections 4.2.2 through 4.2.4 define the object order, command C-MAC,
+   * padding, and logical-command reconstruction rules. The state machine authenticates every
+   * protected object byte, decrypts ciphertext in one-block storage, and commits the new MCV only
+   * after the final C-MAC and padding both validate.
+   *
+   * <p>The public wrapper owns session destruction on error. Keeping that action outside this
+   * method gives every parser failure the same Section 4.3 teardown behavior.
+   *
+   * @param apdu current APDU buffer
+   * @param offset first protected-data byte in this fragment
+   * @param length protected-data length in this fragment
+   * @param finalFrame {@code true} only for the final APDU in the logical command
+   * @param work scratch buffer used for the padded header, final C-MAC, and decrypted block
+   * @param workOffset first scratch-buffer byte available to this parser
+   * @return {@code true} only when the final fragment has been fully authenticated
+   * @throws ISOException if the session, encoding, C-MAC, padding, or chaining state is invalid
+   */
+  private boolean processRejectedCommandFragmentChecked(
+      byte[] apdu, short offset, short length, boolean finalFrame, byte[] work, short workOffset) {
+    if (!isEstablished()) ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    if (!isRejectedCommandStreamActive()) beginRejectedCommandStream(apdu, work, workOffset);
+    if (!rejectedCommandStreamMatches(apdu)) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+
+    short cursor = offset;
+    short end = (short) (offset + length);
+    while (cursor < end) {
+      // Ciphertext is the only variable-size value. Consume it in blocks without copying the
+      // rejected plaintext into the logical-command buffer.
+      short phase = commandStreamState[OFFSET_COMMAND_STREAM_PHASE];
+      if (phase == COMMAND_STREAM_CIPHERTEXT) {
+        cursor = processRejectedCiphertext(apdu, cursor, end, work, workOffset);
+        continue;
+      }
+
+      byte value = apdu[cursor++];
+      if (phase == COMMAND_STREAM_ENCRYPTED_TAG) {
+        requireStreamByte(value, TAG_ENCRYPTED_DATA);
+        updateCommandStreamMac(apdu, (short) (cursor - 1));
+        commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_LENGTH;
+      } else if (phase == COMMAND_STREAM_LENGTH) {
+        // SP 800-73-5 uses BER definite lengths. This parser accepts the forms needed for the
+        // APDU-size range: one short-form byte, 81, or 82.
+        updateCommandStreamMac(apdu, (short) (cursor - 1));
+        short unsigned = (short) (value & (short) 0x00FF);
+        if (unsigned < (short) 0x80) {
+          startRejectedEncryptedValue(unsigned);
+        } else if (unsigned == (short) 0x81 || unsigned == (short) 0x82) {
+          commandStreamState[OFFSET_COMMAND_STREAM_LENGTH_BYTES] =
+              (short) (unsigned & (short) 0x0003);
+          commandStreamState[OFFSET_COMMAND_STREAM_VALUE_LENGTH] = (short) 0;
+          commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_LONG_LENGTH;
+        } else {
+          ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+        }
+      } else if (phase == COMMAND_STREAM_LONG_LENGTH) {
+        updateCommandStreamMac(apdu, (short) (cursor - 1));
+        short current = commandStreamState[OFFSET_COMMAND_STREAM_VALUE_LENGTH];
+        if (current > (short) 0x007F) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+        current = (short) ((short) (current << 8) | (short) (value & (short) 0x00FF));
+        commandStreamState[OFFSET_COMMAND_STREAM_VALUE_LENGTH] = current;
+        short remaining =
+            (short) (commandStreamState[OFFSET_COMMAND_STREAM_LENGTH_BYTES] - (short) 1);
+        commandStreamState[OFFSET_COMMAND_STREAM_LENGTH_BYTES] = remaining;
+        if (remaining == (short) 0) startRejectedEncryptedValue(current);
+      } else if (phase == COMMAND_STREAM_PADDING_INDICATOR) {
+        // Section 4.2.2 defines 01 as the padding-content indicator in object 87.
+        requireStreamByte(value, PADDING_INDICATOR);
+        updateCommandStreamMac(apdu, (short) (cursor - 1));
+        buildIv(false, responseIv, (short) 0);
+        PIVCrypto.doAesCbcDecryptInit(skEnc, responseIv, (short) 0, LENGTH_BLOCK);
+        commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_CIPHERTEXT;
+      } else if (phase == COMMAND_STREAM_AFTER_ENCRYPTED) {
+        // Object 97 is optional. Object 8E is mandatory and must be last.
+        if (value == TAG_LE) {
+          updateCommandStreamMac(apdu, (short) (cursor - 1));
+          commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_LE_LENGTH;
+        } else {
+          requireStreamByte(value, TAG_MAC);
+          commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_MAC_LENGTH;
+        }
+      } else if (phase == COMMAND_STREAM_LE_LENGTH) {
+        requireStreamByte(value, (byte) 0x01);
+        updateCommandStreamMac(apdu, (short) (cursor - 1));
+        commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_LE_VALUE;
+      } else if (phase == COMMAND_STREAM_LE_VALUE) {
+        requireStreamByte(value, (byte) 0x00);
+        updateCommandStreamMac(apdu, (short) (cursor - 1));
+        commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_MAC_TAG;
+      } else if (phase == COMMAND_STREAM_MAC_TAG) {
+        requireStreamByte(value, TAG_MAC);
+        commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_MAC_LENGTH;
+      } else if (phase == COMMAND_STREAM_MAC_LENGTH) {
+        requireStreamByte(value, (byte) LENGTH_SHORT_MAC);
+        commandStreamState[OFFSET_COMMAND_STREAM_MAC_LENGTH] = (short) 0;
+        commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_MAC_VALUE;
+      } else if (phase == COMMAND_STREAM_MAC_VALUE) {
+        short macLength = commandStreamState[OFFSET_COMMAND_STREAM_MAC_LENGTH];
+        commandStreamMac[macLength++] = value;
+        commandStreamState[OFFSET_COMMAND_STREAM_MAC_LENGTH] = macLength;
+        if (macLength == LENGTH_SHORT_MAC) {
+          commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_COMPLETE;
+        }
+      } else {
+        ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+      }
+    }
+
+    if (!finalFrame) {
+      // A complete protected command cannot be followed by another chained frame.
+      if (commandStreamState[OFFSET_COMMAND_STREAM_PHASE] == COMMAND_STREAM_COMPLETE) {
+        ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+      }
+      return false;
+    }
+    if (commandStreamState[OFFSET_COMMAND_STREAM_PHASE] != COMMAND_STREAM_COMPLETE) {
+      ISOException.throwIt(SW_SM_EXPECTED_OBJECTS_MISSING);
+    }
+
+    PIVCrypto.doAesCmacFinal(work, workOffset, (short) 0, work, workOffset);
+    // Do not report padding validity until the C-MAC is valid. This ordering prevents a padding
+    // oracle and follows Section 4.2.3 command-authentication processing.
+    if (!PIVSecurityProvider.arrayEqualsConstantTime(
+        work, workOffset, commandStreamMac, (short) 0, LENGTH_SHORT_MAC)) {
+      ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+    }
+    if (commandStreamState[OFFSET_COMMAND_STREAM_PADDING_VALID] == (short) 0) {
+      ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+    }
+
+    Util.arrayCopyNonAtomic(work, workOffset, commandMcv, (short) 0, LENGTH_BLOCK);
+    state[OFFSET_LAST_CLA] = apdu[ISO7816.OFFSET_CLA];
+    state[OFFSET_LAST_INS] = apdu[ISO7816.OFFSET_INS];
+    clearRejectedCommandStream();
+    return true;
+  }
+
+  /**
+   * Starts incremental C-MAC processing for a rejected logical command.
+   *
+   * <p>SP 800-73-5 Part 2, Section 4.2.3 authenticates the current MCV followed by the padded
+   * command header and protected data objects. INS, P1, and P2 are retained so later fragments
+   * cannot change the command being authenticated.
+   *
+   * @param apdu first APDU fragment
+   * @param work scratch buffer for the padded command header
+   * @param workOffset first scratch-buffer byte
+   */
+  private void beginRejectedCommandStream(byte[] apdu, byte[] work, short workOffset) {
+    commandStreamHeader[(short) 0] = apdu[ISO7816.OFFSET_INS];
+    commandStreamHeader[(short) 1] = apdu[ISO7816.OFFSET_P1];
+    commandStreamHeader[(short) 2] = apdu[ISO7816.OFFSET_P2];
+    commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_ENCRYPTED_TAG;
+    buildPaddedCommandHeader(apdu, work, workOffset);
+    PIVCrypto.doAesCmacInit(skMac);
+    PIVCrypto.doAesCmacUpdate(commandMcv, (short) 0, LENGTH_BLOCK);
+    PIVCrypto.doAesCmacUpdate(work, workOffset, LENGTH_BLOCK);
+  }
+
+  /**
+   * Validates the length of secure-messaging object 87 and starts ciphertext processing.
+   *
+   * <p>SP 800-73-5 Part 2, Section 4.2.2 requires a one-byte padding indicator followed by one or
+   * more complete AES blocks.
+   *
+   * @param valueLength complete object 87 value length
+   * @throws ISOException if the value cannot contain the indicator and complete ciphertext blocks
+   */
+  private void startRejectedEncryptedValue(short valueLength) {
+    // The value contains one indicator byte and one or more complete AES blocks.
+    if (valueLength < (short) 17
+        || (short) ((short) (valueLength - (short) 1) % LENGTH_BLOCK) != (short) 0) {
+      ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+    }
+    commandStreamState[OFFSET_COMMAND_STREAM_VALUE_LENGTH] = valueLength;
+    commandStreamState[OFFSET_COMMAND_STREAM_CIPHER_REMAINING] = (short) (valueLength - (short) 1);
+    commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_PADDING_INDICATOR;
+  }
+
+  /**
+   * Authenticates ciphertext and decrypts it one block at a time.
+   *
+   * <p>The method keeps a partial ciphertext block across APDU boundaries. It records the final
+   * padding result but does not expose that result until command-MAC verification succeeds.
+   *
+   * @param apdu current APDU buffer
+   * @param cursor first unconsumed ciphertext octet
+   * @param end exclusive fragment end
+   * @param work scratch buffer for one plaintext block
+   * @param workOffset first scratch-buffer byte
+   * @return first unconsumed APDU offset
+   */
+  private short processRejectedCiphertext(
+      byte[] apdu, short cursor, short end, byte[] work, short workOffset) {
+    short remaining = commandStreamState[OFFSET_COMMAND_STREAM_CIPHER_REMAINING];
+    short available = (short) (end - cursor);
+    short consumed = available < remaining ? available : remaining;
+    short consumedEnd = (short) (cursor + consumed);
+    PIVCrypto.doAesCmacUpdate(apdu, cursor, consumed);
+
+    while (cursor < consumedEnd) {
+      short blockLength = commandStreamState[OFFSET_COMMAND_STREAM_BLOCK_LENGTH];
+      short copyLength = (short) (LENGTH_BLOCK - blockLength);
+      short sourceRemaining = (short) (consumedEnd - cursor);
+      if (copyLength > sourceRemaining) copyLength = sourceRemaining;
+      Util.arrayCopyNonAtomic(apdu, cursor, commandStreamBlock, blockLength, copyLength);
+      cursor = (short) (cursor + copyLength);
+      blockLength = (short) (blockLength + copyLength);
+      remaining = (short) (remaining - copyLength);
+      commandStreamState[OFFSET_COMMAND_STREAM_BLOCK_LENGTH] = blockLength;
+      commandStreamState[OFFSET_COMMAND_STREAM_CIPHER_REMAINING] = remaining;
+
+      if (blockLength == LENGTH_BLOCK) {
+        short plainLength;
+        if (remaining == (short) 0) {
+          // Only the last block can contain Section 4.2.2 padding.
+          plainLength =
+              PIVCrypto.doAesCbcDecryptFinal(
+                  commandStreamBlock, (short) 0, LENGTH_BLOCK, work, workOffset);
+          commandStreamState[OFFSET_COMMAND_STREAM_PADDING_VALID] =
+              hasValidPadding(work, workOffset, plainLength) ? (short) 1 : (short) 0;
+          commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_AFTER_ENCRYPTED;
+        } else {
+          // The scratch block is overwritten by the next decrypted block and is never retained.
+          plainLength =
+              PIVCrypto.doAesCbcDecryptUpdate(
+                  commandStreamBlock, (short) 0, LENGTH_BLOCK, work, workOffset);
+        }
+        if (plainLength != LENGTH_BLOCK) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+        commandStreamState[OFFSET_COMMAND_STREAM_BLOCK_LENGTH] = (short) 0;
+      }
+    }
+    return cursor;
+  }
+
+  /**
+   * Adds one parsed protected-object octet to the incremental command C-MAC.
+   *
+   * @param buffer source buffer
+   * @param offset source-octet offset
+   */
+  private void updateCommandStreamMac(byte[] buffer, short offset) {
+    PIVCrypto.doAesCmacUpdate(buffer, offset, (short) 1);
+  }
+
+  /**
+   * Requires an exact structural octet for the current protected-object parser phase.
+   *
+   * @throws ISOException with {@link #SW_SM_OBJECTS_INCORRECT} if the octet does not match
+   */
+  private void requireStreamByte(byte actual, byte expected) {
+    if (actual != expected) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+  }
+
+  /**
+   * Validates SP 800-73-5 Part 2, Section 4.2.2 command padding.
+   *
+   * <p>The required value is {@code 0x80} followed only by zero octets through the block end. The
+   * scan runs from the end so plaintext length is not needed before C-MAC verification.
+   *
+   * @param buffer decrypted final block
+   * @param offset first plaintext octet
+   * @param length plaintext length
+   * @return {@code true} only for a correctly padded block
+   */
+  private boolean hasValidPadding(byte[] buffer, short offset, short length) {
+    short cursor = (short) (offset + length - (short) 1);
+    while (cursor >= offset) {
+      if (buffer[cursor] == (byte) 0x80) return true;
+      if (buffer[cursor] != (byte) 0x00) return false;
+      cursor--;
+    }
+    return false;
   }
 
   private short unwrapCommandChecked(

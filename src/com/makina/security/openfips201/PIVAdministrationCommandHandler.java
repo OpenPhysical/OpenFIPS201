@@ -117,7 +117,18 @@ final class PIVAdministrationCommandHandler {
     }
   }
 
-  private void processCreateObjectRequest(TLVReader reader, boolean legacy) {
+  /**
+   * Validates and creates one administrative data-object definition.
+   *
+   * <p>The request format selects whether capacity is required. Access-control parsing and object
+   * policy checks are identical for every applet profile.
+   *
+   * @param reader reader positioned at the object identifier
+   * @param compatibilityFormat {@code true} when the operation selector uses the compatibility
+   *     request format, which does not carry a capacity field
+   * @throws ISOException if a field is missing, malformed, unsupported, or not permitted
+   */
+  private void processCreateObjectRequest(TLVReader reader, boolean compatibilityFormat) {
 
     //
     // PRE-CONDITIONS
@@ -154,7 +165,7 @@ final class PIVAdministrationCommandHandler {
     if (!reader.isEOF()) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     // SP 800-73-5 Part 1 Table 8 defines card object capacities. Allocate that capacity during
     // CREATE OBJECT so later PUT DATA commands neither allocate persistent memory nor exceed it.
-    if (capacity == (short) 0 && (!legacy || FipsPolicy.ENABLED)) {
+    if (capacity == (short) 0 && (!compatibilityFormat || FipsPolicy.ENABLED)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -198,7 +209,18 @@ final class PIVAdministrationCommandHandler {
     dataStore.delete(reader.getBuffer(), idOffset, objectIdLength);
   }
 
-  private void processCreateKeyRequest(TLVReader reader, boolean legacy) {
+  /**
+   * Validates and creates one administrative key definition.
+   *
+   * <p>The request format selects whether the key-attribute field is required. Mechanism, role,
+   * access-control, and profile-policy validation remain the same for both request formats.
+   *
+   * @param reader reader positioned at the key identifier
+   * @param compatibilityFormat {@code true} when the operation selector uses the compatibility
+   *     request format, which does not carry a key-attribute field
+   * @throws ISOException if a field is missing, malformed, unsupported, or not permitted
+   */
+  private void processCreateKeyRequest(TLVReader reader, boolean compatibilityFormat) {
 
     //
     // PRE-CONDITIONS
@@ -306,9 +328,9 @@ final class PIVAdministrationCommandHandler {
     // EXECUTION STEPS
     //
 
-    // STEP 1 - If this is a legacy request, apply the PERMIT_MUTUAL
-    // key attribute as a default.
-    if (legacy && PIVCrypto.isSymmetricMechanism(keyMechanism)) {
+    // STEP 1 - The compatibility format predates explicit key attributes. Apply PERMIT_MUTUAL
+    // to preserve its symmetric-key behavior.
+    if (compatibilityFormat && PIVCrypto.isSymmetricMechanism(keyMechanism)) {
       keyAttribute |= PIVKeyObject.ATTR_PERMIT_MUTUAL;
     }
 
@@ -376,13 +398,6 @@ final class PIVAdministrationCommandHandler {
   }
 
   /**
-   * Clears the value of every defined data object without deleting the object definitions.
-   *
-   * <p>This is used when committing a new attestation authority. The object directory remains
-   * personalized, but certificate and data contents from the previous trust root are removed before
-   * the new authority is marked active.
-   */
-  /**
    * This is the administrative equivalent for the PUT DATA card and is intended for use by Card
    * Management Systems to generate the on-card file-system.
    *
@@ -435,14 +450,18 @@ final class PIVAdministrationCommandHandler {
       isBulk = false;
     }
 
-    final byte CONST_OP_LEGACY_DATA = (byte) 0x01;
-    final byte CONST_OP_LEGACY_KEY = (byte) 0x02;
+    final byte CONST_OP_COMPATIBILITY_DATA = (byte) 0x01;
+    final byte CONST_OP_COMPATIBILITY_KEY = (byte) 0x02;
 
     // Loop through all the requests
     do {
       // Get the operation value
       byte operation = reader.getTag();
       short operationLength = reader.getLength();
+      short operationEnd = (short) (reader.getDataOffset() + operationLength);
+      if (!isBulk && operationEnd != length) {
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      }
 
       // PRE-CONDITION 1 - The tag must be constructed
       if (!reader.isConstructed()) {
@@ -454,18 +473,12 @@ final class PIVAdministrationCommandHandler {
       reader.moveInto();
 
       //
-      // LEGACY SUPPORT:
-      // To minimise impact on issuance systems, we will continue to support the legacy PUT DATA
-      // ADMIN format until we decide it isn't needed anymore.
-      // There are limitations:
-      // - The legacy format can only create data objects and keys, not update configuration
-      // - This means only the default applet settings will apply (NIST compliant profile)
-      //
-      boolean legacy = false;
-      if (operation == CONST_TAG_LEGACY) {
-        // PRE-CONDITION 2A - If this is a LEGACY operation, the 'LEGACY OPERATION' tag MUST
-        // be present
-        if (!reader.match(CONST_TAG_LEGACY_OPERATION)) {
+      // The compatibility format supports existing issuance systems. It creates data objects and
+      // keys only, and it uses the default applet settings.
+      boolean compatibilityFormat = false;
+      if (operation == CONST_TAG_COMPATIBILITY) {
+        // PRE-CONDITION 2A - The compatibility operation tag must be present.
+        if (!reader.match(CONST_TAG_COMPATIBILITY_OPERATION)) {
           ISOException.throwIt(PIV.SW_PUT_DATA_OP_MISSING);
         }
         // PRE-CONDITION 2B - The 'OPERATION' tag MUST have length 1
@@ -474,7 +487,7 @@ final class PIVAdministrationCommandHandler {
         }
 
         // Update the operation and move on
-        legacy = true;
+        compatibilityFormat = true;
         operation = reader.toByte();
         reader.moveNext();
       }
@@ -482,10 +495,10 @@ final class PIVAdministrationCommandHandler {
       switch (operation) {
 
           // Create a data object record
-        case CONST_OP_LEGACY_DATA:
+        case CONST_OP_COMPATIBILITY_DATA:
         case CONST_TAG_CREATE_OBJECT:
           requireStructureMutable();
-          processCreateObjectRequest(reader, legacy);
+          processCreateObjectRequest(reader, compatibilityFormat);
           break;
 
         case CONST_TAG_DELETE_OBJECT:
@@ -494,10 +507,10 @@ final class PIVAdministrationCommandHandler {
           break;
 
           // Create a key object record
-        case CONST_OP_LEGACY_KEY:
+        case CONST_OP_COMPATIBILITY_KEY:
         case CONST_TAG_CREATE_KEY:
           requireStructureMutable();
-          processCreateKeyRequest(reader, legacy);
+          processCreateKeyRequest(reader, compatibilityFormat);
           break;
 
         case CONST_TAG_DELETE_KEY:
@@ -509,8 +522,12 @@ final class PIVAdministrationCommandHandler {
         case CONST_TAG_UPDATE_CONFIG:
           requireStructureMutable();
           JCSystem.beginTransaction();
-          config.update(reader);
-          JCSystem.commitTransaction();
+          try {
+            config.update(reader);
+            JCSystem.commitTransaction();
+          } finally {
+            if (JCSystem.getTransactionDepth() != (byte) 0) JCSystem.abortTransaction();
+          }
           break;
 
         case CONST_TAG_PERSONALIZE_APPLET:
@@ -674,6 +691,12 @@ final class PIVAdministrationCommandHandler {
         return; // Keep static analyser happy
       }
 
+      // #if ATTESTATION_ENABLED
+      if (key.getId() == ID_KEY_ATTESTATION && attestation.isAuthorityActivationPending()) {
+        owner.completeAttestationActivation();
+      }
+      // #endif
+
       // Set up our TLV reader
       TLVReader reader = TLVReader.getInstance();
       reader.init(commandBuffer, ZERO, length);
@@ -789,23 +812,10 @@ final class PIVAdministrationCommandHandler {
         PIVKeyObjectECC authority = (PIVKeyObjectECC) key;
         if (!attestation.isAuthorityActive() && attestation.isAuthorityReadyToCommit(authority)) {
           attestation.validateAuthority(authority, scratch);
-          // Committing a new authority changes the card's trust root. Keep object definitions, but
-          // clear data contents and non-F9 key material tied to the prior authority.
-          boolean transactionStarted = false;
-          try {
-            JCSystem.beginTransaction();
-            transactionStarted = true;
-            dataStore.clearContents();
-            cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
-            attestation.markAuthorityActive();
-            JCSystem.commitTransaction();
-            transactionStarted = false;
-          } catch (RuntimeException e) {
-            if (transactionStarted) {
-              JCSystem.abortTransaction();
-            }
-            throw e;
-          }
+          // Persist recovery intent before destructive clearing. A tear leaves F9 inactive and
+          // selection resumes the idempotent clear before completing activation.
+          attestation.beginAuthorityActivation();
+          owner.completeAttestationActivation();
         }
       }
       // #endif

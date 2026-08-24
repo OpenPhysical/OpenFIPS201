@@ -272,16 +272,16 @@ final class VciProvisioning {
       expect(
           gp.transmit(
               new CommandAPDU(
-                  0x00,
+                  0x84,
                   0x24,
-                  0xFF,
+                  0x01,
                   StandardCardProfile.LOCAL_PIN_REF & 0xFF,
                   StandardCardProfile.PIN)),
           "Set standard local PIN");
       expect(
           gp.transmit(
               new CommandAPDU(
-                  0x00, 0x24, 0xFF, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
+                  0x84, 0x24, 0x01, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
           "Set standard PUK");
 
       provisionSmCredential(gp, ca, suite, minimumCvcLength);
@@ -309,14 +309,15 @@ final class VciProvisioning {
       GPSession gp = administrative.gp();
       provisionSmCredential(gp, ca, suite, 0);
       expect(
-          gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
+          gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, Hex.decode("6805A203800102"))),
           "Set VCI mode to pairing-code");
       expect(
-          gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A0038301FF"))),
+          gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, Hex.decode("6805A0038301FF"))),
           "Permit PIN use over contactless VCI");
     }
   }
 
+  /** Defines the on-card secure-messaging key, generates it, and installs its signed CVC. */
   private static void provisionSmCredential(
       GPSession gp, CaMaterial ca, byte suite, int minimumCvcLength) throws Exception {
     // Define the SM key: reference 04, CS2/CS7, key-establishment role, non-importable.
@@ -331,7 +332,7 @@ final class VciProvisioning {
                 VciSupport.tlv(0x8E, new byte[] {suite}),
                 VciSupport.tlv(0x8F, new byte[] {ROLE_KEY_ESTABLISH}),
                 VciSupport.tlv(0x90, new byte[] {ATTR_NONE})));
-    expect(gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, keyDefinition)), "Define SM key 04");
+    expect(gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, keyDefinition)), "Define SM key 04");
 
     // The card generates the VCI key pair; only the public point comes back.
     ResponseAPDU generated =
@@ -371,6 +372,7 @@ final class VciProvisioning {
     // Load the CVC onto the SM key (CHANGE REFERENCE DATA, chained).
     sendChained(
         gp,
+        0x84,
         0x24,
         suite & 0xFF,
         VciSupport.KEY_REF_SECURE_MESSAGING & 0xFF,
@@ -378,6 +380,7 @@ final class VciProvisioning {
         "Load SM CVC");
   }
 
+  /** Defines and writes the data objects and policy values required by the selected VCI profile. */
   private static void provisionDataObjects(
       GPSession gp, CaMaterial ca, String pairingCode, byte suite) throws Exception {
     // Install the Secure Messaging Certificate Signer (5FC122) holding the X.509 Content
@@ -396,7 +399,7 @@ final class VciProvisioning {
                 // Part 1 Appendix A guarantees 2,471 bytes for container 0x1017.
                 VciSupport.tlv(0x92, new byte[] {0x09, (byte) 0xA7})));
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, smSignerDefinition)),
+        gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, smSignerDefinition)),
         "Define Secure Messaging Certificate Signer (5FC122)");
 
     byte[] smSignerValue =
@@ -409,15 +412,21 @@ final class VciProvisioning {
                     VciSupport.tlv(0x71, new byte[] {0x00}),
                     VciSupport.tlv(0xFE, new byte[0]))));
     sendChained(
-        gp, 0xDB, 0x3F, 0xFF, smSignerValue, "Write Secure Messaging Certificate Signer (5FC122)");
+        gp,
+        0x00,
+        0xDB,
+        0x3F,
+        0xFF,
+        smSignerValue,
+        "Write Secure Messaging Certificate Signer (5FC122)");
 
     // STEP 5 - Require pairing before VCI. SP 800-73-5 Part 1 Section 5.5 requires support for
     // the default VCI mode where secure messaging plus pairing-code verification establishes VCI.
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A203800102"))),
+        gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, Hex.decode("6805A203800102"))),
         "Set VCI mode to pairing-code");
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, Hex.decode("6805A0038301FF"))),
+        gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, Hex.decode("6805A0038301FF"))),
         "Permit PIN use over contactless VCI");
 
     // STEP 6 - Define the pairing-code object with the SP 800-73-5 container access rules: GET
@@ -436,7 +445,7 @@ final class VciProvisioning {
                 // The 12-byte Part 1 payload is stored inside a two-byte 53 wrapper.
                 VciSupport.tlv(0x92, new byte[] {0x00, 0x0E})));
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, pairingDefinition)),
+        gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, pairingDefinition)),
         "Define pairing-code object");
 
     byte[] pairingPayload =
@@ -463,7 +472,7 @@ final class VciProvisioning {
                 VciSupport.tlv(0x91, new byte[] {(byte) 0x9B}),
                 VciSupport.tlv(0x92, new byte[] {0x00, 0x20})));
     expect(
-        gp.transmit(new CommandAPDU(0x00, 0xDB, 0x3F, 0x00, discoveryDefinition)),
+        gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, discoveryDefinition)),
         "Define Discovery Object");
     expect(
         gp.transmit(
@@ -870,9 +879,10 @@ final class VciProvisioning {
     return Arrays.copyOfRange(response, point[1], point[1] + point[2]);
   }
 
+  /** Sends one logical command as short APDUs while preserving its command class and parameters. */
   private static void sendChained(
-      GPSession gp, int ins, int p1, int p2, byte[] payload, String context) {
-    ApduSupport.sendChained(gp::transmit, 0x00, ins, p1, p2, payload, MAX_CHUNK, context);
+      GPSession gp, int cla, int ins, int p1, int p2, byte[] payload, String context) {
+    ApduSupport.sendChained(gp::transmit, cla, ins, p1, p2, payload, MAX_CHUNK, context);
   }
 
   private static ResponseAPDU expect(ResponseAPDU response, String context) {

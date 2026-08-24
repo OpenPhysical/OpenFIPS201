@@ -147,8 +147,11 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
     assertSw(0x9000, selectApplet(), "SELECT before CHANGE REFERENCE DATA checks");
     byte[] payload = concat(WRONG_PIN_FORMAT_VALID, NEW_PIN_VALID);
     ResponseAPDU response =
-        transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0x01, LOCAL_PIN_REFERENCE, payload);
-    assertSw(0x6A86, response, "CHANGE REFERENCE DATA for standard PIN must require P1=0x00");
+        transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0xFF, LOCAL_PIN_REFERENCE, payload);
+    assertSw(
+        0x6A86,
+        response,
+        "SP 800-73-5 Part 2 Section 3.2.2 requires P1=0x00 for CHANGE REFERENCE DATA");
   }
 
   @Test
@@ -230,7 +233,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
         () ->
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A003850106")),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A003850106")),
                 "Set the significant PIN limit to six digits"));
 
     assertSw(0x9000, selectApplet(), "SELECT before fixed-width RESET RETRY COUNTER");

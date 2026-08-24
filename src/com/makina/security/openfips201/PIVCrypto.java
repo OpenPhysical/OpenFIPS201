@@ -541,6 +541,41 @@ final class PIVCrypto {
     return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
+  /**
+   * Starts stateful AES-CBC decryption for protected data that spans APDU frames.
+   *
+   * <p>SP 800-73-5 Part 2, Section 4.2.2 encrypts the padded command data with AES-CBC. The caller
+   * supplies the session encryption key and the command IV derived for that logical command.
+   *
+   * @param key active session encryption key
+   * @param iv initialization-vector buffer
+   * @param ivOffset first IV octet
+   * @param ivLength IV length, which must equal one AES block
+   */
+  static void doAesCbcDecryptInit(SecretKey key, byte[] iv, short ivOffset, short ivLength) {
+    cspAESCBC.init(key, Cipher.MODE_DECRYPT, iv, ivOffset, ivLength);
+  }
+
+  /**
+   * Decrypts one or more non-final AES-CBC blocks and preserves cipher state.
+   *
+   * @return number of plaintext octets written
+   */
+  static short doAesCbcDecryptUpdate(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    return cspAESCBC.update(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
+  /**
+   * Decrypts the final AES-CBC blocks and closes the stateful cipher operation.
+   *
+   * @return number of plaintext octets written
+   */
+  static short doAesCbcDecryptFinal(
+      byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
+    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
+  }
+
   static AESKey buildTransientAes128Key() {
     return buildTransientAesKey(KeyBuilder.LENGTH_AES_128);
   }

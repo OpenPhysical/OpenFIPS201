@@ -112,41 +112,80 @@ final class PIVDataObject extends PIVObject {
     bytesAllocated = length;
   }
 
+  /**
+   * Prepares an inactive persistent buffer for a complete object replacement.
+   *
+   * <p>The published content remains unchanged until {@link #commitUpdate()}. On platforms without
+   * object deletion, the method reuses retained storage and rejects growth that cannot be made
+   * atomic.
+   *
+   * @param length required replacement length
+   * @return erased buffer that receives the replacement
+   * @throws ISOException if the length is invalid or persistent capacity is insufficient
+   */
   byte[] beginUpdate(short length) {
     if (length <= (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     abortUpdate();
     if (fixedCapacity) {
       if (length > (short) pendingContent.length) ISOException.throwIt(ISO7816.SW_FILE_FULL);
     } else {
-      pendingContent = new byte[length];
+      boolean canDelete = JCSystem.isObjectDeletionSupported();
+      if (pendingContent == null) {
+        if (!canDelete && content != null) {
+          if (length > (short) content.length) ISOException.throwIt(ISO7816.SW_FILE_FULL);
+          pendingContent = new byte[content.length];
+        } else {
+          pendingContent = new byte[length];
+        }
+      } else if (length > (short) pendingContent.length) {
+        if (!canDelete) ISOException.throwIt(ISO7816.SW_FILE_FULL);
+        PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
+        pendingContent = null;
+        JCSystem.requestObjectDeletion();
+        pendingContent = new byte[length];
+      } else {
+        PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
+      }
     }
     pendingLength = length;
     return pendingContent;
   }
 
+  /**
+   * Publishes the prepared replacement with one transactional reference swap.
+   *
+   * <p>Bulk erasure occurs after the transaction to keep transaction-log use bounded. Retained
+   * storage is erased before reuse when object deletion is unavailable.
+   */
   void commitUpdate() {
     byte[] previous = content;
+    boolean canDelete = JCSystem.isObjectDeletionSupported();
     JCSystem.beginTransaction();
     content = pendingContent;
     bytesAllocated = pendingLength;
-    pendingContent = fixedCapacity ? previous : null;
+    pendingContent = (fixedCapacity || !canDelete) ? previous : null;
     pendingLength = (short) 0;
     JCSystem.commitTransaction();
     if (pendingContent != null) {
       PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
     } else if (previous != null) {
       PIVSecurityProvider.zeroise(previous, (short) 0, (short) previous.length);
-      if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+      if (canDelete) JCSystem.requestObjectDeletion();
     }
   }
 
+  /**
+   * Erases and releases, or retains for safe reuse, an unpublished replacement buffer.
+   *
+   * <p>The published content and its length are not changed.
+   */
   void abortUpdate() {
     if (pendingContent == null || pendingLength == (short) 0) return;
     PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
     pendingLength = (short) 0;
-    if (!fixedCapacity) {
+    if (!fixedCapacity && JCSystem.isObjectDeletionSupported()) {
       pendingContent = null;
-      if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+      JCSystem.requestObjectDeletion();
     }
   }
 

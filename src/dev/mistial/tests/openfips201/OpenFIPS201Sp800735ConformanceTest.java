@@ -270,8 +270,8 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
           byte[] apdu = new byte[5 + payload.length];
           apdu[0] = (byte) 0x84; // GlobalPlatform secure-messaging CLA
           apdu[1] = (byte) 0xDB; // PUT DATA
-          apdu[2] = (byte) 0x3F; // P1
-          apdu[3] = (byte) 0x00; // P2 admin path
+          apdu[2] = (byte) 0xFF; // Proprietary administrative P1
+          apdu[3] = (byte) 0xFF; // Proprietary administrative P2
           apdu[4] = (byte) payload.length;
           System.arraycopy(payload, 0, apdu, 5, payload.length);
 

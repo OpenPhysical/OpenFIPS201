@@ -101,7 +101,7 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
           assertSw(0x9000, selectApplet(), "SELECT before retired config tag test");
           assertSw(
               0x6E26,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A403830100")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A403830100")),
               "Former restrictSingleKey option must fail instead of being ignored");
         });
   }
@@ -155,8 +155,8 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
     return transmit(
         0x84,
         0xDB,
-        0x3F,
-        0x00,
+        0xFF,
+        0xFF,
         new byte[] {
           (byte) 0x66,
           (byte) 0x12,
@@ -185,8 +185,8 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
     return transmit(
         0x84,
         0xDB,
-        0x3F,
-        0x00,
+        0xFF,
+        0xFF,
         new byte[] {
           (byte) 0x67,
           (byte) 0x06,

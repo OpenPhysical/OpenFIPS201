@@ -211,6 +211,30 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
   }
 
   @Test
+  void managementKeyChangeRejectsDataAfterOuterSequenceWithoutMutatingKey() {
+    byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x16);
+    byte[] candidateKey = keyMaterial(ALG_AES_128, (byte) 0x26);
+
+    provisionManagementKeyOverScp(ALG_AES_128, initialKey);
+    authenticateCardManagementKey(ALG_AES_128, initialKey);
+
+    byte[] trailingData =
+        concat(keyUpdateData(candidateKey), new byte[] {(byte) 0x81, (byte) 0x00});
+    ResponseAPDU response = transmitKeyUpdate(ALG_AES_128, trailingData);
+    assertSw(ISO7816.SW_WRONG_DATA, response, "Bytes after the outer sequence must be rejected");
+
+    reconnectAndSelect();
+    assertEquals(
+        0x9000,
+        authenticateCardManagementKeyResponse(ALG_AES_128, initialKey).getSW(),
+        "Rejected trailing data must leave the active management key unchanged");
+    assertEquals(
+        0x6982,
+        authenticateCardManagementKeyResponse(ALG_AES_128, candidateKey).getSW(),
+        "Candidate key must not authenticate when trailing data was rejected");
+  }
+
+  @Test
   void managementKeyChangeClearsAuthenticatedSessionAfterSuccessfulRotation() {
     byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x14);
     byte[] rotatedKey = keyMaterial(ALG_AES_128, (byte) 0x24);

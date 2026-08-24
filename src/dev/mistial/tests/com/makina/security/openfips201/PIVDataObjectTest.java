@@ -65,6 +65,64 @@ class PIVDataObjectTest {
     }
   }
 
+  @Test
+  void dataStoreRecoveryWipesAndReleasesAbandonedPersistentUpdates() throws Exception {
+    PIVDataStore store = new PIVDataStore();
+    byte[] id = new byte[] {0x5F, (byte) 0xC1, 0x07};
+    store.create(
+        id,
+        (short) 0,
+        (short) id.length,
+        PIVObject.ACCESS_MODE_ALWAYS,
+        PIVObject.ACCESS_MODE_ALWAYS,
+        (byte) 0x9B,
+        (short) 0);
+    PIVDataObject object = store.find(id, (short) 0, (short) id.length);
+
+    try (MockedStatic<JCSystem> jcSystem = Mockito.mockStatic(JCSystem.class)) {
+      jcSystem.when(JCSystem::isObjectDeletionSupported).thenReturn(true);
+      byte[] abandoned = object.beginUpdate((short) 4);
+      System.arraycopy(new byte[] {1, 2, 3, 4}, 0, abandoned, 0, abandoned.length);
+
+      PIVDataStore.class.getDeclaredMethod("abortPendingUpdates").invoke(store);
+
+      assertArrayEquals(new byte[] {0, 0, 0, 0}, abandoned);
+      assertFalse(object.isInitialised());
+      assertFalse(abandoned == object.beginUpdate((short) 4));
+    }
+  }
+
+  @Test
+  void dynamicObjectWithoutDeletionReusesAbandonedAndPublishedBuffers() {
+    PIVDataObject object =
+        new PIVDataObject(
+            new byte[] {0x7E},
+            (short) 0,
+            (short) 1,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            PIVObject.ACCESS_MODE_ALWAYS,
+            (byte) 0x9B,
+            (short) 0);
+
+    try (MockedStatic<JCSystem> jcSystem = Mockito.mockStatic(JCSystem.class)) {
+      jcSystem.when(JCSystem::isObjectDeletionSupported).thenReturn(false);
+
+      byte[] abandoned = object.beginUpdate((short) 4);
+      java.util.Arrays.fill(abandoned, (byte) 9);
+      object.abortUpdate();
+      assertSame(abandoned, object.beginUpdate((short) 4));
+      assertArrayEquals(new byte[] {0, 0, 0, 0}, abandoned);
+
+      java.util.Arrays.fill(abandoned, (byte) 1);
+      object.commitUpdate();
+      byte[] second = object.beginUpdate((short) 4);
+      java.util.Arrays.fill(second, (byte) 2);
+      object.commitUpdate();
+      assertSame(abandoned, object.beginUpdate((short) 4));
+      assertArrayEquals(new byte[] {0, 0, 0, 0}, abandoned);
+    }
+  }
+
   private static PIVDataObject fixedObject(short capacity) {
     return new PIVDataObject(
         new byte[] {0x7E},

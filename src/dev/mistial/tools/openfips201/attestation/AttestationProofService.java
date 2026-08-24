@@ -127,7 +127,7 @@ public final class AttestationProofService {
 
   private static void createProofKey(CardSession session, byte slot) {
     AttestationAuthorityService.transmitExpect(
-        session, new CommandAPDU(0x84, 0xDB, 0x3F, 0x00, proofKeyDefinition(slot)), false);
+        session, new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, proofKeyDefinition(slot)), false);
   }
 
   static byte[] proofKeyDefinition(byte slot) {
@@ -151,7 +151,7 @@ public final class AttestationProofService {
 
   private static boolean deleteProofKey(CardSession session, byte slot) {
     byte[] payload = deleteProofKeyPayload(slot);
-    ResponseAPDU response = session.transmit(new CommandAPDU(0x84, 0xDB, 0x3F, 0x00, payload));
+    ResponseAPDU response = session.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, payload));
     if (response.getSW() == 0x9000) {
       return true;
     }

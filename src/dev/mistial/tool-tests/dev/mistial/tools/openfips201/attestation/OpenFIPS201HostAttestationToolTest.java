@@ -310,7 +310,7 @@ class OpenFIPS201HostAttestationToolTest {
         session.commands.size() >= 0x08,
         "Provisioning should create F9, clear it, import four elements, create object, and store"
             + " cert");
-    assertCommand(session.commands.get(0), 0x84, 0xDB, 0x3F, 0x00);
+    assertCommand(session.commands.get(0), 0x84, 0xDB, 0xFF, 0xFF);
     assertArrayEquals(
         AttestationSupport.createF9KeyDefinition(), session.commands.get(0).getData());
     assertCommand(session.commands.get(1), 0x84, 0x24, 0x11, 0xF9);
@@ -332,7 +332,7 @@ class OpenFIPS201HostAttestationToolTest {
     assertCommand(session.commands.get(5), 0x84, 0x24, 0x11, 0xF9);
     assertEquals(
         (byte) 0x93, session.commands.get(5).getData()[0x02], "Validity should be uploaded last");
-    assertCommand(session.commands.get(6), 0x84, 0xDB, 0x3F, 0x00);
+    assertCommand(session.commands.get(6), 0x84, 0xDB, 0xFF, 0xFF);
     assertArrayEquals(
         AttestationSupport.createDataObjectDefinition(hex("5FFF01")),
         session.commands.get(6).getData());
@@ -468,11 +468,11 @@ class OpenFIPS201HostAttestationToolTest {
 
     new AttestationProofService().prove(session, AttestationProofService.DEFAULT_PROOF_SLOT, true);
 
-    assertCommand(session.commands.get(0), 0x84, 0xDB, 0x3F, 0x00);
+    assertCommand(session.commands.get(0), 0x84, 0xDB, 0xFF, 0xFF);
     assertCommand(session.commands.get(1), 0x84, 0x47, 0x00, 0x9A);
     assertCommand(session.commands.get(2), 0x84, 0xF9, 0x9A, 0x00);
     assertCommand(session.commands.get(3), 0x84, 0xC0, 0x00, 0x00);
-    assertCommand(session.commands.get(4), 0x84, 0xDB, 0x3F, 0x00);
+    assertCommand(session.commands.get(4), 0x84, 0xDB, 0xFF, 0xFF);
   }
 
   private static void assertCommand(CommandAPDU command, int cla, int ins, int p1, int p2) {
@@ -641,7 +641,7 @@ class OpenFIPS201HostAttestationToolTest {
 
     @Override
     public ResponseAPDU transmit(CommandAPDU command) {
-      if (command.getINS() == 0xDB && command.getP2() == 0x00) {
+      if (command.getINS() == 0xDB && command.getP1() == 0xFF && command.getP2() == 0xFF) {
         existingDefinitions++;
         return new ResponseAPDU(new byte[] {(byte) 0x6E, (byte) 0x27});
       }
@@ -681,7 +681,7 @@ class OpenFIPS201HostAttestationToolTest {
 
     @Override
     public ResponseAPDU transmit(CommandAPDU command) {
-      if (command.getINS() == 0xDB && command.getP1() == 0x3F && command.getP2() == 0x00) {
+      if (command.getINS() == 0xDB && command.getP1() == 0xFF && command.getP2() == 0xFF) {
         byte[] data = command.getData();
         if (data.length > 0 && data[0] == (byte) 0x67) {
           deleteCommands++;

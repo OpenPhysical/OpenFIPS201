@@ -29,7 +29,7 @@ import org.mockito.Mockito;
  *       discovery).
  *   <li>Happy path for object clear semantics (zero-length DATA element).
  *   <li>Negative path for each parser/access gate exercised by {@code PIV.putData()}.
- *   <li>Boundary check that administrative PUT DATA (P2=00) remains SCP-only.
+ *   <li>Boundary checks for the separate proprietary administrative command.
  * </ul>
  */
 @Timeout(value = 25, unit = TimeUnit.SECONDS)
@@ -60,11 +60,11 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertSw(0x9000, selectApplet(), "SELECT before lifecycle transition");
           assertSw(
               0x9000,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6900")),
               "SCP may perform the one-way personalization transition");
           assertSw(
               ISO7816.SW_CONDITIONS_NOT_SATISFIED,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6900")),
               "The personalization transition cannot be repeated");
 
           byte[] create = {
@@ -87,7 +87,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           };
           assertSw(
               ISO7816.SW_CONDITIONS_NOT_SATISFIED,
-              transmit(0x84, 0xDB, 0x3F, 0x00, create),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, create),
               "Personalized applets reject new object definitions");
 
           ResponseAPDU status = transmit(0x80, 0xCB, 0xFF, 0xFF, hex("5C032F4753"));
@@ -110,7 +110,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertSw(0x9000, selectApplet(), "SELECT before FIPS readiness test");
           assertSw(
               ISO7816.SW_CONDITIONS_NOT_SATISFIED,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6900")),
               "FIPS personalization must require the complete card profile");
         });
   }
@@ -123,7 +123,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertSw(0x9000, selectApplet(), "SELECT before personalization readiness test");
           assertSw(
               ISO7816.SW_CONDITIONS_NOT_SATISFIED,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6900")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6900")),
               "Personalization must not strand an applet without a usable management key");
         });
   }
@@ -140,11 +140,11 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           };
           assertSw(
               0x9000,
-              transmit(0x84, 0xDB, 0x3F, 0x00, request),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, request),
               "Deleting an existing object should succeed");
           assertSw(
               ISO7816.SW_RECORD_NOT_FOUND,
-              transmit(0x84, 0xDB, 0x3F, 0x00, request),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, request),
               "Deleting the same object twice should report it missing");
         });
 
@@ -171,11 +171,11 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           };
           assertSw(
               0x9000,
-              transmit(0x84, 0xDB, 0x3F, 0x00, request),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, request),
               "Deleting an existing key should succeed");
           assertSw(
               PIV_SW_REFERENCE_NOT_FOUND,
-              transmit(0x84, 0xDB, 0x3F, 0x00, request),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, request),
               "Deleting the same key twice should report it missing");
         });
 
@@ -322,7 +322,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @Test
-  void legacyEmptyObjectConfigurationIsRejected() {
+  void emptyObjectCompatibilityOptionIsRejected() {
     byte[] managementKey = keyMaterialAes128((byte) 0x42);
 
     provisionManagementKeyOverScp(managementKey);
@@ -332,7 +332,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertSw(0x9000, selectApplet(), "SELECT before empty-object option update");
           assertSw(
               PIV_SW_PUT_DATA_CONFIG_INVALID_VALUE,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A403850101")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A403850101")),
               "The retired empty-object option must not change conformant behavior");
         });
 
@@ -516,7 +516,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @ParameterizedTest(name = "PUT DATA rejects P1={0}, P2={1}")
-  @CsvSource({"0, 255", "63, 254"})
+  @CsvSource({"0, 255", "63, 254", "63, 0"})
   void putDataRejectsInvalidParameters(int p1, int p2) {
     assertSw(0x9000, selectApplet(), "SELECT before PUT DATA parameter validation");
     ResponseAPDU response = transmit(0x00, 0xDB, p1, p2, hex("5C035FC102530101"));
@@ -563,12 +563,12 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
           assertSw(0x9000, selectApplet(), "SELECT before capacity validation");
           assertSw(
               ISO7816.SW_WRONG_DATA,
-              transmit(0x84, 0xDB, 0x3F, 0x00, hex("640E8B035FC1078C017F8D010891019B")),
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("640E8B035FC1078C017F8D010891019B")),
               "CREATE OBJECT requires a fixed capacity");
           assertSw(
               ISO7816.SW_WRONG_DATA,
               transmit(
-                  0x84, 0xDB, 0x3F, 0x00, hex("64158B035FC1078C017F8D010891019B920200AA930100")),
+                  0x84, 0xDB, 0xFF, 0xFF, hex("64158B035FC1078C017F8D010891019B920200AA930100")),
               "CREATE OBJECT rejects data after the capacity element");
         });
   }
@@ -582,7 +582,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
             assertSw(0x9000, selectApplet(), "SELECT before bulk administration check");
             assertSw(
                 ISO7816.SW_FUNC_NOT_SUPPORTED,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("6A00")),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6A00")),
                 "Bulk administration must fail before applying any operation");
           }
         });
@@ -597,7 +597,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
             assertSw(0x9000, selectApplet(), "SELECT before OCC configuration check");
             assertSw(
                 ISO7816.SW_FUNC_NOT_SUPPORTED,
-                transmit(0x84, 0xDB, 0x3F, 0x00, hex("6805A303800100")),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A303800100")),
                 "Unsupported OCC configuration must not be accepted as an inert setting");
           }
         });
@@ -754,7 +754,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
                 };
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, createManagementKeyObject),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, createManagementKeyObject),
                 "SCP create-key operation for 9B should succeed");
 
             // Inject initial key value under administrative CHANGE REFERENCE DATA.
@@ -810,7 +810,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
                         }));
             assertSw(
                 0x9000,
-                transmit(0x84, 0xDB, 0x3F, 0x00, createObjectRequest),
+                transmit(0x84, 0xDB, 0xFF, 0xFF, createObjectRequest),
                 "SCP create-object operation should succeed");
           }
         });

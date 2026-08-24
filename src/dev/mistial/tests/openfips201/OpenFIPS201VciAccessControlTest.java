@@ -52,7 +52,7 @@ class OpenFIPS201VciAccessControlTest extends OpenFIPS201TestSupport {
                           (byte) 0x00,
                           (byte) 0x10
                         }));
-            assertSw(0x9000, transmit(0x84, 0xDB, 0x3F, 0x00, create), "Create test object");
+            assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, create), "Create test object");
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0xFF, concat(TEST_TAG_LIST, hex("530101"))),

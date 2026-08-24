@@ -26,7 +26,7 @@ class PIVPinCommandHandlerRetryTest {
         config,
         new byte[] {
           (byte) 0xA0,
-          0x26,
+          0x24,
           (byte) 0x80,
           0x01,
           0x01,
@@ -62,8 +62,6 @@ class PIVPinCommandHandlerRetryTest {
           0x00,
           (byte) 0x8B,
           0x01,
-          0x00,
-          (byte) 0x8C,
           0x00
         });
 
