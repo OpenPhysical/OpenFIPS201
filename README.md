@@ -1,228 +1,256 @@
-# OpenFIPS201 OpenPhysical Fork
+# OpenFIPS201 for OpenPhysical
 
-This repository contains the OpenPhysical fork of
-[OpenFIPS201](https://github.com/Mistial-Dev/OpenFIPS201/tree/master), an open
-source Java Card implementation of the NIST Personal Identity Verification
-(PIV) card application.
+This repository is the OpenPhysical fork of
+[OpenFIPS201](https://github.com/Mistial-Dev/OpenFIPS201/tree/master), an open-source Java Card
+implementation of the NIST Personal Identity Verification (PIV) card application.
 
-OpenFIPS201 was commissioned and funded by the Australian Department of Defence
-to provide an open implementation of the card application specified by
-[FIPS 201](https://csrc.nist.gov/publications/detail/fips/201/3/final) and the
-NIST SP 800-73 PIV interface specifications. This fork preserves that upstream
-work and carries OpenPhysical changes for validation, conformance testing, and
-ongoing maintenance.
+## Fork Relationship and Acknowledgements
 
-The original upstream README is preserved at
-[docs/README-upstream.md](docs/README-upstream.md).
+OpenFIPS201 was commissioned and funded by the Australian Department of Defence to provide an open
+implementation of the card application specified by FIPS 201 and the NIST SP 800-73 PIV interface
+specifications. Its repository history includes
+[Mistial-Dev/OpenFIPS201](https://github.com/Mistial-Dev/OpenFIPS201/tree/master), and the upstream
+project is maintained at [makinako/OpenFIPS201](https://github.com/makinako/OpenFIPS201).
 
-## Relationship to Upstream
+OpenPhysical maintains this downstream fork for conformance validation, security hardening,
+attestation, VCI secure messaging, issuer tooling, and continued maintenance. The fork preserves
+the original project's license, copyright notices, source history, and attribution. The original
+project documentation is retained at [docs/README-upstream.md](docs/README-upstream.md).
 
-The upstream project is maintained at
-[makinako/OpenFIPS201](https://github.com/makinako/OpenFIPS201/tree/master).
-This repository is a downstream fork used by OpenPhysical to integrate and test
-changes before they are proposed upstream or carried as OpenPhysical-specific
-maintenance.
+The OpenPhysical additions build on the original applet and the work of its authors, contributors,
+and funders. Nothing in this repository's additional functionality changes that provenance.
 
-The fork keeps the original project structure where possible. Documentation and
-test fixtures that were previously under `doc/` have been moved to `docs/` so
-GitHub renders the documentation directory consistently.
+## OpenPhysical Fork Differences
 
-## OpenPhysical Changes
+The OpenPhysical fork adds and changes the following applet behavior, tooling, and validation:
 
-This fork includes the following notable changes beyond the upstream
-baseline:
+- NIST SP 800-73-5 command behavior, retry-counter rules, PIN limits, and negative-path tests
+- ISO/IEC 7816-4 proprietary-class commands for PIN, PUK, key, object, and configuration
+  administration
+- management-key cipher selection based on the provisioned PIV algorithm
+- complete one-to-three-byte PIV data-object identifiers for read, write, create, and delete
+  operations
+- single-definition key slots, with an explicit delete-and-create operation when the mechanism
+  changes
+- PIV-style F9 attestation with SCP-protected authority provisioning, staged authority updates,
+  generated-key provenance, certificate construction, host verification, and issuer tooling
+- VCI secure messaging with OPACITY CS2 or CS7 selected when the CAP is built
+- VCI host provisioning, CVC handling, pairing policy, secure-messaging probes, and a ZeroMQ
+  emulator bridge
+- CS2 and CS7 known-answer vectors for OPACITY, key derivation, command and response MACs,
+  encryption, counters, and response chaining
+- stricter APDU, BER-TLV, DER, CVC, object-lifecycle, transaction, and state-transition validation
+- an eight-variant release matrix covering standard and FIPS profiles, CS2 and CS7, and
+  attestation enabled and disabled
+- a unified issuer tool for card discovery, CAP installation, SCP key management, attestation,
+  producer profiles, batches, and production receipts
+- Java Card 3.0.5 targeting with maintained build, test, coverage, and dependency tooling
 
-- Expanded APDU conformance tests using JCardEngine.
-- Additional negative-path coverage for PIV management operations.
-- Test coverage for secure channel and extended APDU handling.
-- Enforcement of SP 800-73-5 retry counter and PIN length requirements.
-- ISO 7816-4 proprietary-class administration for PIN, PUK, key, object, and configuration updates.
-- Symmetric cipher selection by management key type for `GENERAL AUTHENTICATE`.
-- Full one-to-three byte PIV data object identifiers for GET DATA, PUT DATA,
-  create, and delete operations.
-- PIV-style attestation authority support with host provisioning tooling for
-  SCP03/SCP02-protected F9 import and issuer certificate publication.
-- Single-key PIV slots: a key reference can hold one key definition. Changing a
-  slot's mechanism is a delete/recreate operation, not a second definition.
-- PIV Virtual Contact Interface (VCI) secure messaging (OPACITY key
-  establishment, cipher suites CS2 and CS7 as build-time alternatives) with
-  host provisioning and probe tooling and a ZeroMQ emulator bridge.
-- Vector-based VCI conformance tests that replay real-card OPACITY key
-  establishment and secure-messaging captures as known-answer checks.
-- Java Card 3.0.5 build targeting with a JDK 11-compatible Ant toolchain.
-- Ivy-based test dependency resolution and removal of stale checked-in test
-  dependency jars.
-- Updated test and tooling dependencies, including JCardEngine, GlobalPlatformPro,
-  APDU4J, JUnit, Mockito, Bouncy Castle, ASM, SLF4J, and JaCoCo.
+Detailed requirement mappings and residual limits are in
+[Conformance and NPIVP](docs/CONFORMANCE_AND_NPIVP.md) and
+[Validation Status and Deployment Gaps](docs/FIPS_AND_TEST_GAPS.md).
 
-Administrative updates intentionally support two parallel authorization paths: an SCP session with
-command encryption, or prior authentication of the applicable administrative key (normally `9B`).
-PIN and PUK replacement uses proprietary `CHANGE REFERENCE DATA` (`80 24 01 <reference>`). Key
-material uses proprietary `UPDATE KEY` (`80 25 01 <reference>`) with the algorithm in tag `80`.
-Under SCP the class is `84`. Structure and configuration changes use administrative `PUT DATA`
-(`80/84 DB FF FF`) and remain SCP-only. The authenticated-`9B` path does not encrypt APDU contents.
+## Quick Start
 
-Administrative status/version queries use proprietary `GET DATA` (`80/84 CB FF FF`). In FIPS mode,
-the interindustry PIV command surface accepts only the standard P1/P2 forms; the relaxed build also
-retains the earlier protected administrative encodings for compatibility.
+### Requirements
 
-Administrative PUT DATA accepts one operation per command. Legacy bulk containers are rejected
-because Java Card allocation and deletion cannot be rolled back reliably as one transaction; an
-issuance system must submit and verify each operation separately.
+- JDK 17
+- Apache Ant
+- Internet access for the first test run, so Apache Ivy can resolve test dependencies
 
-Configuration fields for OCC, PUK update restriction, enumeration restriction, and RSA-CRT
-selection are rejected with `6A81` because those behaviors are not implemented. VCI configuration
-is supported. Unsupported settings are not accepted as inert values, and supported configuration
-updates are applied transactionally.
+The repository contains the Java Card SDK and build tools required to produce the CAP.
 
-Incoming TLV lengths must use their shortest valid encoding, and trailing bytes after the declared
-top-level value are rejected. This deliberate strictness catches malformed issuance data, but tools
-that emit non-minimal BER lengths must canonicalize their encoding before sending it to the applet.
+### Test and Build
 
-ECDH public points are validated on-card before key agreement. Because validation uses software
-multi-precision arithmetic, each target card model must be qualified on real hardware for P-256 and
-P-384 GENERAL AUTHENTICATE latency and reader timeout behavior before deployment.
-
-## VCI / Secure Messaging Conformance
-
-This fork implements the SP 800-73-5 Part 2 secure-messaging path used by VCI:
-OPACITY key establishment, SM APDU unwrap/wrap, MAC chaining, RMAC, pairing
-code verification, and APT advertisement.
-
-The applet is built for one OPACITY suite at a time:
-
-| Suite | Build property | Curve | Keys / hash | Algorithm ID |
-| ----- | -------------- | ----- | ----------- | ------------ |
-| CS2 | `-Dvci.suite=CS2` | P-256 | AES-128 / SHA-256 | `0x27` |
-| CS7 | `-Dvci.suite=CS7` | P-384 | AES-256 / SHA-384 | `0x2E` |
-
-CS2 is the default. The selected suite is advertised in the Application
-Property Template only after the SM key (`0x04`) and its CVC are loaded. The
-admin provisioning path supports the larger CS7 CVCs when the CS7 build is
-enabled.
-
-OPACITY runs through `GENERAL AUTHENTICATE` with `P1` set to the selected suite
-and `P2=0x04`. Before ECDH, the applet validates the host ephemeral public key
-as required by SP 800-73-5 Part 2 C4; invalid points fail with `6A80`.
-
-Secure messaging uses class byte `0x0C` and the standard `87`, `97`, `8E`, and
-`99` data objects. Bad SM object structure, ordering, duplication, unknown
-objects, and MAC failures return `6988`. Pairing-code mismatch returns `6300`;
-commands that require a satisfied protected VCI session return `6982` when that
-condition is not met.
-
-The VCI tests cover both host-side vectors and live emulator flows. The vector
-tests replay CS2 and CS7 captures from real cards for OPACITY, KDF, SM
-wrap/unwrap, MAC/RMAC, and counter chaining. The end-to-end tests provision the
-emulator, establish OPACITY, verify pairing, run wrapped commands, and reject
-off-curve host public keys for both suites.
-
-## Repository Layout
-
-- `src/com/makina/security/openfips201/` contains the Java Card applet source.
-- `src/dev/mistial/tests/openfips201/` contains the JCardEngine-based conformance
-  and behavior tests.
-- `src/dev/mistial/tools/openfips201/` contains host-side utilities, including
-  attestation provisioning tooling.
-- `build/` contains the Ant build, Ivy dependency metadata, and generated build
-  output.
-- `tools/` contains checked-in build tools and Java Card test harness jars that
-  are not resolved through Ivy.
-- `docs/` contains project documentation, ASN.1 fixtures, and the preserved
-  upstream README.
-- `tools/piv_test_runner/` contains OpenPhysical-fork configuration for the
-  external NIST SP 800-73-4 PIV Test Runner and the repo-owned headless harness.
-
-## Conformance and NPIVP
-
-Formal listing and data-model expectations are documented separately from the
-JUnit suite. Unless a document explicitly says otherwise, these claims apply to
-the OpenFIPS201 OpenPhysical fork in this repository, not to the upstream
-`makinako/OpenFIPS201` project.
-
-- [docs/CONFORMANCE_AND_NPIVP.md](docs/CONFORMANCE_AND_NPIVP.md) — specification
-  map, product posture (including OCC out of scope, SM suite builds, algorithm
-  listing caveats), repository test coverage, remaining SP 800-85A/85B coverage,
-  and NPIVP evidence priorities.
-- [docs/NPIVP_VENDOR_EVIDENCE.md](docs/NPIVP_VENDOR_EVIDENCE.md) — vendor
-  evidence (VE) checklist aligned with the NPIVP Test Summary form.
-- [tools/piv_test_runner/README.md](tools/piv_test_runner/README.md) — how to
-  obtain and run the NIST PIV Test Runner with the configs in this repository.
-
-In-repo tests exercise command behaviour, VCI/secure messaging, and selected
-crypto paths. Formal interface and personalised-data testing is described in
-[docs/CONFORMANCE_AND_NPIVP.md](docs/CONFORMANCE_AND_NPIVP.md).
-
-The enforced 80% JaCoCo applet line floor records the simulator regression baseline.
-
-Release candidates must pass `ant -f build/build.xml test-all`. This runs slow SM/VCI coverage for
-the full standard/FIPS × CS2/CS7 × attestation on/off matrix.
-
-## Building and Testing
-
-Run the standard test target from the repository root:
+Run the default test suite:
 
 ```sh
 ant -f build/build.xml test
 ```
 
-The test target resolves Maven dependencies through Ivy into `build/lib` and
-runs the JCardEngine-backed JUnit suite.
-
-Persistent object and key metadata is an internal CAP layout, not an upgrade-stable storage
-format. Installing a build that changes that layout requires deleting the previous applet instance,
-installing the new CAP, and personalising the card again from the issuer's authoritative profile.
-Do not upgrade an existing instance in place.
-
-The NIST SP 800-73-4 PIV Test Runner is supported as an external local tool.
-The encrypted NIST archive, extracted tool, archive password, generated logs,
-and runner output are not tracked. A headless harness can run selected NIST APDU
-vectors against the in-process emulator through a SmartcardIO adapter. See
-[tools/piv_test_runner/README.md](tools/piv_test_runner/README.md).
-
-VCI suite selection is controlled by `vci.suite`; CS2 is the default:
+Build the default CAP:
 
 ```sh
-ant -f build/build.xml -Dvci.suite=CS2 test-suite
-ant -f build/build.xml -Dvci.suite=CS7 test-suite
+ant -f build/build.xml compile
 ```
 
-The combined matrix targets run CS2 and CS7, with and without attestation:
+The default build uses the standard profile, VCI cipher suite CS2, and attestation. The CAP and a
+matching `.properties` file are written to `build/bin/`. Keep these two files together. The
+properties file records the profile, VCI suite, attestation setting, and target platform.
+
+### Find a Card and Install the CAP
+
+List PC/SC readers:
+
+```sh
+ant -f build/build.xml openfips201-tool -Dargs='cards list'
+```
+
+Review the installation options:
+
+```sh
+ant -f build/build.xml openfips201-tool -Dargs='applet install --help'
+```
+
+The issuer tool does not build, clean, or replace CAP artifacts. Pass the intended CAP explicitly
+with `--cap` when you install it.
+
+## Choose a Build Profile
+
+Each CAP contains one profile, one VCI suite, and one attestation setting.
+
+| Choice      | Values                    | Default  |
+| ----------- | ------------------------- | -------- |
+| Profile     | `compile`, `compile-fips` | Standard |
+| VCI suite   | `CS2`, `CS7`              | `CS2`    |
+| Attestation | `true`, `false`           | `true`   |
+
+Examples:
+
+```sh
+# Standard profile, CS7, attestation enabled
+ant -f build/build.xml compile -Dvci.suite=CS7
+
+# FIPS profile, CS2, attestation disabled
+ant -f build/build.xml compile-fips -Dvci.suite=CS2 -Dattestation.enabled=false
+```
+
+The FIPS profile controls applet configuration, required PIV objects, and permitted algorithms.
+Shared APDU syntax, TLV validation, and error handling are the same in both profiles. A FIPS-profile
+CAP does not by itself establish certification of the Java Card platform or the complete card
+system.
+
+## Recommended Issuance Order
+
+1. Build and retain the selected CAP and its `.properties` file.
+2. Install the CAP through an authenticated GlobalPlatform secure channel.
+3. Provision the F9 attestation authority first, if the build and issuer profile use attestation.
+4. Create the required objects and key definitions.
+5. Load cardholder data and import or generate cardholder keys.
+6. Apply the one-way personalization transition.
+7. Verify the card identity, expected objects, attestation chain, and active SCP keys.
+
+For repeatable production, use the guided producer, batch, and card workflow:
+
+```sh
+ant -f build/build.xml openfips201-tool \
+  -Dargs='producer setup --name example_issuer'
+
+ant -f build/build.xml openfips201-tool \
+  -Dargs='batch create --producer example_issuer --name 2026-08'
+
+ant -f build/build.xml openfips201-tool \
+  -Dargs='card produce --producer example_issuer --batch 2026-08 --target pcsc:READER --stock-scp-key HEX_KEY --yes'
+```
+
+The tool stores issuer state and batch receipts under `~/.openfips201`. Treat this directory as
+sensitive operational data. Protect its access and include it in the issuer's backup plan. See
+[Issuer Tool](docs/OPENFIPS201_TOOL.md) for PKCS#11 support, key rotation, receipts, and recovery
+guidance.
+
+## Administrative Commands
+
+Administrative operations require either:
+
+- a GlobalPlatform secure channel with command encryption, or
+- prior authentication of the applicable administrative key, normally key reference `9B`.
+
+The authenticated-`9B` path authorizes an operation but does not encrypt APDU contents. Use a secure
+channel when the command contains sensitive values.
+
+OpenFIPS201 separates issuer commands from the interindustry PIV command syntax:
+
+- PIN and PUK replacement: `80 24 01 <reference>`
+- Key replacement: `80 25 01 <reference>`
+- Object and configuration administration: `80/84 DB FF FF`
+- Administrative status queries: `80/84 CB FF FF`
+
+Under GlobalPlatform secure messaging, the secure-channel layer sets the protected class byte.
+Administrative `PUT DATA` accepts one operation per command. Submit and verify each operation before
+continuing. This avoids relying on rollback for Java Card allocation or deletion.
+
+Give each created data object an explicit capacity. If the platform cannot delete persistent
+objects, the first successful write to a dynamically sized object sets the largest reusable buffer.
+Later values cannot exceed that size.
+
+## Attestation
+
+Attestation-enabled CAPs can provision an ECC P-256 F9 authority and attest keys that were generated
+on the card. Supported target algorithms are RSA-1024 in the standard profile, RSA-2048, RSA-3072,
+ECC P-256, and ECC P-384.
+
+Provision F9 before cardholder keys. The applet validates the imported F9 key pair before it commits
+the authority, and an authority update is staged so an interrupted operation does not leave mixed
+key and certificate state. Attestation-disabled CAPs do not contain the attestation command path.
+
+See [Attestation](docs/ATTESTATION.md) for the certificate profile, provisioning APDUs, host
+verification, and status words.
+
+## VCI Secure Messaging
+
+OpenFIPS201 implements the OPACITY secure-messaging path in NIST SP 800-73-5 Part 2. The selected
+suite is advertised only after secure-messaging key reference `04` and its Card Verifiable
+Certificate are provisioned.
+
+| Suite | Build property    | Curve | Session protection  | Algorithm ID |
+| ----- | ----------------- | ----- | ------------------- | ------------ |
+| CS2   | `-Dvci.suite=CS2` | P-256 | AES-128 and SHA-256 | `0x27`       |
+| CS7   | `-Dvci.suite=CS7` | P-384 | AES-256 and SHA-384 | `0x2E`       |
+
+Secure messaging uses class byte `0C` and data objects `87`, `97`, `8E`, and `99`. The applet
+rejects invalid secure-messaging structure or MACs with `6988`, a pairing-code mismatch with
+`6300`, and an unsatisfied protected-VCI requirement with `6982`.
+
+On-card ECDH point validation uses software multi-precision arithmetic. Qualify P-256 and P-384
+GENERAL AUTHENTICATE latency, reader timeouts, reset behavior, and interrupted transactions on each
+target card platform before deployment.
+
+See [VCI Conformance](tools/piv_test_runner/VCI_CONFORMANCE.md) for the clause map and vector runner.
+
+## Validation
+
+Run all eight build variants before a release:
 
 ```sh
 ant -f build/build.xml test-all
 ```
 
-## Issuer Tooling
+This target covers standard and FIPS profiles, CS2 and CS7, and attestation enabled and disabled.
+The test suite enforces an 80% JaCoCo applet line-coverage floor and includes targeted negative-path
+tests. Formal card-interface and data-model validation still requires the applicable NIST suites and
+the intended card platform.
 
-Host-side tooling is exposed through one entrypoint:
+Useful references:
 
-```sh
-ant -f build/build.xml openfips201-tool -Dargs="--help"
-```
+- [Conformance and NPIVP](docs/CONFORMANCE_AND_NPIVP.md)
+- [NPIVP Vendor Evidence](docs/NPIVP_VENDOR_EVIDENCE.md)
+- [Validation Status and Gaps](docs/FIPS_AND_TEST_GAPS.md)
+- [PIV Test Runner](tools/piv_test_runner/README.md)
 
-The tool covers PC/SC cards and the ZeroMQ emulator, CAP load/install, F9
-attestation authority import, proof attestation, SCP03 key derivation/rotation,
-profile-aware forward/backward keyroll, PKCS#11-backed signing and SCP03 KDF3
-derivation, and cardstock batch preparation. The issuer-facing path is:
+## Deployment Limits
 
-```sh
-ant -f build/build.xml openfips201-tool -Dargs='producer setup --name bigcorp_01'
-ant -f build/build.xml openfips201-tool -Dargs='batch create --producer bigcorp_01 --name 2026-07'
-ant -f build/build.xml openfips201-tool -Dargs='card produce --producer bigcorp_01 --batch 2026-07 --target pcsc:JCOP --stock-scp-key <printed-batch-key> --yes'
-```
+Persistent object and key metadata are internal to a CAP build. Do not install a CAP with a changed
+persistent layout over an existing applet instance. Delete the instance, install the intended CAP,
+and personalize the card from the issuer's authoritative profile.
 
-Producer state and batch receipts live under `~/.openfips201`. Subject names
-for the root CA and F9 attestation authority are configurable; the tool does
-not force a particular common name. The PKCS#11 path uses the tool's own
-Cryptoki binding rather than SunPKCS11. A finished cardstock receipt records
-CPLC, KDD, proof-key deletion, and post-rotation SCP verification. See
-[docs/OPENFIPS201_TOOL.md](docs/OPENFIPS201_TOOL.md).
+Configuration fields for OCC, PUK update restriction, enumeration restriction, and RSA-CRT
+selection return `6A81` because these behaviors are not implemented. Unsupported fields are not
+accepted as inactive settings.
 
-The ZeroMQ client performs a bounded readiness handshake, never retries stateful APDUs, and reuses
-one thread-confined transport across each multi-step cardstock workflow.
+Incoming TLV lengths must use the shortest valid encoding. The applet also rejects bytes after the
+declared top-level value. Issuer software must send canonical BER-TLV encodings.
 
-## License
+## Repository Layout
 
-This OpenFIPS201 OpenPhysical fork is distributed under the MIT License. See
-[LICENSE.md](LICENSE.md) for the license text.
+- `src/com/makina/security/openfips201/`: production applet source
+- `src/dev/mistial/tools/openfips201/`: issuer and provisioning tools
+- `src/dev/mistial/tests/`: simulator, conformance, and host-tool tests
+- `build/`: Ant build definition and generated output
+- `docs/`: public operational and conformance documentation
+- `tools/piv_test_runner/`: external validation harness and VCI vector runner
+
+## Project and License
+
+This repository is maintained by OpenPhysical and derives from the open-source
+[OpenFIPS201](https://github.com/makinako/OpenFIPS201) project commissioned by the Australian
+Department of Defence. It is distributed under the MIT License. See [LICENSE.md](LICENSE.md).

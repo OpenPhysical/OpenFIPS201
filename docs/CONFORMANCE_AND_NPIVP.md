@@ -8,16 +8,16 @@ The scope is the OpenFIPS201 OpenPhysical fork in this repository.
 
 ## Reference specifications
 
-| Layer | Specification | Primary concern for this applet |
-| ----- | ------------- | ------------------------------- |
-| Credential policy | FIPS 201-3 | What a PIV identity is |
-| Card application namespace / objects | SP 800-73-5 Part 1 | Mandatory/optional objects, Discovery, ACRs, VCI policy bits |
-| Card command interface | SP 800-73-5 Part 2 | SELECT, GET/PUT DATA, VERIFY, CHANGE REFERENCE DATA, RESET RETRY COUNTER, GENERAL AUTHENTICATE, GENERATE ASYMMETRIC KEY PAIR, secure messaging |
-| Algorithms and key sizes | SP 800-78-5 | Algorithm identifiers, phase-outs (e.g. 3TDEA, RSA-1024) |
-| Biometrics | SP 800-76-2 | Fingerprint / face / iris encodings (content, not applet parsing) |
-| Card / middleware interface tests | SP 800-85A-4 | NPIVP command-interface and related assertions |
-| PIV data model tests | SP 800-85B (and draft SP 800-85B-4) | BER-TLV structure, CMS signatures, biometrics, certificate profiles |
-| Listing form | NIST NPIVP Test Summary (e.g. `Test-SummaryNPIVP.xlsx`) | Algorithm matrix, optional features, vendor evidence (VE) rows |
+| Layer                                | Specification                                           | Primary concern for this applet                                                                                                                |
+| ------------------------------------ | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Credential policy                    | FIPS 201-3                                              | What a PIV identity is                                                                                                                         |
+| Card application namespace / objects | SP 800-73-5 Part 1                                      | Mandatory/optional objects, Discovery, ACRs, VCI policy bits                                                                                   |
+| Card command interface               | SP 800-73-5 Part 2                                      | SELECT, GET/PUT DATA, VERIFY, CHANGE REFERENCE DATA, RESET RETRY COUNTER, GENERAL AUTHENTICATE, GENERATE ASYMMETRIC KEY PAIR, secure messaging |
+| Algorithms and key sizes             | SP 800-78-5                                             | Algorithm identifiers, phase-outs (e.g. 3TDEA, RSA-1024)                                                                                       |
+| Biometrics                           | SP 800-76-2                                             | Fingerprint / face / iris encodings (content, not applet parsing)                                                                              |
+| Card / middleware interface tests    | SP 800-85A-4                                            | NPIVP command-interface and related assertions                                                                                                 |
+| PIV data model tests                 | SP 800-85B (and draft SP 800-85B-4)                     | BER-TLV structure, CMS signatures, biometrics, certificate profiles                                                                            |
+| Listing form                         | NIST NPIVP Test Summary (e.g. `Test-SummaryNPIVP.xlsx`) | Algorithm matrix, optional features, vendor evidence (VE) rows                                                                                 |
 
 Authoritative text lives in the project reference library and NIST CSRC
 publications. Clause numbers below are orientation aids; always confirm against
@@ -39,11 +39,11 @@ OpenFIPS201 (OpenPhysical fork) is a **dynamically defined** object and key stor
 
 Therefore:
 
-| System under test | Primary standards | Typical tooling |
-| ----------------- | ----------------- | --------------- |
-| Applet CAP + command logic | SP 800-73-5, SP 800-78-5, parts of SP 800-85A | JUnit / JCardEngine (`ant test`), NIST PIV Test Runner configs under `tools/piv_test_runner/` |
-| Fully personalised card + issuer content | SP 800-85B / 85B-4 data model | Official runner `CHECK_*` groups on emulator; physical-card report remains external |
-| NPIVP product listing | 85A + 85B evidence + vendor docs | Test Summary spreadsheet + VE package ([NPIVP_VENDOR_EVIDENCE.md](NPIVP_VENDOR_EVIDENCE.md)) |
+| System under test                        | Primary standards                             | Typical tooling                                                                               |
+| ---------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Applet CAP + command logic               | SP 800-73-5, SP 800-78-5, parts of SP 800-85A | JUnit / JCardEngine (`ant test`), NIST PIV Test Runner configs under `tools/piv_test_runner/` |
+| Fully personalised card + issuer content | SP 800-85B / 85B-4 data model                 | Official runner `CHECK_*` groups on emulator; physical-card report remains external           |
+| NPIVP product listing                    | 85A + 85B evidence + vendor docs              | Test Summary spreadsheet + VE package ([NPIVP_VENDOR_EVIDENCE.md](NPIVP_VENDOR_EVIDENCE.md))  |
 
 ## Product posture (listing-oriented claims)
 
@@ -51,24 +51,24 @@ Use this table when filling an NPIVP Test Summary or answering “does the
 product implement X?”. Claims must match the build and personalisation profile
 actually submitted.
 
-| Capability | Posture | Notes |
-| ---------- | ------- | ----- |
-| PIV AID `A000000308000010000100` | Implemented | SELECT returns Application Property Template (APT) |
-| Local PIN (`0x80`) / PUK (`0x81`) | Implemented | SP 800-73-5 length and retry caps enforced in config |
-| Global PIN (`0x00`) | Supported; every defined Discovery policy combination is covered | Document explicitly if listed |
-| OCC (on-card comparison) | Out of scope | Not implemented and not claimed |
-| VCI with pairing code | Implemented | Discovery PIN Usage Policy bits; VERIFY key ref `0x98` over SM |
-| VCI without pairing code | Implemented | Configurable VCI mode |
-| Secure messaging (OPACITY) | Implemented | Build-time **one** suite: CS2 (`0x27`) or CS7 (`0x2E`) |
-| Intermediate CVC | Not a focused product claim | Do not mark Tested without a defined multi-hop path and evidence |
-| Key History object / retired KMKs (`0x82`–`0x95`) | Slot model supported | History **content** and full operational matrix require personalisation and test evidence |
-| Symmetric Card Authentication key | Possible | Deprecated in SP 800-78-5; Test Runner default config often disables it |
-| RSA-1024 (`0x06`) | Still in code | **Not** appropriate for current SP 800-78-5 listing cells |
-| RSA-2048 (`0x07`), ECC P-256 (`0x11`), P-384 (`0x14`) | Implemented | Preferred asymmetric set for present-day listing |
-| RSA-3072 (`0x05`) | **Implemented** | Advertised in the application property template and supported by the RSA key implementation |
-| 3TDEA admin / default | Still present | Deprecated through 2030; prefer AES for new listings |
-| AES-128/192/256 admin | Implemented | Preferred for management key |
-| OpenPhysical attestation (`INS F9`, key `F9`) | Extension | Outside base NPIVP PIV data model; document separately ([ATTESTATION.md](ATTESTATION.md)) |
+| Capability                                            | Posture                                                          | Notes                                                                                       |
+| ----------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| PIV AID `A000000308000010000100`                      | Implemented                                                      | SELECT returns Application Property Template (APT)                                          |
+| Local PIN (`0x80`) / PUK (`0x81`)                     | Implemented                                                      | SP 800-73-5 length and retry caps enforced in config                                        |
+| Global PIN (`0x00`)                                   | Supported; every defined Discovery policy combination is covered | Document explicitly if listed                                                               |
+| OCC (on-card comparison)                              | Out of scope                                                     | Not implemented and not claimed                                                             |
+| VCI with pairing code                                 | Implemented                                                      | Discovery PIN Usage Policy bits; VERIFY key ref `0x98` over SM                              |
+| VCI without pairing code                              | Implemented                                                      | Configurable VCI mode                                                                       |
+| Secure messaging (OPACITY)                            | Implemented                                                      | Build-time **one** suite: CS2 (`0x27`) or CS7 (`0x2E`)                                      |
+| Intermediate CVC                                      | Not a focused product claim                                      | Do not mark Tested without a defined multi-hop path and evidence                            |
+| Key History object / retired KMKs (`0x82`–`0x95`)     | Slot model supported                                             | History **content** and full operational matrix require personalisation and test evidence   |
+| Symmetric Card Authentication key                     | Possible                                                         | Deprecated in SP 800-78-5; Test Runner default config often disables it                     |
+| RSA-1024 (`0x06`)                                     | Still in code                                                    | **Not** appropriate for current SP 800-78-5 listing cells                                   |
+| RSA-2048 (`0x07`), ECC P-256 (`0x11`), P-384 (`0x14`) | Implemented                                                      | Preferred asymmetric set for present-day listing                                            |
+| RSA-3072 (`0x05`)                                     | **Implemented**                                                  | Advertised in the application property template and supported by the RSA key implementation |
+| 3TDEA admin / default                                 | Still present                                                    | Deprecated through 2030; prefer AES for new listings                                        |
+| AES-128/192/256 admin                                 | Implemented                                                      | Preferred for management key                                                                |
+| OpenPhysical attestation (`INS F9`, key `F9`)         | Extension                                                        | Outside base NPIVP PIV data model; document separately ([ATTESTATION.md](ATTESTATION.md))   |
 
 ## Automated test coverage (repository CI)
 
@@ -117,20 +117,25 @@ ant -f build/build.xml test-all   # includes slow tests / suite matrix
 
 ### Remaining Coverage
 
-These areas require additional evidence for an NPIVP or SP 800-85A/B campaign.
+Repository tests cover the applet policy and negative paths listed below. These areas still require
+physical-card or listing-quality evidence for an NPIVP or SP 800-85A/B campaign.
+
+The emulator tests are implementation evidence for the named paths. They do not cover every
+SP 800-85A assertion or every claimed key-reference, algorithm, and role combination. The table
+keeps those untested or externally tested areas explicit.
 
 #### SP 800-85A — card command interface
 
-| Theme | Gap |
-| ----- | --- |
-| SELECT | Full APT BER-TLV validation; re-SELECT preserves or clears security status per AS05.09–11; invalid AID behaviour on multi-app ICC |
-| GET DATA + ACRs | Matrix over mandatory OIDs with Always / PIN / PIN Always / VCI / Never on contact vs contactless |
-| Global PIN | VERIFY / CHANGE / Discovery policy combinations |
-| Contactless intermediate retry | Dedicated exhaustion test proves VERIFY returns `6983` and preserves the issuer's final contact retry |
-| RESET RETRY COUNTER | Full blocked-PUK, optional PUK-counter-reset policy, success-state matrix |
-| GENERAL AUTHENTICATE | Full keyRef × alg × role matrix; **interrupted chain rollback** (AS05.36C) |
-| GENERATE ASYMMETRIC KEY PAIR | Public-key encoding, replace-existing, admin gating, alg matrix |
-| Optional Discovery PIN Usage Policy | Complete local/global/VCI bit combinations beyond VCI pairing bits |
+| Theme                               | Gap                                                                                                              |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| SELECT                              | Actual multi-application ICC selection, re-selection, nonexistent AID behavior, and security-state transitions   |
+| GET DATA + ACRs                     | Final personalized-card captures across contact, contactless, and VCI for every claimed object policy            |
+| Global PIN                          | Actual platform Global PIN behavior and cross-application persistence                                            |
+| Contactless intermediate retry      | Physical dual-interface exhaustion with preservation of the issuer's final contact retry                         |
+| RESET RETRY COUNTER                 | Physical-card retry, blocked-PUK, and tear behavior across the claimed policy                                    |
+| GENERAL AUTHENTICATE                | Every claimed keyRef × algorithm × role on the target platform, including latency and interrupted-chain behavior |
+| GENERATE ASYMMETRIC KEY PAIR        | Physical provider encodings, replacement, tear behavior, and every claimed algorithm                             |
+| Optional Discovery PIN Usage Policy | Physical VCI profiles and middleware interoperability for each claimed policy combination                        |
 
 #### SP 800-85B — data model
 
@@ -138,12 +143,12 @@ The installed NIST SP 800-73-4 Test Runner includes four official SP 800-85B
 `CHECK_*` groups. `run-nist-data-model.sh` executes them headlessly against the
 positive GSA images and preserves JUnit XML, full logs, and a TSV matrix summary:
 
-| Official group | Assertions exercised |
-| -------------- | -------------------- |
-| `CHECK_BER_TLV_conformance` | CCC, CHUID, Printed Information, certificate containers, Security Object, Key History |
+| Official group               | Assertions exercised                                                                     |
+| ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `CHECK_BER_TLV_conformance`  | CCC, CHUID, Printed Information, certificate containers, Security Object, Key History    |
 | `CHECK_signed_data_elements` | CHUID, biometric, and Security Object CMS structures, signatures, attributes, and hashes |
-| `CHECK_biometric_data` | CBEFF and fingerprint/facial data constraints |
-| `CHECK_certificate_profile` | key usage, EKU, policy, AIA/SAN, expiry, and on-card private-key correspondence |
+| `CHECK_biometric_data`       | CBEFF and fingerprint/facial data constraints                                            |
+| `CHECK_certificate_profile`  | key usage, EKU, policy, AIA/SAN, expiry, and on-card private-key correspondence          |
 
 Attestation tests validate the **OpenPhysical attestation certificate profile**,
 not FIPS 201 PIV Authentication / Digital Signature / Key Management / Card
@@ -151,15 +156,16 @@ Authentication certificate profiles.
 
 #### NPIVP algorithm × key listing matrix
 
-CI exercises **samples** of algorithms, not a complete NPIVP grid:
+The emulator suite exercises the implemented policy and representative operations. A listing still
+needs each claimed cell reproduced on the target card platform:
 
-| Key | Listing expectation | CI posture |
-| --- | ------------------- | ---------- |
-| `04` SM | CS2 and/or CS7 | Covered per build; not both suites in one CAP |
-| `9A` | Claimed algs only | Limited operational tests |
-| `9B` | AES preferred; 3TDEA legacy | Admin-path coverage present |
-| `9C` / `9D` / `9E` | Claimed algs only | Limited |
-| Retired KMK `82`–`95` | Max retired count + ops | Slot create/delete; not full crypto matrix |
+| Key                   | Listing expectation                     | CI posture                                                                            |
+| --------------------- | --------------------------------------- | ------------------------------------------------------------------------------------- |
+| `04` SM               | CS2 and/or CS7                          | Covered in one suite per CAP; physical platform evidence pending                      |
+| `9A`                  | Claimed algs only                       | Emulator algorithm/role paths covered; physical matrix pending                        |
+| `9B`                  | AES preferred; 3TDEA compatibility only | Emulator admin paths covered; physical matrix pending                                 |
+| `9C` / `9D` / `9E`    | Claimed algs only                       | Emulator signature/key-establishment/card-auth paths covered; physical matrix pending |
+| Retired KMK `82`–`95` | Max retired count + ops                 | Emulator slot and key-establishment paths covered; physical matrix pending            |
 
 ## External tools (not wired into `ant test`)
 
@@ -242,7 +248,7 @@ Priority items for formal listing evidence:
 
 ## Related documents
 
-- [FIPS_AND_TEST_GAPS.md](FIPS_AND_TEST_GAPS.md) — FIPS_MODE product gaps, test
+- [FIPS_AND_TEST_GAPS.md](FIPS_AND_TEST_GAPS.md) — FIPS-profile product gaps, test
   gaps, and the macOS emulator plan for GSA ICAM + NIST headless suites
 - [NPIVP_VENDOR_EVIDENCE.md](NPIVP_VENDOR_EVIDENCE.md) — VE checklist text for
   vendor documentation submissions

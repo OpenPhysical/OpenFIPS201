@@ -3,7 +3,7 @@ OpenFIPS201_PUT_DATA_Schema DEFINITIONS IMPLICIT TAGS ::=
 BEGIN
 
 PutDataRequest ::= CHOICE {
-	legacyRequest		PutDataLegacyRequest,
+	compatibilityRequest	PutDataCompatibilityRequest,
 	createObjectRequest	[APPLICATION 4] PutDataCreateObjectRequest,
 	deleteObjectRequest	[APPLICATION 5] PutDataDeleteObjectRequest,
 	createKeyRequest 	[APPLICATION 6] PutDataCreateKeyRequest,
@@ -14,8 +14,8 @@ PutDataRequest ::= CHOICE {
 
 PutDataBulkRequest ::= [APPLICATION 10] SEQUENCE OF PutDataRequest
 
-PutDataLegacyRequest ::= SEQUENCE {
-	operation		[10] LegacyOperation,
+PutDataCompatibilityRequest ::= SEQUENCE {
+	operation		[10] CompatibilityOperation,
 	id				[11] OCTET STRING (SIZE(1..3)),
 	modeContact		[12] AccessMode,
 	modeContactless	[13] AccessMode,
@@ -67,7 +67,7 @@ PutDataUpdateConfigRequest ::= SEQUENCE {
 -- the GP application from SELECTABLE to OpenFIPS201 application-specific state 0x0F.
 PutDataPersonalizeAppletRequest ::= SEQUENCE {}
 
-LegacyOperation ::= ENUMERATED {
+CompatibilityOperation ::= ENUMERATED {
 	undefined	(0),		
 	dataObject	(1),
 	key			(2)

@@ -51,14 +51,20 @@ same destructive clear. Re-importing F9 key material stages a key rotation; the 
 both public and private key elements before validating the new keypair and running the destructive
 clear, so a partial key rotation cannot activate a mixed old/new authority.
 
+Authority activation is a resumable three-phase operation. The applet first commits a persistent
+activation-pending marker, performs the idempotent object/key clear, and then commits the active
+authority state. If power is lost during the clear, the next selection resumes the clear before F9
+can become active.
+
 The host provisioning tool sends an F9 clear element before importing a replacement authority
 profile. This makes re-provisioning deterministic: the applet commits once, on the final required
 element, instead of temporarily combining new key material with an old subject or validity profile.
 
-The subject is stored as exact DER and is not interpreted as text. Any valid X.509 `Name` shape is
-allowed, including non-CN-first names, multi-RDN names, and multi-attribute RDNs. The subject is
-capped at `0x80` bytes of DER and the validity at `0x40`; attestation issuer names are
-intentionally small, while target keys up to RSA-2048 are supported.
+The subject is stored as exact DER. Provisioning validates the X.509 `Name` hierarchy, minimally
+encoded OIDs, supported string encodings, and DER ordering of multi-attribute RDN sets before
+replacing the active profile. Non-CN-first names, multi-RDN names, and multi-attribute RDNs are
+supported. The subject is capped at `0x80` bytes of DER and the validity at `0x40`; attestation
+issuer names are intentionally small, while target keys up to RSA-3072 are supported.
 
 The validity is stored as exact DER:
 
@@ -69,7 +75,9 @@ Validity ::= SEQUENCE {
 }
 ```
 
-Both `UTCTime` and `GeneralizedTime` are accepted.
+Canonical RFC 5280 `UTCTime` through 2049 and `GeneralizedTime` from 2050 are accepted. Both require
+seconds and a `Z` suffix. Malformed or impossible calendar values and a `notAfter` earlier than
+`notBefore` are rejected.
 
 ## Attestation Command
 
@@ -84,8 +92,9 @@ PIV data-object tag.
 
 Supported target slots are `9A`, `9C`, `9D`, `9E`, and retired slots `82` through `95`.
 
-Supported target key algorithms are RSA-1024, RSA-2048, ECC P-256, and ECC P-384. The attestation
-issuer key is always ECC P-256 and generated certificates are signed with ECDSA-with-SHA256.
+Supported target key algorithms are RSA-1024 (standard profile only), RSA-2048, RSA-3072, ECC
+P-256, and ECC P-384. The attestation issuer key is always ECC P-256 and generated certificates are
+signed with ECDSA-with-SHA256.
 
 Unlike YubiKey-style public attestation, this applet applies the target key's normal access rules
 before issuing an attestation certificate. A target slot configured for PIN access requires a
@@ -132,11 +141,13 @@ Generated target certificates are X.509 v3 certificates with:
 The resulting certificate validates against an external F9 authority certificate when that
 certificate has the same subject and public key as the committed F9 authority profile.
 
-The applet builds each certificate directly into a CLEAR_ON_DESELECT response buffer supplied by
-the caller. The buffer is sized for the worst supported certificate (maximum issuer subject plus
-an RSA-2048 SubjectPublicKeyInfo); assembly fails closed with `6A84` on overflow. Temporaries use
-the shared PIV scratch; the only persistent attestation data are the issuer subject and validity
-profile. The JCRE zeroes the response buffer on deselection.
+The applet builds each certificate directly into an install-time response buffer. It prefers a
+`CLEAR_ON_DESELECT` transient array; on platforms that cannot allocate one, it uses a persistent
+fallback that the response-chain path wipes after completion or abandonment. The buffer is sized
+for the worst supported certificate (maximum issuer subject plus an RSA-3072 SubjectPublicKeyInfo);
+assembly fails closed with `6A84` on overflow. Persistent attestation state includes the F9 key,
+active and inactive issuer-profile buffers, lengths, staged-element state, and the resumable
+activation marker.
 
 ## Host Tooling
 
@@ -191,7 +202,8 @@ attestation issuer certificate slot.
 
 The applet rejects authority provisioning unless:
 
-- The command is sent through the administrative SCP-only `PUT DATA` path.
+- The command is sent through the administrative SCP-protected `CHANGE REFERENCE DATA` path with
+  authentication, command encryption, and command MAC.
 - F9 public and private key elements are valid ECC P-256 values.
 - The F9 key pair can sign and verify a test digest.
 - The subject is one complete definite-length DER `Name`.

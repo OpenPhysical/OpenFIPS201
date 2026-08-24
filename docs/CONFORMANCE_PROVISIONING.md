@@ -13,19 +13,19 @@ SCP03.
 
 ## What an ICAM folder contains
 
-| File pattern | PIV mapping |
-| ------------ | ----------- |
-| `1 - Discovery Object` | Discovery (`7E`) |
-| `2 - Security Object` | Security Object (`5FC106`) |
-| `3 - ICAM_PIV_Auth*.p12` / `.crt` | Key `9A` + cert container `5FC105` |
-| `4 - ICAM_PIV_Dig_Sig*.p12` / `.crt` | Key `9C` + cert container `5FC10A` |
-| `5 - ICAM_PIV_Key_Mgmt*.p12` / `.crt` | Key `9D` + cert container `5FC10B` |
-| `6 - ICAM_PIV_Card_Auth*.p12` / `.crt` | Key `9E` + cert container `5FC101` |
-| `7 - CCC` | Card Capability Container (`5FC107`) |
-| `8 - CHUID Object` | CHUID (`5FC102`) |
-| `9 - Fingerprints` | Fingerprints (`5FC103`, PIN) |
-| `10 - Face Object` | Facial image (`5FC108`, PIN) |
-| `11 - Printed Information` | Printed Information (`5FC109`, PIN) |
+| File pattern                           | PIV mapping                          |
+| -------------------------------------- | ------------------------------------ |
+| `1 - Discovery Object`                 | Discovery (`7E`)                     |
+| `2 - Security Object`                  | Security Object (`5FC106`)           |
+| `3 - ICAM_PIV_Auth*.p12` / `.crt`      | Key `9A` + cert container `5FC105`   |
+| `4 - ICAM_PIV_Dig_Sig*.p12` / `.crt`   | Key `9C` + cert container `5FC10A`   |
+| `5 - ICAM_PIV_Key_Mgmt*.p12` / `.crt`  | Key `9D` + cert container `5FC10B`   |
+| `6 - ICAM_PIV_Card_Auth*.p12` / `.crt` | Key `9E` + cert container `5FC101`   |
+| `7 - CCC`                              | Card Capability Container (`5FC107`) |
+| `8 - CHUID Object`                     | CHUID (`5FC102`)                     |
+| `9 - Fingerprints`                     | Fingerprints (`5FC103`, PIN)         |
+| `10 - Face Object`                     | Facial image (`5FC108`, PIN)         |
+| `11 - Printed Information`             | Printed Information (`5FC109`, PIN)  |
 
 When both `ICAM_Test_Card_*` and plain `ICAM_PIV_*` assets exist, the loader prefers
 `ICAM_Test_Card` (same rule as OpenPhysical VirtualPiv).
@@ -37,12 +37,12 @@ The published GSA ICAM corpus uses an **empty** PKCS#12 password. Override with
 
 ### Secrets applied by the provisioner
 
-| Secret | Default |
-| ------ | ------- |
-| Local PIN | `123456` (StandardCardProfile, padded with `0xFF`) |
-| PUK | `12345678` |
-| Management key `9B` | AES-128 fixed test key from StandardCardProfile |
-| SCP03 | GlobalPlatform test master key (emulator default) |
+| Secret              | Default                                            |
+| ------------------- | -------------------------------------------------- |
+| Local PIN           | `123456` (StandardCardProfile, padded with `0xFF`) |
+| PUK                 | `12345678`                                         |
+| Management key `9B` | AES-128 fixed test key from StandardCardProfile    |
+| SCP03               | GlobalPlatform test master key (emulator default)  |
 
 ## Commands
 
@@ -120,7 +120,7 @@ Expected MVP checks after load:
 3. GET DATA CHUID / CCC / at least one certificate returns `9000`.
 4. GENERAL AUTHENTICATE with Card Authentication (`9E`) verifies against the on-card cert.
 
-The repository owns a headless version of those checks, independent of the broken upstream GUI/CLI:
+The repository provides a headless path for these checks:
 
 ```bash
 ant -f build/build.xml \
@@ -135,13 +135,13 @@ and an independently verified RSA-2048 Card Authentication operation with key `9
 
 ## Implementation map
 
-| Class | Role |
-| ----- | ---- |
-| `IcamCardFolder` | Native ICAM directory → `ConformancePackage` |
-| `ConformancePackage` | Objects + keys + PIN/PUK/9B model |
-| `ConformanceProvisioner` | SCP03 create/import/PUT DATA |
-| `OpenFips201Tool provision` | CLI entry |
-| `tools/provision-icam.sh` | Convenience wrapper |
+| Class                       | Role                                         |
+| --------------------------- | -------------------------------------------- |
+| `IcamCardFolder`            | Native ICAM directory → `ConformancePackage` |
+| `ConformancePackage`        | Objects + keys + PIN/PUK/9B model            |
+| `ConformanceProvisioner`    | SCP03 create/import/PUT DATA                 |
+| `OpenFips201Tool provision` | CLI entry                                    |
+| `tools/provision-icam.sh`   | Convenience wrapper                          |
 
 ## piv-conformance host trust material (no symlinks)
 
@@ -169,8 +169,9 @@ intermediate from the ICAM AIA URL or from
 
 - VCI / SM key (`04`) and pairing are **not** loaded from ICAM folders; use `VciProvisioning` when SM cases are needed.
 - Attestation authority (`F9`) is not part of the ICAM load path.
-- Negative ICAM cards (tampered CHUID, expired certs, etc.) load as-is — useful for host-side negative tests once the positive path is green.
+- Negative ICAM profiles, such as a modified CHUID or expired certificate, are loaded without
+  correction for deterministic host-side negative tests.
 - Emulator reset clears personalisation; re-run `provision` after restart.
 - The applet is left in the administrative (pre-personalise) lifecycle state so re-provisioning remains possible under SCP.
 - Provisioning verifies the local PIN and reads every object back through GET DATA, requiring an exact byte match with the source package before reporting success.
-- **FIPS_MODE CAP:** the loader maps ICAM objects and keys to the Part 1 contact/contactless ACRs enforced by `FipsPolicy`. GSA card 46 provisions successfully; VCI/SM remains a separate profile extension.
+- **FIPS-profile CAP:** the loader maps ICAM objects and keys to the Part 1 contact/contactless ACRs enforced by `FipsPolicy`. GSA card 46 provisions successfully; VCI secure messaging remains a separate profile extension.

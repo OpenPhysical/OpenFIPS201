@@ -7,17 +7,17 @@ The NIST runner is downloaded locally and is not part of this repository.
 
 ## Contents
 
-| Path | Purpose |
-| ---- | ------- |
-| `config/OpenFIPS201.xml` | Default development configuration |
-| `config/OpenFIPS201-ECC256.xml` | P-256 algorithm configuration |
-| `config/OpenFIPS201-ECC384.xml` | P-384 algorithm configuration |
-| `config/OpenFIPS201-RSA2048.xml` | RSA-2048 algorithm configuration |
-| `test_keys/` | Keys and certificates referenced by the configurations |
-| `setup-nist-tester.sh` | Downloads and installs the NIST runner locally |
-| `run-nist-harness.sh` | Runs NIST vectors against the emulator or a PC/SC card |
-| `run-nist-data-model.sh` | Runs the SP 800-85B data-model matrix |
-| `run-nist-vci-matrix.sh` | Runs the CS2 and CS7 VCI matrix |
+| Path                             | Purpose                                                |
+| -------------------------------- | ------------------------------------------------------ |
+| `config/OpenFIPS201.xml`         | Default development configuration                      |
+| `config/OpenFIPS201-ECC256.xml`  | P-256 algorithm configuration                          |
+| `config/OpenFIPS201-ECC384.xml`  | P-384 algorithm configuration                          |
+| `config/OpenFIPS201-RSA2048.xml` | RSA-2048 algorithm configuration                       |
+| `test_keys/`                     | Keys and certificates referenced by the configurations |
+| `setup-nist-tester.sh`           | Downloads and installs the NIST runner locally         |
+| `run-nist-harness.sh`            | Runs NIST vectors against the emulator or a PC/SC card |
+| `run-nist-data-model.sh`         | Runs the SP 800-85B data-model matrix                  |
+| `run-nist-vci-matrix.sh`         | Runs the CS2 and CS7 VCI matrix                        |
 
 The XML files use the SP 800-73-4 configuration format shipped with Test
 Runner 5.0.1.
@@ -128,8 +128,11 @@ tools/piv_test_runner/run-nist-vci-matrix.sh \
   --out tools/piv_test_runner/piv_tests/vci-matrix
 ```
 
-This wrapper checks the failure classification encoded in
-`run-nist-vci-matrix.sh` and exits nonzero if it changes.
+The wrapper retains the test XML and logs, then writes the normative result to
+`summary.tsv`. It applies the clause mapping in
+[`VCI_CONFORMANCE.md`](VCI_CONFORMANCE.md). Any missing, changed, or additional
+result exits nonzero. The gate also checks protected `6A81` for every PUT DATA
+case, including commands whose secure-messaging field uses multiple APDUs.
 
 ## Configuration limits
 
