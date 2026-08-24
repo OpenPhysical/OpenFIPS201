@@ -9,6 +9,7 @@ import picocli.CommandLine.Command;
 @Command(
     name = "cards",
     mixinStandardHelpOptions = true,
+    description = "Discover available PC/SC smart-card readers.",
     subcommands = CardsCommand.ListReaders.class)
 final class CardsCommand implements Callable<Integer> {
   @Override

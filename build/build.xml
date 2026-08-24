@@ -298,7 +298,10 @@ platform.id=${build.platform.id}
     </javac>
   </target>
 
-  <target name="openfips201-tool" depends="compile,tool-compile">
+  <!-- Host-tool commands must not clean or replace a CAP selected by the operator. tool-compile
+       prepares the host classes and the applet classes required by the emulator without producing
+       a deployment artifact. -->
+  <target name="openfips201-tool" depends="tool-compile">
     <java classname="dev.mistial.tools.openfips201.OpenFips201Tool" fork="true" failonerror="true">
       <classpath refid="tool.runtime.classpath"/>
       <arg line="${args}"/>

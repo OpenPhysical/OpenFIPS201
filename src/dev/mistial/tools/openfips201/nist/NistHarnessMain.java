@@ -372,8 +372,8 @@ public final class NistHarnessMain {
         // NIST SP 800-73-5 Part 2, Section 3.1.1 ties 0x27/0x2E advertisement to possession of the
         // corresponding SM key. Running an SM-only vector without that advertisement tests a
         // feature the personalized card does not claim, so report N/A rather than a product pass
-        // or failure. This is especially important for legacy GSA images such as card 46, which
-        // contain PIV authentication keys and objects but no PIV Secure Messaging credential.
+        // or failure. This is important for GSA images such as card 46, which contain PIV
+        // authentication keys and objects but no PIV Secure Messaging credential.
         String reason = "card does not advertise secure messaging in the SELECT APT";
         System.out.println("SKIP " + name + " " + reason);
         results.add(HarnessResult.skipped(name, reason));

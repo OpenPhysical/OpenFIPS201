@@ -54,6 +54,9 @@ class OpenFIPS201UnifiedToolTest {
     assertTrue(help.contains("producer"));
     assertTrue(help.contains("batch"));
     assertTrue(help.contains("card"));
+    assertTrue(help.contains("Discover available PC/SC smart-card readers."));
+    assertTrue(help.contains("Install the OpenFIPS201 CAP on a GlobalPlatform card."));
+    assertTrue(help.contains("Prepare issuer cardstock from an issuer profile."));
   }
 
   @Test

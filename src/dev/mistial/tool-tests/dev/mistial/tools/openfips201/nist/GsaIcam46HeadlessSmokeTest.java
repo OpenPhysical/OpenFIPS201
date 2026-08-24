@@ -82,7 +82,9 @@ class GsaIcam46HeadlessSmokeTest {
   @Test
   @Timeout(120)
   void provisionsAndReadsEveryVendoredPositiveProfileInStandardBuild() throws Exception {
-    assumeFalse(Boolean.getBoolean("fips.mode"), "legacy GSA profiles are interoperability inputs");
+    assumeFalse(
+        Boolean.getBoolean("fips.mode"),
+        "GSA profiles outside the FIPS profile are interoperability inputs");
     assumeTrue(Files.isDirectory(ICAM_ROOT), "vendored GSA corpus not present at " + ICAM_ROOT);
     for (String card : VENDORED_POSITIVE_CARDS) {
       ConformancePackage profile = IcamCardFolder.load(ICAM_ROOT.resolve(card));

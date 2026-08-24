@@ -12,6 +12,7 @@ import pro.javacard.gp.keys.PlaintextKeys;
 @Command(
     name = "emulator",
     mixinStandardHelpOptions = true,
+    description = "Run the applet in the local ZeroMQ emulator.",
     subcommands = EmulatorCommand.Serve.class)
 final class EmulatorCommand implements Callable<Integer> {
   @Override

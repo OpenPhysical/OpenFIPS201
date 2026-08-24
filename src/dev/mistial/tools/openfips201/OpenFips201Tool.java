@@ -51,7 +51,12 @@ import picocli.CommandLine.Option;
 @Command(
     name = "openfips201",
     mixinStandardHelpOptions = true,
-    description = "OpenFIPS201 issuer tooling.",
+    description = "Discover, provision, attest, and manage OpenFIPS201 cards.",
+    footer = {
+      "",
+      "Start with 'openfips201 cards list' to find a reader.",
+      "Use 'openfips201 <command> --help' for command-specific options."
+    },
     subcommands = {
       CardsCommand.class,
       EmulatorCommand.class,
@@ -88,6 +93,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
   @Command(
       name = "gp",
       mixinStandardHelpOptions = true,
+      description = "Inspect and manage GlobalPlatform card keys.",
       subcommands = {Gp.Card.class, Gp.Keys.class})
   static final class Gp implements Callable<Integer> {
     @Override
@@ -96,7 +102,11 @@ public final class OpenFips201Tool implements Callable<Integer> {
       return 2;
     }
 
-    @Command(name = "card", mixinStandardHelpOptions = true, subcommands = Card.Kdd.class)
+    @Command(
+        name = "card",
+        mixinStandardHelpOptions = true,
+        description = "Inspect GlobalPlatform card data.",
+        subcommands = Card.Kdd.class)
     static final class Card implements Callable<Integer> {
       @Override
       public Integer call() {
@@ -142,6 +152,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
     @Command(
         name = "keys",
         mixinStandardHelpOptions = true,
+        description = "Derive, validate, and rotate SCP03 keys.",
         subcommands = {
           Keys.Derive.class,
           Keys.DeriveCard.class,
@@ -423,6 +434,7 @@ public final class OpenFips201Tool implements Callable<Integer> {
   @Command(
       name = "cardstock",
       mixinStandardHelpOptions = true,
+      description = "Prepare issuer cardstock from an issuer profile.",
       subcommands = Cardstock.Prepare.class)
   static final class Cardstock implements Callable<Integer> {
     @Override
@@ -499,7 +511,11 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "producer", mixinStandardHelpOptions = true, subcommands = Producer.Setup.class)
+  @Command(
+      name = "producer",
+      mixinStandardHelpOptions = true,
+      description = "Create and manage issuer producer profiles.",
+      subcommands = Producer.Setup.class)
   static final class Producer implements Callable<Integer> {
     @Override
     public Integer call() {
@@ -562,7 +578,11 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "batch", mixinStandardHelpOptions = true, subcommands = Batch.Create.class)
+  @Command(
+      name = "batch",
+      mixinStandardHelpOptions = true,
+      description = "Create and manage issuer production batches.",
+      subcommands = Batch.Create.class)
   static final class Batch implements Callable<Integer> {
     @Override
     public Integer call() {
@@ -592,7 +612,11 @@ public final class OpenFips201Tool implements Callable<Integer> {
     }
   }
 
-  @Command(name = "card", mixinStandardHelpOptions = true, subcommands = Card.Produce.class)
+  @Command(
+      name = "card",
+      mixinStandardHelpOptions = true,
+      description = "Produce cards from an issuer batch.",
+      subcommands = Card.Produce.class)
   static final class Card implements Callable<Integer> {
     @Override
     public Integer call() {

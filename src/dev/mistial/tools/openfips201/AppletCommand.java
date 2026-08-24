@@ -14,6 +14,7 @@ import picocli.CommandLine.Option;
 @Command(
     name = "applet",
     mixinStandardHelpOptions = true,
+    description = "Install the OpenFIPS201 CAP on a GlobalPlatform card.",
     subcommands = AppletCommand.Install.class)
 final class AppletCommand implements Callable<Integer> {
   @Override
@@ -27,19 +28,30 @@ final class AppletCommand implements Callable<Integer> {
       mixinStandardHelpOptions = true,
       description = "Load and install the CAP.")
   static final class Install extends ScpOptions implements Callable<Integer> {
-    @Option(names = "--cap", required = true)
+    @Option(names = "--cap", required = true, description = "CAP file to load and install.")
     Path cap;
 
-    @Option(names = "--package-aid", defaultValue = "A00000030800001000")
+    @Option(
+        names = "--package-aid",
+        defaultValue = "A00000030800001000",
+        description = "CAP package AID. Default: ${DEFAULT-VALUE}.")
     String packageAid;
 
-    @Option(names = "--applet-aid", defaultValue = "A000000308000010000100")
+    @Option(
+        names = "--applet-aid",
+        defaultValue = "A000000308000010000100",
+        description = "Applet class AID. Default: ${DEFAULT-VALUE}.")
     String appletAid;
 
-    @Option(names = "--instance-aid", defaultValue = "A000000308000010000100")
+    @Option(
+        names = "--instance-aid",
+        defaultValue = "A000000308000010000100",
+        description = "Installed instance AID. Default: ${DEFAULT-VALUE}.")
     String instanceAid;
 
-    @Option(names = "--delete-existing")
+    @Option(
+        names = "--delete-existing",
+        description = "Delete an existing package and instance before installation.")
     boolean deleteExisting;
 
     @Option(names = "--skip-load", description = "Install an already registered package.")
