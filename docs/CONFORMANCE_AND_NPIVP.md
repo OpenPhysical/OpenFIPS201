@@ -6,6 +6,9 @@ NPIVP listing and SP 800-85B data-model validation.
 
 The scope is the OpenFIPS201 OpenPhysical fork in this repository.
 
+Card-platform release gates are recorded in
+[Production qualification](PRODUCTION_QUALIFICATION.md).
+
 ## Reference specifications
 
 | Layer                                | Specification                                           | Primary concern for this applet                                                                                                                |
@@ -62,7 +65,7 @@ actually submitted.
 | Secure messaging (OPACITY)                            | Implemented                                                      | Build-time **one** suite: CS2 (`0x27`) or CS7 (`0x2E`)                                      |
 | Intermediate CVC                                      | Not a focused product claim                                      | Do not mark Tested without a defined multi-hop path and evidence                            |
 | Key History object / retired KMKs (`0x82`–`0x95`)     | Slot model supported                                             | History **content** and full operational matrix require personalisation and test evidence   |
-| Symmetric Card Authentication key                     | Possible                                                         | Deprecated in SP 800-78-5; Test Runner default config often disables it                     |
+| Symmetric Card Authentication key                     | Not supported                                                    | Reference `9E` permits asymmetric signing only                                              |
 | RSA-1024 (`0x06`)                                     | Still in code                                                    | **Not** appropriate for current SP 800-78-5 listing cells                                   |
 | RSA-2048 (`0x07`), ECC P-256 (`0x11`), P-384 (`0x14`) | Implemented                                                      | Preferred asymmetric set for present-day listing                                            |
 | RSA-3072 (`0x05`)                                     | **Implemented**                                                  | Advertised in the application property template and supported by the RSA key implementation |
