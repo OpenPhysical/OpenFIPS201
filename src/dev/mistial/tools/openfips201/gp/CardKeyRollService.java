@@ -62,6 +62,8 @@ public final class CardKeyRollService {
       target = DerivedScpKeys.fromConfig(stock);
     }
 
+    CardKeyRotationService.requireDestinationVersion(target.config.keyVersion);
+
     CardKeyPreflightService.Request preflightRequest = new CardKeyPreflightService.Request();
     preflightRequest.target = request.target;
     preflightRequest.current = current;

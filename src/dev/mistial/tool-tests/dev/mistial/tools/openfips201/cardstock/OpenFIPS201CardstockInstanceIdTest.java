@@ -150,6 +150,50 @@ class OpenFIPS201CardstockInstanceIdTest {
   }
 
   @Test
+  void rejectedProofNeverStartsKeyRotation(@TempDir Path tempDir) throws Exception {
+    Assumptions.assumeTrue(
+        !"false".equalsIgnoreCase(System.getProperty("attestation.enabled", "true")));
+    IssuerProfile profile = ProfileLoader.emulatorDev();
+    profile.applet.capPath = System.getProperty("cap.path");
+    profile.receipts.directory = tempDir.toString();
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+    generator.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair root = generator.generateKeyPair();
+    PemSigningKey signer = new PemSigningKey(root.getPrivate(), root.getPublic(), "ephemeral");
+    // The separate proof tests exercise bad signatures and mismatched generated points.
+    // Here a rejection at that boundary proves the workflow has not begun credential rotation.
+    try (org.mockito.MockedStatic<CardstockPreparationService> checker =
+            org.mockito.Mockito.mockStatic(
+                CardstockPreparationService.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        org.mockito.MockedConstruction<dev.mistial.tools.openfips201.gp.CardKeyRotationService>
+            rotation =
+                org.mockito.Mockito.mockConstruction(
+                    dev.mistial.tools.openfips201.gp.CardKeyRotationService.class)) {
+      checker
+          .when(
+              () ->
+                  CardstockPreparationService.verifyProofMatchesF9Instance(
+                      org.mockito.ArgumentMatchers.any(X509Certificate.class),
+                      org.mockito.ArgumentMatchers.anyString(),
+                      org.mockito.ArgumentMatchers.any(byte[].class),
+                      org.mockito.ArgumentMatchers.any(byte[].class)))
+          .thenThrow(new IllegalArgumentException("Rejected synthetic proof"));
+      org.junit.jupiter.api.Assertions.assertThrows(
+          IllegalArgumentException.class,
+          () ->
+              new CardstockPreparationService()
+                  .prepare(
+                      CardTarget.parse("zmq:" + endpoint),
+                      profile,
+                      signer,
+                      true,
+                      "test-batch",
+                      tempDir));
+      assertTrue(rotation.constructed().isEmpty(), "rotation must follow proof acceptance");
+    }
+  }
+
+  @Test
   void receiptPrinterRendersMissingFieldsSafely() {
     CardstockReceipt empty = new CardstockReceipt();
     ByteArrayOutputStream printed = new ByteArrayOutputStream();

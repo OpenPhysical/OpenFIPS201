@@ -456,8 +456,7 @@ class OpenFIPS201HostAttestationToolTest {
   @Test
   void failedPrivateKeyImportDoesNotDiscloseTheScalar() {
     byte[] privateScalar = hex("5A5B5C5D5E5F606162636465666768696A6B6C6D6E6F70717273747576777879");
-    F9Profile profile =
-        new F9Profile(new byte[0x41], privateScalar, hex("3000"), hex("3000"));
+    F9Profile profile = new F9Profile(new byte[0x41], privateScalar, hex("3000"), hex("3000"));
     CardSession session =
         new CardSession() {
           @Override

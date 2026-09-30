@@ -23,16 +23,29 @@ class CardKeyPreflightServiceTest {
     request.target = CardTarget.parse("pcsc:Issuer Reader");
     request.profilePath = "issuer.json";
     request.stockScpKey = stockKey;
-    request.current =
-        ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 1, HexUtil.parse(stockKey));
+    request.current = ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 1, HexUtil.parse(stockKey));
 
     String command =
-        CardKeyPreflightService.rollbackCommand(
-            request, HexUtil.parse("00002345558923204839"));
+        CardKeyPreflightService.rollbackCommand(request, HexUtil.parse("00002345558923204839"), 1);
 
     assertTrue(command.contains("keyroll backward"));
     assertFalse(command.contains(stockKey));
     assertFalse(command.contains("--stock-scp-key "));
     assertFalse(command.contains("--stock-scp-key="));
+  }
+
+  @Test
+  void recoveryUsesAuthenticatedVersionAndOmitsUnsupportedFactoryDestinations() {
+    CardKeyPreflightService.Request request = new CardKeyPreflightService.Request();
+    request.target = CardTarget.parse("pcsc:Issuer Reader");
+    request.profilePath = "issuer.json";
+    request.current = ScpConfig.defaultTestScp03();
+    byte[] kdd = HexUtil.parse("00002345558923204839");
+    String recovery = CardKeyPreflightService.rollbackCommand(request, kdd, 7);
+    assertTrue(recovery.contains("--stock-scp-key-version 7"));
+    org.junit.jupiter.api.Assertions.assertNull(
+        CardKeyPreflightService.rollbackCommand(request, kdd, 255));
+    org.junit.jupiter.api.Assertions.assertNull(
+        CardKeyPreflightService.rollbackCommand(request, kdd, 0));
   }
 }

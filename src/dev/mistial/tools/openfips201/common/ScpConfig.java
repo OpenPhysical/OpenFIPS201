@@ -10,6 +10,11 @@ package dev.mistial.tools.openfips201.common;
 import pro.javacard.gp.keys.PlaintextKeys;
 
 public final class ScpConfig {
+  public static final int KEY_VERSION_AUTO = 0;
+  // GlobalPlatform Card Specification 2.3.1, Section 11.8.2.3: PUT KEY destinations.
+  public static final int KEY_VERSION_MIN = 1;
+  public static final int KEY_VERSION_MAX = 0x7F;
+
   public enum Mode {
     AUTO,
     SCP02,
@@ -35,7 +40,7 @@ public final class ScpConfig {
   }
 
   public static ScpConfig defaultTestScp03() {
-    return fromMaster(Mode.SCP03, 0, PlaintextKeys.DEFAULT_KEY());
+    return fromMaster(Mode.SCP03, KEY_VERSION_AUTO, PlaintextKeys.DEFAULT_KEY());
   }
 
   /** Resolves the mutually exclusive shared-key and split-key CLI representations. */

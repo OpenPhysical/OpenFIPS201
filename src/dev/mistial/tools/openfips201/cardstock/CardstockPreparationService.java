@@ -157,6 +157,10 @@ public final class CardstockPreparationService {
             new AttestationProofService()
                 .collectPlainProof(
                     transport, HexUtil.parse(profile.applet.instanceAid), proofSlot, proofPin);
+        // Reject an invalid live proof before changing the card's management credentials.
+        verifyProofMatchesF9Instance(
+            authority.issuerCertificate, authority.instanceId, proofPublicPoint, proofCertificate);
+        receipt.operationsPerformed.add("attestation proof issuer matches F9 instanceId");
         boolean proofKeyDeleted = false;
         if (profile.attestation.deleteProofKey) {
           try (GlobalPlatformSession cleanup =
@@ -167,8 +171,7 @@ public final class CardstockPreparationService {
           }
         }
         proof =
-            new AttestationProofService.Result(
-                proofCertificate, proofPublicPoint, proofKeyDeleted);
+            new AttestationProofService.Result(proofCertificate, proofPublicPoint, proofKeyDeleted);
         receipt.operationsPerformed.add("attestation proof collected");
       } catch (Exception e) {
         if (profile.attestation.deleteProofKey && proofKeyCreated) {
@@ -207,10 +210,6 @@ public final class CardstockPreparationService {
           .rotate(transport, stockScp, derived, profile.cardKeys.replaceExisting);
       receipt.operationsPerformed.add("SCP keys rotated and verified");
     }
-
-    verifyProofMatchesF9Instance(
-        authority.issuerCertificate, authority.instanceId, proof.publicPoint, proof.certificate);
-    receipt.operationsPerformed.add("attestation proof issuer matches F9 instanceId");
 
     receipt.instanceId = authority.instanceId;
     receipt.rootSubject = authority.issuerCertificate.getIssuerX500Principal().getName();

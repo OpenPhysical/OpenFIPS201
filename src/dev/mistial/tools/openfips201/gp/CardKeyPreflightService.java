@@ -50,21 +50,38 @@ public final class CardKeyPreflightService {
       throw new IllegalArgumentException(
           "Refusing same-version GP key rotation; choose a different target key version");
     }
-    try (GlobalPlatformSession ignored =
+    int authenticatedVersion;
+    try (GlobalPlatformSession session =
         GlobalPlatformSession.open(
             request.target, GlobalPlatformSession.ISD_AID, request.current)) {
       // Opening SCP with the current keys is the non-mutating readiness check.
+      authenticatedVersion = session.authenticatedKeyVersion();
+      if (!request.allowSameVersion && authenticatedVersion == target.config.keyVersion) {
+        throw new IllegalArgumentException(
+            "Refusing same-version GP key rotation; choose a different target key version");
+      }
     }
+    ScpConfig authenticated =
+        new ScpConfig(
+            request.current.mode,
+            authenticatedVersion,
+            request.current.encKey,
+            request.current.macKey,
+            request.current.dekKey);
     return new Result(
         kdd,
-        request.current,
+        authenticated,
         target,
-        rollbackCommand(request, kdd),
+        rollbackCommand(request, kdd, authenticatedVersion),
         request.stockScpKey != null);
   }
 
-  static String rollbackCommand(Request request, byte[] kdd) {
-    if (request.profilePath == null) {
+  static String rollbackCommand(Request request, byte[] kdd, int authenticatedVersion) {
+    // GP v2.3.1 Section 11.8.2.3 does not define PUT KEY to wildcard 00 or reserved
+    // factory versions. Do not print a recovery command that cannot safely perform that roll.
+    if (request.profilePath == null
+        || authenticatedVersion < ScpConfig.KEY_VERSION_MIN
+        || authenticatedVersion > ScpConfig.KEY_VERSION_MAX) {
       return null;
     }
     return "openfips201 gp keys keyroll backward --profile "
@@ -74,7 +91,7 @@ public final class CardKeyPreflightService {
         + " --kdd "
         + HexUtil.format(kdd)
         + " --stock-scp-key-version "
-        + request.current.keyVersion
+        + authenticatedVersion
         + " --yes";
   }
 
@@ -99,6 +116,7 @@ public final class CardKeyPreflightService {
     public final String targetDekKcv;
     public final String rollbackCommand;
     public final boolean rollbackRequiresStockScpKey;
+    public final String rollbackUnavailableReason;
 
     Result(
         byte[] kdd,
@@ -115,6 +133,12 @@ public final class CardKeyPreflightService {
       this.targetDekKcv = target.dekKcv;
       this.rollbackCommand = rollbackCommand;
       this.rollbackRequiresStockScpKey = rollbackRequiresStockScpKey;
+      this.rollbackUnavailableReason =
+          current.keyVersion < ScpConfig.KEY_VERSION_MIN
+                  || current.keyVersion > ScpConfig.KEY_VERSION_MAX
+              ? "Restoring the authenticated factory/reserved key version requires a"
+                  + " platform-specific procedure"
+              : null;
     }
   }
 }

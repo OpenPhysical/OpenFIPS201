@@ -335,6 +335,8 @@ public final class OpenFips201Tool implements Callable<Integer> {
             if (result.rollbackRequiresStockScpKey) {
               System.out.println("Supply the stock SCP key again when running the rollback.");
             }
+          } else if (result.rollbackUnavailableReason != null) {
+            System.out.println("Recovery: " + result.rollbackUnavailableReason);
           }
           return 0;
         }
