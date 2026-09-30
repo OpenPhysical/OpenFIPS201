@@ -73,7 +73,7 @@ final class PIVDataCommandHandler {
 
     boolean discovery = isDiscoveryDataObject(buffer, offset, idLength);
     if (!discovery && !object.isInitialised()) {
-      scratch[ZERO] = (byte) 0x53;
+      scratch[ZERO] = PIV.CONST_TAG_DATA;
       scratch[(short) 1] = (byte) 0x00;
       chainBuffer.setOutgoing(scratch, ZERO, (short) 2, false);
       return (short) 2;
@@ -195,7 +195,7 @@ final class PIVDataCommandHandler {
         if ((short) (offset - initialOffset) >= length) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
-        if (buffer[offset] != (byte) 0x53) {
+        if (buffer[offset] != PIV.CONST_TAG_DATA) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return;
         }
@@ -290,7 +290,7 @@ final class PIVDataCommandHandler {
     // SP 800-73-5 Part 2 Section 3.3.1 defines PUT DATA as 5C <tag list> followed by
     // 53 <data>. PIVDataObject stores that complete 53 data object, so validate its value rather
     // than treating the outer container as the first Part 1 data element.
-    if (content[offset] != (byte) 0x53) return false;
+    if (content[offset] != PIV.CONST_TAG_DATA) return false;
     short containerEnd = tlvEnd(content, offset, limit);
     if (containerEnd != limit) return false;
     offset = TLVReader.getDataOffset(content, offset);

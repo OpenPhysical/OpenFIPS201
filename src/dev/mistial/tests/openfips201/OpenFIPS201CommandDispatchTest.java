@@ -30,6 +30,24 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
   }
 
   @Test
+  void globalContactlessRestrictionStillAllowsContactSelection() {
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before interface restriction");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A403800101")),
+              "Enable global contactless restriction");
+        });
+    assertSw(0x9000, selectApplet(), "A contactless-only restriction must not disable contact");
+    withContactless(() -> assertSw(0x6999, selectApplet(), "Contactless selection is restricted"));
+    assertSw(
+        0x9000,
+        selectApplet(),
+        "Contact selection remains available after rejected contactless selection");
+  }
+
+  @Test
   void appletSelectionAllowsContactlessByDefault() {
     withContactless(
         () -> {

@@ -39,10 +39,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   private static final byte CONST_POINT_UNCOMPRESSED = (byte) 0x04;
 
   // The ECC public key element tag
-  private static final byte ELEMENT_ECC_POINT = (byte) 0x86;
+  static final byte ELEMENT_ECC_POINT = (byte) 0x86;
 
   // The ECC private key element tag
-  private static final byte ELEMENT_ECC_SECRET = (byte) 0x87;
+  static final byte ELEMENT_ECC_SECRET = (byte) 0x87;
 
   // The PIV secure messaging CVC element tag (OpenFIPS201 ASN.1 smCVC [10]).
   static final byte ELEMENT_SM_CVC = (byte) 0x8A;

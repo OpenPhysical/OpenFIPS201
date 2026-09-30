@@ -91,7 +91,7 @@ final class ChainBuffer {
 
   // APDU constants
   static final byte CLA_CHAINING = (byte) 0x10;
-  private static final byte INS_GET_RESPONSE = (byte) 0xC0;
+  private static final byte INS_GET_RESPONSE = OpenFIPS201.INS_GP_GET_RESPONSE;
 
   // A pointer to our read/write data buffer
   private final Object[] dataPtr;
@@ -504,12 +504,7 @@ final class ChainBuffer {
       }
 
       // Write to the data buffer and update our context
-      if ((short) 0 != context[CONTEXT_TRANSACTION]) {
-        Util.arrayCopy(buffer, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-      } else {
-        Util.arrayCopyNonAtomic(
-            buffer, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-      }
+      copyIncomingObjectFragment(buffer, offset, length);
       context[CONTEXT_OFFSET] += length;
       context[CONTEXT_REMAINING] -= length;
     } else {
@@ -532,12 +527,22 @@ final class ChainBuffer {
       }
 
       // Write to the data buffer and update our context
-      Util.arrayCopy(buffer, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
+      copyIncomingObjectFragment(buffer, offset, length);
 
       // Clear our context as the chain is now complete
       resetCommit();
     }
     ISOException.throwIt(ISO7816.SW_NO_ERROR);
+  }
+
+  private void copyIncomingObjectFragment(byte[] source, short offset, short length) {
+    if (context[CONTEXT_TRANSACTION] != (short) 0) {
+      Util.arrayCopy(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
+    } else {
+      // PIVDataObject receives into unpublished staging. Only its reference swap needs a
+      // transaction; atomically copying a large final fragment can exhaust the commit buffer.
+      Util.arrayCopyNonAtomic(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
+    }
   }
 
   /**
@@ -648,7 +653,7 @@ final class ChainBuffer {
     // This treats the absence of an LE byte (case 3) as if it were a case 4 byte with LE == '00',
     // which maps to 256 bytes.
     //
-    return le == (short) 0 ? (short) 256 : le;
+    return le == (short) 0 ? OpenFIPS201.MAX_SHORT_APDU_RESPONSE_LENGTH : le;
   }
 
   private void sendOutgoing(APDU apdu, byte[] buffer, short offset, short length) {

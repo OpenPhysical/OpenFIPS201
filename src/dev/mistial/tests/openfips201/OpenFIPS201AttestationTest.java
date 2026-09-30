@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.makina.security.openfips201.PivTestConstants;
 import java.io.ByteArrayInputStream;
 import java.math.BigInteger;
 import java.security.KeyPair;
@@ -24,6 +25,7 @@ import java.security.spec.ECPoint;
 import java.util.Collections;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
+import javacard.framework.ISO7816;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.bouncycastle.asn1.ASN1EncodableVector;
@@ -176,7 +178,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
             0xF9,
             tlv((byte) 0x30, tlv((byte) 0x86, authority.publicPoint)));
     assertSw(
-        0x6A86,
+        ISO7816.SW_INCORRECT_P1P2,
         response,
         "F9 authority material must not be accepted outside encrypted and MACed SCP");
   }
@@ -210,9 +212,48 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     setAuthorityOverScp(authority);
 
     ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
-    assertSw(0x9000, cleared, "Authority commit should clear existing data object contents");
+    assertSw(
+        ISO7816.SW_NO_ERROR,
+        cleared,
+        "Authority commit should clear existing data object contents");
     assertArrayEquals(hex("5300"), cleared.getData());
     generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
+  }
+
+  @Test
+  void publicFirstAuthorityUpdateDisablesIssuanceAcrossReselection() throws Exception {
+    assertPartialAuthorityUpdateDisablesIssuance(PivTestConstants.ECC_PUBLIC_POINT_ELEMENT);
+  }
+
+  @Test
+  void privateFirstAuthorityUpdateDisablesIssuanceAcrossReselection() throws Exception {
+    assertPartialAuthorityUpdateDisablesIssuance(PivTestConstants.ECC_PRIVATE_SCALAR_ELEMENT);
+  }
+
+  private void assertPartialAuthorityUpdateDisablesIssuance(byte element) throws Exception {
+    Authority original = Authority.create(new X500Name("CN=Active Authority,O=Example"));
+    setAuthorityOverScp(original);
+    createAsymmetricKeyOverScp(SLOT_AUTHENTICATION, ALG_ECC_P256);
+    generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
+    Authority replacement = Authority.create(new X500Name("CN=Staged Authority,O=Example"));
+    importKeyElementOverScp(
+        ALG_ECC_P256,
+        PivTestConstants.ATTESTATION_KEY_REFERENCE,
+        element,
+        element == PivTestConstants.ECC_PUBLIC_POINT_ELEMENT
+            ? replacement.publicPoint
+            : replacement.privateScalar);
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "Reselect after a committed partial F9 update");
+    assertSw(
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+        transmit(
+            new CommandAPDU(
+                0,
+                Byte.toUnsignedInt(PivTestConstants.INS_ATTEST),
+                SLOT_AUTHENTICATION & 0xFF,
+                0,
+                0)),
+        "Partial F9 imports must not issue under the previous authority metadata");
   }
 
   @Test
@@ -227,7 +268,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     }
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x86, rotated.publicPoint);
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102")),
         "Partial F9 key rotation must not clear existing data");
 
@@ -237,7 +278,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
       importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x93, rotated.validityDer);
     }
     ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
-    assertSw(0x9000, cleared, "Complete F9 key rotation should clear existing data");
+    assertSw(ISO7816.SW_NO_ERROR, cleared, "Complete F9 key rotation should clear existing data");
     assertArrayEquals(hex("5300"), cleared.getData());
   }
 
@@ -254,7 +295,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     ResponseAPDU response =
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0));
-    assertSw(0x6985, response, "Cleared authority must no longer attest");
+    assertSw(
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED, response, "Cleared authority must no longer attest");
   }
 
   @Test
@@ -267,7 +309,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x92, updated.subjectDer);
 
     ResponseAPDU cleared = transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102"));
-    assertSw(0x9000, cleared, "F9 metadata re-import should recommit and clear existing data");
+    assertSw(
+        ISO7816.SW_NO_ERROR,
+        cleared,
+        "F9 metadata re-import should recommit and clear existing data");
     assertArrayEquals(hex("5300"), cleared.getData());
   }
 
@@ -308,7 +353,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertSw(0x6983, failed[0], "Mismatched authority key pair must be rejected");
 
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmit(0x00, 0xCB, 0x3F, 0xFF, hex("5C035FC102")),
         "Rejected authority commit must preserve existing data objects");
   }
@@ -319,7 +364,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     ResponseAPDU badSubject =
         stageAuthorityAndImportElement(authority, (byte) 0x92, hex("3081"), false);
-    assertSw(0x6A80, badSubject, "Truncated long-form subject length must be rejected");
+    assertSw(
+        ISO7816.SW_WRONG_DATA, badSubject, "Truncated long-form subject length must be rejected");
   }
 
   @Test
@@ -328,18 +374,22 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     ResponseAPDU badValidity =
         stageAuthorityAndImportElement(authority, (byte) 0x93, hex("308200"), true);
-    assertSw(0x6A80, badValidity, "Truncated long-form validity length must be rejected");
+    assertSw(
+        ISO7816.SW_WRONG_DATA, badValidity, "Truncated long-form validity length must be rejected");
   }
 
   @Test
   void attestBeforeAuthorityProvisionedFails() throws Exception {
-    assertSw(0x9000, selectApplet(), "SELECT before attestation attempt");
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before attestation attempt");
     createAsymmetricKeyOverScp(SLOT_AUTHENTICATION, ALG_ECC_P256);
     generateKeyOverScp(SLOT_AUTHENTICATION, "AC03800111");
 
     ResponseAPDU response =
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0));
-    assertSw(0x6985, response, "Attestation before authority is provisioned must return 6985");
+    assertSw(
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+        response,
+        "Attestation before authority is provisioned must return 6985");
   }
 
   @Test
@@ -365,9 +415,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before delete-key");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before delete-key");
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(0x84, 0xDB, 0xFF, 0xFF, hex("67068B01828E0111")),
                 "Administrative delete-key should remove retired slot 82");
           }
@@ -392,7 +442,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertSw(0x6982, blocked, "INS F9 must honor the target key access mode");
 
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmit(0x00, 0x20, 0x00, LOCAL_PIN_REFERENCE & 0xFF, LOCAL_PIN),
         "Verify local PIN");
     assertValidAttestation(attest(SLOT_AUTHENTICATION), authority);
@@ -411,7 +461,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     withContactless(
         () -> {
           assertSw(
-              0x9000,
+              ISO7816.SW_NO_ERROR,
               selectApplet(),
               "SELECT over contactless should succeed before target ACL check");
           ResponseAPDU blocked =
@@ -422,16 +472,16 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   @Test
   void attestRejectsUnattestableSlots() throws Exception {
-    assertSw(0x9000, selectApplet(), "SELECT before slot validation checks");
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before slot validation checks");
 
     // The attestation authority itself and the management key are never attestable. The slot
     // check fires before any authority or key lookup, so no provisioning is required here.
     assertSw(
-        0x6A86,
+        ISO7816.SW_INCORRECT_P1P2,
         transmit(new CommandAPDU(0x00, 0xF9, 0xF9, 0x00, 0)),
         "INS F9 must reject the attestation authority slot");
     assertSw(
-        0x6A86,
+        ISO7816.SW_INCORRECT_P1P2,
         transmit(new CommandAPDU(0x00, 0xF9, KEY_REF_CARD_MANAGEMENT & 0xFF, 0x00, 0)),
         "INS F9 must reject the management key slot");
   }
@@ -442,11 +492,11 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     setAuthorityOverScp(authority);
 
     assertSw(
-        0x6A86,
+        ISO7816.SW_INCORRECT_P1P2,
         transmit(new CommandAPDU(0x00, 0xF9, 0x81, 0x00, 0)),
         "Slot 81 sits below the retired-slot range");
     assertSw(
-        0x6A86,
+        ISO7816.SW_INCORRECT_P1P2,
         transmit(new CommandAPDU(0x00, 0xF9, 0x96, 0x00, 0)),
         "Slot 96 sits above the retired-slot range");
 
@@ -461,12 +511,12 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before F9 generate attempt");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before F9 generate attempt");
             createF9AuthorityKeyDefinition();
             // The issuer certificate is bound to the imported F9 key; generating a replacement
             // on-card would silently break that correspondence.
             assertSw(
-                0x6A86,
+                ISO7816.SW_INCORRECT_P1P2,
                 transmit(0x84, 0x47, 0x00, 0xF9, hex("AC03800111")),
                 "F9 must never be generated on-card");
           }
@@ -498,7 +548,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     verifyLocalPin();
     assertSw(
-        0x6985,
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0)),
         "A generated key overwritten by import must not be attestable");
   }
@@ -522,7 +572,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     verifyLocalPin();
     assertSw(
-        0x6985,
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0)),
         "Targets generated under the previous authority must not attest after a recommit");
 
@@ -547,7 +597,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     importKeyElementOverScp(ALG_ECC_P256, (byte) 0xF9, (byte) 0x86, replacement.publicPoint);
 
     assertSw(
-        0x6985,
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0)),
         "No attestation may be issued while an authority rotation is half staged");
   }
@@ -559,7 +609,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     createAsymmetricKeyOverScp(SLOT_AUTHENTICATION, ALG_ECC_P256);
 
     assertSw(
-        0x6985,
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
         transmit(new CommandAPDU(0x00, 0xF9, SLOT_AUTHENTICATION & 0xFF, 0x00, 0)),
         "A key definition without generated material must not be attestable");
   }
@@ -588,7 +638,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     Authority authority = Authority.create(new X500Name("CN=Validity Shape,O=Example"));
     byte[] singleTime = tlv((byte) 0x30, tlv((byte) 0x17, hex("3236303130313030303030305A")));
     assertSw(
-        0x6A80,
+        ISO7816.SW_WRONG_DATA,
         stageAuthorityAndImportElement(authority, (byte) 0x93, singleTime, true),
         "Validity must contain exactly two Time values");
   }
@@ -602,7 +652,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
             (byte) 0x30,
             concat(tlv((byte) 0x02, new byte[] {0x01}), tlv((byte) 0x02, new byte[] {0x01})));
     assertSw(
-        0x6A80,
+        ISO7816.SW_WRONG_DATA,
         stageAuthorityAndImportElement(authority, (byte) 0x93, integers, true),
         "Validity entries must be UTCTime or GeneralizedTime");
   }
@@ -611,7 +661,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   void authorityImportRejectsUnknownProfileElementTag() throws Exception {
     Authority authority = Authority.create(new X500Name("CN=Unknown Element,O=Example"));
     assertSw(
-        0x6A80,
+        ISO7816.SW_WRONG_DATA,
         stageAuthorityAndImportElement(authority, (byte) 0x94, new byte[] {0x00}, true),
         "Unknown F9 element tags must be rejected");
   }
@@ -730,7 +780,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before F9 definition check");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before F9 definition check");
             byte[] request =
                 new byte[] {
                   (byte) 0x66,
@@ -755,7 +805,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                   attribute
                 };
             assertSw(
-                0x6A80,
+                ISO7816.SW_WRONG_DATA,
                 transmit(0x84, 0xDB, 0xFF, 0xFF, request),
                 "F9 definition must be rejected when the " + reason);
           }
@@ -786,7 +836,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     verifyLocalPin();
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0));
-    assertSw(0x6985, response, "Imported ECC target keys must not be attestable");
+    assertSw(
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+        response,
+        "Imported ECC target keys must not be attestable");
   }
 
   private void assertImportedRsaTargetIsNotAttestable(byte slot, byte algorithm, int modulusLength)
@@ -804,7 +857,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
     verifyLocalPin();
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xF9, slot & 0xFF, 0x00, 0));
-    assertSw(0x6985, response, "Imported RSA target keys must not be attestable");
+    assertSw(
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+        response,
+        "Imported RSA target keys must not be attestable");
   }
 
   private X509Certificate attest(byte slot) throws Exception {
@@ -817,9 +873,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   }
 
   private void verifyLocalPin() {
-    assertSw(0x9000, selectApplet(), "SELECT before attestation PIN authorization");
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before attestation PIN authorization");
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmit(0x00, 0x20, 0x00, LOCAL_PIN_REFERENCE & 0xFF, LOCAL_PIN),
         "Verify local PIN before attesting a Table 5 protected key");
   }
@@ -848,7 +904,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
   private void setAuthorityOverScp(Authority authority) {
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         setAuthorityOverScpAndReturn(
             authority.publicPoint,
             authority.privateScalar,
@@ -864,10 +920,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before authority commit");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before authority commit");
             createF9AuthorityKeyDefinition();
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(
                     0x84,
                     0x24,
@@ -876,7 +932,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                     tlv((byte) 0x30, tlv((byte) 0x86, publicPoint))),
                 "Stage F9 public key");
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(
                     0x84,
                     0x24,
@@ -885,7 +941,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                     tlv((byte) 0x30, tlv((byte) 0x87, privateScalar))),
                 "Stage F9 private key");
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(
                     0x84,
                     0x24,
@@ -912,10 +968,11 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before malformed authority import");
+            assertSw(
+                ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before malformed authority import");
             createF9AuthorityKeyDefinition();
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(
                     0x84,
                     0x24,
@@ -924,7 +981,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                     tlv((byte) 0x30, tlv((byte) 0x86, authority.publicPoint))),
                 "Stage F9 public key");
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(
                     0x84,
                     0x24,
@@ -934,7 +991,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                 "Stage F9 private key");
             if (includeSubject) {
               assertSw(
-                  0x9000,
+                  ISO7816.SW_NO_ERROR,
                   transmit(
                       0x84,
                       0x24,
@@ -974,7 +1031,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
           (byte) 0x01,
           (byte) 0x10
         };
-    assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, request), "Create F9 authority key");
+    assertSw(
+        ISO7816.SW_NO_ERROR, transmit(0x84, 0xDB, 0xFF, 0xFF, request), "Create F9 authority key");
   }
 
   private void createAsymmetricKeyOverScp(final byte slot, final byte algorithm) {
@@ -989,9 +1047,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     }
     createAsymmetricKeyOverScp(slot, algorithm, modeContact, modeContactless);
     setLocalPinOverScp(LOCAL_PIN);
-    assertSw(0x9000, selectApplet(), "SELECT before target-key PIN authorization");
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before target-key PIN authorization");
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmit(0x00, 0x20, 0x00, LOCAL_PIN_REFERENCE & 0xFF, LOCAL_PIN),
         "Verify local PIN for the target key's SP 800-73-5 Table 5 access mode");
   }
@@ -1002,7 +1060,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before create-key");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before create-key");
             byte[] request =
                 new byte[] {
                   (byte) 0x66,
@@ -1027,7 +1085,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                   ATTR_IMPORTABLE
                 };
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
                 transmit(0x84, 0xDB, 0xFF, 0xFF, request),
                 "Create target key should succeed");
           }
@@ -1047,7 +1105,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before generate-key");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before generate-key");
             result[0] =
                 collectResponse(
                     transmit(0x84, 0x47, 0x00, slot & 0xFF, hex(generateRequest)),
@@ -1070,7 +1128,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before create-object");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before create-object");
             byte[] objectId = new byte[] {(byte) 0x5F, (byte) 0xC1, id};
             byte[] create =
                 tlv(
@@ -1092,9 +1150,12 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                           (byte) 0x10,
                           (byte) 0x00
                         }));
-            assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, create), "Create data object");
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
+                transmit(0x84, 0xDB, 0xFF, 0xFF, create),
+                "Create data object");
+            assertSw(
+                ISO7816.SW_NO_ERROR,
                 transmit(0x84, 0xDB, 0x3F, 0xFF, concat(normalTagList(id), hex("530101"))),
                 "Populate data object");
           }
@@ -1107,7 +1168,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before key element import");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before key element import");
             transmitKeyElementImport(algorithm, slot, tlv((byte) 0x30, tlv(tag, value)));
           }
         });
@@ -1124,7 +1185,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
 
       int cla = offset < payload.length ? 0x94 : 0x84;
       assertSw(
-          0x9000,
+          ISO7816.SW_NO_ERROR,
           transmit(cla, 0x24, algorithm & 0xFF, slot & 0xFF, chunk),
           "Import key element should succeed");
     }
@@ -1135,7 +1196,7 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         new Runnable() {
           @Override
           public void run() {
-            assertSw(0x9000, selectApplet(), "SELECT before SCP provisioning flow");
+            assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before SCP provisioning flow");
             // Bind F9 to the default 9B admin key; plaintext 9B authentication must still not
             // authorize F9 material import.
             byte[] createManagementKey =
@@ -1161,9 +1222,12 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
                   (byte) 0x01,
                   (byte) 0x14
                 };
-            assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, createManagementKey), "Create 9B");
             assertSw(
-                0x9000,
+                ISO7816.SW_NO_ERROR,
+                transmit(0x84, 0xDB, 0xFF, 0xFF, createManagementKey),
+                "Create 9B");
+            assertSw(
+                ISO7816.SW_NO_ERROR,
                 transmit(
                     0x84,
                     0x24,

@@ -109,6 +109,7 @@ final class PIV {
   static final byte ID_CVM_PAIRING_CODE = (byte) 0x98;
 
   // General Authenticate Tags
+  static final byte CONST_TAG_DATA = (byte) 0x53;
   static final byte CONST_TAG_AUTH_TEMPLATE = (byte) 0x7C;
   static final byte CONST_TAG_AUTH_WITNESS = (byte) 0x80;
   static final byte CONST_TAG_AUTH_CHALLENGE = (byte) 0x81;
@@ -264,7 +265,6 @@ final class PIV {
     authenticationCommands =
         new PIVAuthenticationCommandHandler(
             this,
-            config,
             cspPIV,
             chainBuffer,
             secureMessaging,
@@ -377,9 +377,19 @@ final class PIV {
     secureMessagingCommand[ZERO] = (byte) 0;
   }
 
+  /**
+   * Destroys the session and unpublished work after a transport or establishment failure. Protected
+   * application-error statuses retain the session and must not take this path.
+   */
   void clearSecureMessaging() {
     clearSecureMessagingCommand();
     secureMessaging.clear();
+    chainBuffer.abort();
+    dataStore.abortPendingUpdates();
+    authenticationContext.reset();
+    PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+    PIVSecurityProvider.zeroise(smCommand, ZERO, (short) smCommand.length);
+    PIVSecurityProvider.zeroise(smResponse, ZERO, (short) smResponse.length);
   }
 
   void abortOutgoingResponse() {
@@ -391,6 +401,19 @@ final class PIV {
   }
 
   short unwrapSecureMessagingCommand(byte[] buffer, short offset, short length) {
+    try {
+      return unwrapSecureMessagingCommandChecked(buffer, offset, length);
+    } catch (ISOException ex) {
+      if (ex.getReason() != ISO7816.SW_NO_ERROR) clearSecureMessaging();
+      throw ex;
+    } catch (javacard.security.CryptoException ex) {
+      clearSecureMessaging();
+      ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
+      return ZERO;
+    }
+  }
+
+  private short unwrapSecureMessagingCommandChecked(byte[] buffer, short offset, short length) {
     // ISO/IEC 7816-4 command chaining discards an incomplete logical command when another command
     // arrives. Abort that state before secure-messaging reassembly uses the shared chain buffer.
     chainBuffer.checkIncomingAPDU(buffer);
@@ -462,6 +485,13 @@ final class PIV {
       ISOException.throwIt(sw);
     }
 
+    if (apdu.getBuffer()[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE
+        && !chainBuffer.isOutgoingActive()) {
+      // An idle GET RESPONSE cannot continue an incoming command. Roll back its staging
+      // just like any other command that interrupts ISO/IEC 7816-4 command chaining.
+      chainBuffer.abort();
+      dataStore.abortPendingUpdates();
+    }
     chainBuffer.processOutgoing(apdu);
   }
 
@@ -472,7 +502,14 @@ final class PIV {
       if (secureMessaging.isResponseStreamComplete() && !chainBuffer.isSecureOutgoingActive()) {
         clearSecureMessagingCommand();
       }
+      if (ex.getReason() != ISO7816.SW_NO_ERROR
+          && (short) (ex.getReason() & (short) 0xFF00) != ISO7816.SW_BYTES_REMAINING_00) {
+        clearSecureMessaging();
+      }
       throw ex;
+    } catch (javacard.security.CryptoException ex) {
+      clearSecureMessaging();
+      ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
     }
   }
 
@@ -816,7 +853,7 @@ final class PIV {
   }
 
   boolean isInterfacePermitted() {
-    return !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL);
+    return !isContactless() || !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL);
   }
 
   /***

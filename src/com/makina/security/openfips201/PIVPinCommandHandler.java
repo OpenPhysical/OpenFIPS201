@@ -258,7 +258,7 @@ final class PIVPinCommandHandler {
     if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
 
     // The container data is BER-TLV structured with Tag 0x53 (Part 1 Section 3.3.8 Table 44)
-    if (object.getLength() != (short) 14 || object.content[ZERO] != (byte) 0x53) {
+    if (object.getLength() != (short) 14 || object.content[ZERO] != PIV.CONST_TAG_DATA) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 

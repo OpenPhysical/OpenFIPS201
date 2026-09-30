@@ -12,13 +12,42 @@ import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
 class TLVWriterBoundaryTest {
+  private static final short EMPTY_CONTENT_LENGTH = 0;
+  private static final short SINGLE_BYTE_TAG_HEADER_BYTES = 2;
+  private static final short PUBLIC_KEY_HEADER_BYTES = 3;
+  private static final short NONZERO_PARENT_OFFSET = 6;
+  private static final byte UNTOUCHED_SENTINEL = (byte) 0xA5;
+  // Independent wire answer: two-byte public-key template tag, zero-length value.
+  private static final byte[] EMPTY_PUBLIC_KEY_TEMPLATE = {0x7F, 0x49, 0};
+
+  @Test
+  void repeatedEmptyParentsRespectOffsetsAndHeaderCapacity() {
+    TLVWriter writer = writer();
+    byte[] first = new byte[NONZERO_PARENT_OFFSET + SINGLE_BYTE_TAG_HEADER_BYTES];
+    writer.init(first, NONZERO_PARENT_OFFSET, EMPTY_CONTENT_LENGTH, PIV.CONST_TAG_DATA);
+    assertEquals(SINGLE_BYTE_TAG_HEADER_BYTES, writer.finish());
+    byte[] second = new byte[PUBLIC_KEY_HEADER_BYTES];
+    writer.init(second, (short) 0, EMPTY_CONTENT_LENGTH, PIVKeyObjectPKI.CONST_TAG_RESPONSE);
+    assertEquals(PUBLIC_KEY_HEADER_BYTES, writer.finish());
+    assertArrayEquals(EMPTY_PUBLIC_KEY_TEMPLATE, second);
+
+    byte[] shortBuffer = {UNTOUCHED_SENTINEL, UNTOUCHED_SENTINEL};
+    ISOException error =
+        assertThrows(
+            ISOException.class,
+            () ->
+                writer.init(shortBuffer, (short) 0, (short) 0, PIVKeyObjectPKI.CONST_TAG_RESPONSE));
+    assertEquals(ISO7816.SW_WRONG_LENGTH, error.getReason());
+    assertArrayEquals(new byte[] {UNTOUCHED_SENTINEL, UNTOUCHED_SENTINEL}, shortBuffer);
+  }
+
   @Test
   void writesExactlyToBufferBoundary() {
     byte[] output = new byte[5];
     TLVWriter writer = writer();
 
-    writer.init(output, (short) 0, (short) 3, (short) 0x53);
-    writer.writeNull((short) 0x81);
+    writer.init(output, (short) 0, (short) 3, PIV.CONST_TAG_DATA);
+    writer.writeNull((short) Byte.toUnsignedInt(PIV.CONST_TAG_AUTH_CHALLENGE));
 
     assertEquals(4, writer.finish());
     assertArrayEquals(new byte[] {0x53, 0x02, (byte) 0x81, 0x00, 0x00}, output);
@@ -28,10 +57,11 @@ class TLVWriterBoundaryTest {
   void rejectsOutputOverflowBeforeWriting() {
     byte[] output = new byte[4];
     TLVWriter writer = writer();
-    writer.init(output, (short) 0, (short) 2, (short) 0x53);
+    writer.init(output, (short) 0, (short) 2, PIV.CONST_TAG_DATA);
 
     ISOException error =
-        assertThrows(ISOException.class, () -> writer.write((byte) 0x81, (byte) 0x01));
+        assertThrows(
+            ISOException.class, () -> writer.write(PIV.CONST_TAG_AUTH_CHALLENGE, (byte) 0x01));
     assertEquals(ISO7816.SW_FILE_FULL, error.getReason());
     assertArrayEquals(new byte[] {0x53, 0x00, 0x00, 0x00}, output);
   }
@@ -40,10 +70,11 @@ class TLVWriterBoundaryTest {
   void rejectsLogicalLengthOverflowWithSparePhysicalCapacity() {
     byte[] output = new byte[16];
     TLVWriter writer = writer();
-    writer.init(output, (short) 0, (short) 2, (short) 0x53);
+    writer.init(output, (short) 0, (short) 2, PIV.CONST_TAG_DATA);
 
     ISOException error =
-        assertThrows(ISOException.class, () -> writer.write((byte) 0x81, (byte) 0x01));
+        assertThrows(
+            ISOException.class, () -> writer.write(PIV.CONST_TAG_AUTH_CHALLENGE, (byte) 0x01));
     assertEquals(ISO7816.SW_FILE_FULL, error.getReason());
     assertArrayEquals(
         new byte[] {
@@ -56,11 +87,12 @@ class TLVWriterBoundaryTest {
   @Test
   void rejectsInvalidInputRange() {
     TLVWriter writer = writer();
-    writer.init(new byte[16], (short) 0, (short) 8, (short) 0x53);
+    writer.init(new byte[16], (short) 0, (short) 8, PIV.CONST_TAG_DATA);
 
     ISOException error =
         assertThrows(
-            ISOException.class, () -> writer.write((byte) 0x81, new byte[2], (short) 1, (short) 2));
+            ISOException.class,
+            () -> writer.write(PIV.CONST_TAG_AUTH_CHALLENGE, new byte[2], (short) 1, (short) 2));
     assertEquals(ISO7816.SW_WRONG_LENGTH, error.getReason());
   }
 
@@ -69,7 +101,7 @@ class TLVWriterBoundaryTest {
     ISOException error =
         assertThrows(
             ISOException.class,
-            () -> writer().init(new byte[2], (short) 3, (short) 0, (short) 0x53));
+            () -> writer().init(new byte[2], (short) 3, (short) 0, PIV.CONST_TAG_DATA));
     assertEquals(ISO7816.SW_WRONG_LENGTH, error.getReason());
   }
 
@@ -79,8 +111,8 @@ class TLVWriterBoundaryTest {
     byte[] value = new byte[126];
     TLVWriter writer = writer();
 
-    writer.init(output, (short) 0, (short) 128, (short) 0x53);
-    writer.write((byte) 0x81, value, (short) 0, (short) value.length);
+    writer.init(output, (short) 0, (short) 128, PIV.CONST_TAG_DATA);
+    writer.write(PIV.CONST_TAG_AUTH_CHALLENGE, value, (short) 0, (short) value.length);
 
     assertEquals(131, writer.finish());
     assertEquals((byte) 0x53, output[0]);
@@ -96,8 +128,8 @@ class TLVWriterBoundaryTest {
     byte[] value = new byte[252];
     TLVWriter writer = writer();
 
-    writer.init(output, (short) 0, (short) 255, (short) 0x53);
-    writer.write((byte) 0x81, value, (short) 0, (short) value.length);
+    writer.init(output, (short) 0, (short) 255, PIV.CONST_TAG_DATA);
+    writer.write(PIV.CONST_TAG_AUTH_CHALLENGE, value, (short) 0, (short) value.length);
 
     assertEquals(258, writer.finish());
     assertEquals((byte) 0x53, output[0]);

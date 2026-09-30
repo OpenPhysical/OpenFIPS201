@@ -264,6 +264,8 @@ abstract class OpenFIPS201TestSupport {
   }
 
   protected static void assertSw(int expectedSw, ResponseAPDU response, String context) {
+    // Java Card defines SWs as signed shorts; PC/SC exposes the same bits as unsigned ints.
+    expectedSw = Short.toUnsignedInt((short) expectedSw);
     assertEquals(
         expectedSw,
         response.getSW(),

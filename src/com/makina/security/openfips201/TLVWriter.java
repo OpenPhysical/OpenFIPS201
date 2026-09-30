@@ -121,12 +121,20 @@ final class TLVWriter {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
 
+    // Validate the complete parent header before changing either the buffer or writer context.
+    short headerLength = (short) (tagLength(tag) + lengthLength(maxLength));
+    if (headerLength > (short) (buffer.length - offset)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+
     dataPtr[0] = buffer;
 
     context[CONTEXT_OFFSET] = offset;
     context[CONTEXT_OFFSET_RESET] = offset;
     context[CONTEXT_LENGTH_MAX] = maxLength;
     context[CONTEXT_BUFFER_END] = (short) buffer.length;
+    // Header bytes do not consume the caller's payload budget.
+    context[CONTEXT_CONTENT_START] = (short) (offset + headerLength);
 
     // Set the parent TAG
     writeTag(tag);
@@ -205,6 +213,7 @@ final class TLVWriter {
     context[CONTEXT_LENGTH_PTR] = (short) 0;
     context[CONTEXT_LENGTH_MAX] = (short) 0;
     context[CONTEXT_BUFFER_END] = (short) 0;
+    context[CONTEXT_CONTENT_START] = (short) 0;
   }
 
   /**

@@ -649,6 +649,10 @@ final class PIVAdministrationCommandHandler {
         // - No format verification required is for the PUK
 
         // Update the PUK
+        // SP 800-73-5 Part 2 Section 2.4 fixes the PUK wire value to eight bytes.
+        if (length != config.readValue(Config.CONFIG_PUK_LENGTH)) {
+          ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        }
         cspPIV.updatePIN(ID_CVM_PUK, commandBuffer, ZERO, (byte) length, ZERO);
 
         return; // Done
@@ -779,6 +783,12 @@ final class PIVAdministrationCommandHandler {
                 importedKey.markImportedPairReady();
               }
             }
+            // #if ATTESTATION_ENABLED
+            // Commit F9 deactivation with the component, closing the reset window between them.
+            if (key.getId() == ID_KEY_ATTESTATION) {
+              attestation.noteKeyElementUpdated(elementTag);
+            }
+            // #endif
             JCSystem.commitTransaction();
           } finally {
             if (JCSystem.getTransactionDepth() != (byte) 0) {
@@ -792,8 +802,6 @@ final class PIVAdministrationCommandHandler {
         if (key.getId() == ID_KEY_ATTESTATION) {
           if (elementTag == PIVKeyObject.ELEMENT_CLEAR) {
             attestation.clearProfile();
-          } else {
-            attestation.noteKeyElementUpdated(elementTag);
           }
         }
         // #endif
@@ -921,8 +929,6 @@ final class PIVAdministrationCommandHandler {
     final short CONST_LEN = (short) 3;
     final byte CONST_TAG_EXTENDED = (byte) 0x2F;
 
-    final byte CONST_TAG_DATA = (byte) 0x53;
-
     final short CONST_DO_GET_VERSION = (short) 0x4756; // GV
     final short CONST_DO_GET_STATUS = (short) 0x4753; // GS
     // final short CONST_DO_GET_CONFIG = (short) 0x4743; // GC
@@ -975,7 +981,7 @@ final class PIVAdministrationCommandHandler {
     // so we put a sanity check at the end to make sure this is the case.
     //
     TLVWriter writer = TLVWriter.getInstance();
-    writer.init(scratch, ZERO, TLV.LENGTH_1BYTE_MAX, CONST_TAG_DATA);
+    writer.init(scratch, ZERO, TLV.LENGTH_1BYTE_MAX, PIV.CONST_TAG_DATA);
 
     switch (id) {
       case CONST_DO_GET_VERSION:

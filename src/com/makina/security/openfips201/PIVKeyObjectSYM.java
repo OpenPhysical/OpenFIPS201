@@ -73,6 +73,11 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
 
   @Override
   void updateElement(byte element, byte[] buffer, short offset, short length) throws ISOException {
+    if (element == ELEMENT_KEY_CLEAR) {
+      if (length != (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      clear();
+      return;
+    }
     short keyLengthBytes = getKeyLengthBytes();
     if (length != keyLengthBytes) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     try {
@@ -98,11 +103,6 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
           JCSystem.commitTransaction();
           if (previous != null) previous.clearKey();
           runGc();
-          break;
-
-          // Clear Key
-        case ELEMENT_KEY_CLEAR:
-          clear();
           break;
 
         default:

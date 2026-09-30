@@ -35,6 +35,12 @@ import pro.javacard.engine.JavaCardEngine;
  */
 @Tag("slow")
 class OpenFIPS201SecureMessagingDispatchTest {
+  // Deliberately leave only one octet free after a full T=1 input block.
+  private static final short INPUT_BLOCK_BYTES =
+      (short) (OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH - 1);
+  private static final int SHORT_APDU_BUFFER_BYTES =
+      ISO7816.OFFSET_CDATA + OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH;
+  private static final byte SYNTHETIC_PLAINTEXT_BYTE = (byte) 0x42;
   private static final short MAX_SAFE_SECURE_RESPONSE_PLAINTEXT = (short) 191;
   private static final byte[] OPENFIPS201_AID_BYTES = hex("A000000308000010000100");
   private static final AID OPENFIPS201_AID =
@@ -63,6 +69,325 @@ class OpenFIPS201SecureMessagingDispatchTest {
     if (session != null) {
       session.close();
     }
+  }
+
+  @Test
+  void wrappedOpacityCannotReplaceEstablishedSessionKeys() throws Exception {
+    assertEquals(
+        0x9000,
+        new ResponseAPDU(
+                session.transceive(
+                    new CommandAPDU(0, 0xA4, 4, 0, OPENFIPS201_AID_BYTES).getBytes()))
+            .getSW());
+    Object piv;
+    Object sm;
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      piv = field(applet, "piv").get(applet);
+      sm = field(piv, "secureMessaging").get(piv);
+      establishSyntheticSession(sm);
+    }
+    byte[] command = authenticatedEncryptedDataCommand(hex("7C00"));
+    command[ISO7816.OFFSET_INS] = OpenFIPS201.INS_PIV_GENERAL_AUTHENTICATE;
+    command[ISO7816.OFFSET_P1] = PIV.ID_ALG_ECC_SM;
+    command[ISO7816.OFFSET_P2] = PIV.ID_KEY_SECURE_MESSAGING;
+    byte[] mac = commandMac(command, (short) 5, (short) (command.length - 10));
+    System.arraycopy(mac, 0, command, command.length - 8, 8);
+    ResponseAPDU response = new ResponseAPDU(session.transceive(command));
+    assertEquals(0x9000, response.getSW());
+    assertArrayEquals(hex("99026E00"), java.util.Arrays.copyOf(response.getData(), 4));
+    try (AutoCloseable ignored = enterEngineContext()) {
+      assertEquals(true, method(sm.getClass(), "isEstablished").invoke(sm));
+      for (String keyName : new String[] {"skMac", "skEnc", "skRmac"}) {
+        byte[] actual = new byte[activeSessionKeyBytes()];
+        ((AESKey) field(sm, keyName).get(sm)).getKey(actual, (short) 0);
+        assertArrayEquals(zeroSessionKey(), actual, keyName);
+      }
+    }
+  }
+
+  @Test
+  void responseProviderFailureDestroysSession() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      establishSyntheticSession(sm);
+      seedWorkBuffers(piv);
+      Class<?> cryptoClass = piv.getClass().getClassLoader().loadClass(PIVCrypto.class.getName());
+      Method initMac =
+          method(cryptoClass, "doAesResponseCmacInit", javacard.security.SecretKey.class);
+      APDU apdu = Mockito.mock(APDU.class);
+      when(apdu.getBuffer()).thenReturn(new byte[SHORT_APDU_BUFFER_BYTES]);
+      when(apdu.setOutgoing()).thenReturn(OpenFIPS201.MAX_SHORT_APDU_RESPONSE_LENGTH);
+      try (org.mockito.MockedStatic<?> crypto =
+          Mockito.mockStatic(cryptoClass, Mockito.CALLS_REAL_METHODS)) {
+        crypto
+            .when(() -> initMac.invoke(null, Mockito.any(javacard.security.SecretKey.class)))
+            .thenThrow(
+                new javacard.security.CryptoException(
+                    javacard.security.CryptoException.ILLEGAL_USE));
+        InvocationTargetException failure =
+            assertThrows(
+                InvocationTargetException.class,
+                () ->
+                    method(piv.getClass(), "processOutgoingSecure", APDU.class, short.class)
+                        .invoke(piv, apdu, ISO7816.SW_NO_ERROR));
+        assertEquals(
+            PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT,
+            ((ISOException) failure.getCause()).getReason());
+      }
+      assertSessionDestroyed(piv, sm);
+    }
+  }
+
+  @Test
+  void segmentedReceiveKeepsFullInputBlockCapacityAtTheTail() throws Exception {
+    // Java Card 3.0.5 APDU.receiveBytes requires room for getInBlockSize(), even
+    // when the final fragment is shorter. A permissive emulator alone misses this condition.
+    try (AutoCloseable ignored = enterEngineContext();
+        org.mockito.MockedStatic<APDU> api = Mockito.mockStatic(APDU.class)) {
+      api.when(APDU::getInBlockSize).thenReturn(INPUT_BLOCK_BYTES);
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Method receive = method(applet.getClass(), "receiveAllIncomingData", APDU.class);
+      byte[] expected = new byte[OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH];
+      for (int i = 0; i < expected.length; i++) expected[i] = (byte) i;
+      for (int[] receiveCase :
+          new int[][] {
+            {1, INPUT_BLOCK_BYTES},
+            {TLV.LENGTH_1BYTE_MAX, TLV.LENGTH_1BYTE_MAX + 1},
+            {INPUT_BLOCK_BYTES, 1},
+            {TLV.LENGTH_1BYTE_MAX, 0},
+            {TLV.LENGTH_1BYTE_MAX, -1},
+            {TLV.LENGTH_1BYTE_MAX, OpenFIPS201.MAX_SHORT_APDU_RESPONSE_LENGTH}
+          }) {
+        int initialLength = receiveCase[0];
+        int returnedLength = receiveCase[1];
+        boolean valid = returnedLength == expected.length - initialLength;
+        byte[] buffer = new byte[SHORT_APDU_BUFFER_BYTES];
+        System.arraycopy(expected, 0, buffer, ISO7816.OFFSET_CDATA, initialLength);
+        APDU apdu = Mockito.mock(APDU.class);
+        when(apdu.getBuffer()).thenReturn(buffer);
+        when(apdu.getOffsetCdata()).thenReturn((short) ISO7816.OFFSET_CDATA);
+        when(apdu.getIncomingLength()).thenReturn(OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH);
+        when(apdu.setIncomingAndReceive()).thenReturn((short) initialLength);
+        doAnswer(
+                call -> {
+                  short offset = call.getArgument(0);
+                  assertTrue(
+                      buffer.length - offset >= INPUT_BLOCK_BYTES, "platform input-block capacity");
+                  int remaining = expected.length - initialLength;
+                  if (valid) System.arraycopy(expected, initialLength, buffer, offset, remaining);
+                  return (short) returnedLength;
+                })
+            .when(apdu)
+            .receiveBytes(Mockito.anyShort());
+        if (valid) {
+          assertEquals(OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH, receive.invoke(applet, apdu));
+          assertArrayEquals(
+              expected, java.util.Arrays.copyOfRange(buffer, ISO7816.OFFSET_CDATA, buffer.length));
+        } else {
+          InvocationTargetException failure =
+              assertThrows(InvocationTargetException.class, () -> receive.invoke(applet, apdu));
+          assertEquals(ISO7816.SW_WRONG_LENGTH, ((ISOException) failure.getCause()).getReason());
+        }
+        byte[] prefix = (byte[]) field(applet, "receivePrefix").get(applet);
+        assertArrayEquals(new byte[prefix.length], prefix);
+      }
+    }
+  }
+
+  @Test
+  void malformedProtectedLengthsDestroySessionAndReturnSmStatus() throws Exception {
+    // SP 800-73-5 Part 2 Section 4.2.7 distinguishes malformed SM (6988) from
+    // missing objects (6987). Bytes outside Nc must never complete a truncated length.
+    byte[][] bodies = {hex("8780"), hex("8783000001"), hex("8782FFFF"), hex("8781")};
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Object piv =
+          field(unwrapApplet(engine.getApplet(OPENFIPS201_AID)), "piv")
+              .get(unwrapApplet(engine.getApplet(OPENFIPS201_AID)));
+      Object sm = field(piv, "secureMessaging").get(piv);
+      for (byte[] body : bodies) {
+        establishSyntheticSession(sm);
+        byte[] command = new byte[64];
+        command[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
+        command[ISO7816.OFFSET_INS] = OpenFIPS201.INS_PIV_GET_DATA;
+        System.arraycopy(body, 0, command, ISO7816.OFFSET_CDATA, body.length);
+        ISOException failure =
+            assertThrows(
+                ISOException.class, () -> unwrapProtected(piv, command, (short) body.length));
+        assertEquals(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT, failure.getReason());
+        assertSessionDestroyed(piv, sm);
+      }
+    }
+  }
+
+  @Test
+  void protectedPaddingIsLimitedToOneCipherBlock() throws Exception {
+    // SP 800-73-5 Part 2 Section 4.2.2 requires one through sixteen padding octets.
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      for (int paddingLength :
+          new int[] {
+            1,
+            PIVCrypto.LENGTH_BLOCK_AES,
+            PIVCrypto.LENGTH_BLOCK_AES + 1,
+            2 * PIVCrypto.LENGTH_BLOCK_AES
+          }) {
+        establishSyntheticSession(sm);
+        byte[] padded = new byte[3 * PIVCrypto.LENGTH_BLOCK_AES];
+        int plaintextLength = padded.length - paddingLength;
+        java.util.Arrays.fill(padded, 0, plaintextLength, SYNTHETIC_PLAINTEXT_BYTE);
+        padded[plaintextLength] = PIVSecureMessaging.PADDING_DELIMITER;
+        byte[] command = authenticatedPaddedDataCommand(padded);
+        if (paddingLength <= PIVCrypto.LENGTH_BLOCK_AES) {
+          assertEquals(
+              plaintextLength,
+              unwrapProtected(piv, command, (short) (command.length - ISO7816.OFFSET_CDATA)));
+        } else {
+          ISOException failure =
+              assertThrows(
+                  ISOException.class,
+                  () ->
+                      unwrapProtected(
+                          piv, command, (short) (command.length - ISO7816.OFFSET_CDATA)));
+          assertEquals(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT, failure.getReason());
+          assertSessionDestroyed(piv, sm);
+        }
+      }
+    }
+  }
+
+  @Test
+  void commandProviderFailureDestroysKeysAndWorkBuffers() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      Class<?> cryptoClass = piv.getClass().getClassLoader().loadClass(PIVCrypto.class.getName());
+      for (boolean decrypt : new boolean[] {false, true}) {
+        establishSyntheticSession(sm);
+        seedWorkBuffers(piv);
+        byte[] command = authenticatedEncryptedDataCommand(hex("5300"));
+        try (org.mockito.MockedStatic<?> crypto =
+            Mockito.mockStatic(cryptoClass, Mockito.CALLS_REAL_METHODS)) {
+          org.mockito.MockedStatic.Verification operation;
+          if (decrypt) {
+            Method decryptMethod =
+                method(
+                    cryptoClass,
+                    "doAesCbcDecrypt",
+                    javacard.security.SecretKey.class,
+                    byte[].class,
+                    short.class,
+                    short.class,
+                    byte[].class,
+                    short.class,
+                    short.class,
+                    byte[].class,
+                    short.class);
+            operation =
+                () ->
+                    decryptMethod.invoke(
+                        null,
+                        Mockito.any(javacard.security.SecretKey.class),
+                        Mockito.any(byte[].class),
+                        Mockito.anyShort(),
+                        Mockito.anyShort(),
+                        Mockito.any(byte[].class),
+                        Mockito.anyShort(),
+                        Mockito.anyShort(),
+                        Mockito.any(byte[].class),
+                        Mockito.anyShort());
+          } else {
+            Method initMac =
+                method(cryptoClass, "doAesCmacInit", javacard.security.SecretKey.class);
+            operation = () -> initMac.invoke(null, Mockito.any(javacard.security.SecretKey.class));
+          }
+          crypto
+              .when(operation)
+              .thenThrow(
+                  new javacard.security.CryptoException(
+                      javacard.security.CryptoException.ILLEGAL_USE));
+          ISOException failure =
+              assertThrows(
+                  ISOException.class,
+                  () ->
+                      unwrapProtected(
+                          piv, command, (short) (command.length - ISO7816.OFFSET_CDATA)));
+          assertEquals(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT, failure.getReason());
+        }
+        assertSessionDestroyed(piv, sm);
+      }
+    }
+  }
+
+  private static void seedWorkBuffers(Object piv) throws Exception {
+    // Nonzero synthetic sentinels ensure cleanup checks cannot pass on untouched zero-filled RAM.
+    for (String name : new String[] {"scratch", "smCommand", "smResponse"}) {
+      java.util.Arrays.fill((byte[]) field(piv, name).get(piv), (byte) 0xA5);
+    }
+  }
+
+  private static void establishSyntheticSession(Object sm) throws Exception {
+    method(sm.getClass(), "setSessionKeys", byte[].class, short.class)
+        .invoke(sm, zeroSessionKeys(), (short) 0);
+    method(sm.getClass(), "markEstablished", boolean.class).invoke(sm, false);
+  }
+
+  private static short unwrapProtected(Object piv, byte[] command, short length) throws Exception {
+    try {
+      return (short)
+          method(
+                  piv.getClass(),
+                  "unwrapSecureMessagingCommand",
+                  byte[].class,
+                  short.class,
+                  short.class)
+              .invoke(piv, command, (short) 5, length);
+    } catch (InvocationTargetException failure) {
+      if (failure.getCause() instanceof ISOException) throw (ISOException) failure.getCause();
+      throw failure;
+    }
+  }
+
+  private static void assertSessionDestroyed(Object piv, Object sm) throws Exception {
+    assertEquals(false, method(sm.getClass(), "isEstablished").invoke(sm));
+    assertEquals(false, method(sm.getClass(), "isVciEstablished").invoke(sm));
+    for (String keyName : new String[] {"skCfrm", "skMac", "skEnc", "skRmac"}) {
+      assertTrue(!((AESKey) field(sm, keyName).get(sm)).isInitialized(), keyName);
+    }
+    for (String bufferName : new String[] {"scratch", "smCommand", "smResponse"}) {
+      byte[] buffer = (byte[]) field(piv, bufferName).get(piv);
+      assertTrue(allZero(buffer), bufferName + " cleared");
+    }
+    for (String name :
+        new String[] {
+          "commandMcv",
+          "responseMcv",
+          "encCounter",
+          "responseIv",
+          "responseBlock",
+          "responseCandidateMcv",
+          "responseTail",
+          "commandStreamHeader",
+          "commandStreamBlock",
+          "commandStreamMac"
+        }) {
+      assertTrue(allZero((byte[]) field(sm, name).get(sm)), name + " cleared");
+    }
+    for (String name : new String[] {"responseState", "commandStreamState"}) {
+      for (short value : (short[]) field(sm, name).get(sm)) assertEquals((short) 0, value, name);
+    }
+    assertEquals(false, method(sm.getClass(), "isResponseStreamActive").invoke(sm));
+  }
+
+  private static boolean allZero(byte[] buffer) {
+    int combined = 0;
+    for (byte value : buffer) combined |= value;
+    return combined == 0;
   }
 
   @Test
@@ -114,7 +439,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       apduBuffer[ISO7816.OFFSET_INS] = (byte) 0xCB;
       APDU apdu = Mockito.mock(APDU.class);
       when(apdu.getBuffer()).thenReturn(apduBuffer);
-      when(apdu.setOutgoing()).thenReturn((short) 256);
+      when(apdu.setOutgoing()).thenReturn(OpenFIPS201.MAX_SHORT_APDU_RESPONSE_LENGTH);
 
       final short[] sentLength = new short[] {(short) 0};
       final byte[][] sent = new byte[][] {new byte[256]};
@@ -154,7 +479,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       assertEquals((byte) 0x11, sent[0][3]);
       assertEquals((byte) 0x01, sent[0][4]);
 
-      apduBuffer[ISO7816.OFFSET_INS] = (byte) 0xC0;
+      apduBuffer[ISO7816.OFFSET_INS] = OpenFIPS201.INS_GP_GET_RESPONSE;
       InvocationTargetException second =
           assertThrows(
               InvocationTargetException.class,
@@ -283,7 +608,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
               .invoke(chainBuffer, chainedGa, (short) 5, (short) 2, new byte[32], (short) 0));
 
       byte[] protectedVerify =
-          macOnlySecureCommand((byte) 0x0C, (byte) 0x20, (byte) 0x00, (byte) 0x80);
+          macOnlySecureCommand(
+              PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0x20, (byte) 0x00, (byte) 0x80);
       short length =
           (Short)
               method(
@@ -318,7 +644,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, sessionKeys, (short) 0);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
+      byte[] command =
+          macOnlySecureCommand(
+              PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
       method(
               secureMessagingClass,
               "unwrapCommand",
@@ -393,7 +721,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command = new byte[15];
-      command[ISO7816.OFFSET_CLA] = (byte) 0x1C;
+      command[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_CHAINED_SECURE_MESSAGING;
       command[ISO7816.OFFSET_INS] = (byte) 0xDB;
       command[ISO7816.OFFSET_P1] = (byte) 0x3F;
       command[ISO7816.OFFSET_P2] = (byte) 0x00;
@@ -464,12 +792,14 @@ class OpenFIPS201SecureMessagingDispatchTest {
                           secureMessaging,
                           command,
                           (short) 5,
-                          (short) (command.length - 5),
+                          (short) (command.length - ISO7816.OFFSET_CDATA),
                           work,
                           (short) 0));
 
       assertTrue(thrown.getCause() instanceof ISOException);
-      assertEquals((short) 0x6988, ((ISOException) thrown.getCause()).getReason());
+      assertEquals(
+          PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT,
+          ((ISOException) thrown.getCause()).getReason());
     }
   }
 
@@ -502,7 +832,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
                       secureMessaging,
                       command,
                       (short) 5,
-                      (short) (command.length - 5),
+                      (short) (command.length - ISO7816.OFFSET_CDATA),
                       work,
                       (short) 0);
 
@@ -574,9 +904,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, sessionKeys, (short) 0);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-      byte[] complete = macOnlySecureCommand((byte) 0x0C, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
+      byte[] complete =
+          macOnlySecureCommand(
+              PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
       byte[] first = new byte[10];
-      first[ISO7816.OFFSET_CLA] = (byte) 0x1C;
+      first[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_CHAINED_SECURE_MESSAGING;
       first[ISO7816.OFFSET_INS] = complete[ISO7816.OFFSET_INS];
       first[ISO7816.OFFSET_P1] = complete[ISO7816.OFFSET_P1];
       first[ISO7816.OFFSET_P2] = complete[ISO7816.OFFSET_P2];
@@ -584,7 +916,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       System.arraycopy(complete, 5, first, 5, 5);
 
       byte[] last = new byte[10];
-      last[ISO7816.OFFSET_CLA] = (byte) 0x0C;
+      last[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
       last[ISO7816.OFFSET_INS] = complete[ISO7816.OFFSET_INS];
       last[ISO7816.OFFSET_P1] = complete[ISO7816.OFFSET_P1];
       last[ISO7816.OFFSET_P2] = complete[ISO7816.OFFSET_P2];
@@ -738,9 +1070,23 @@ class OpenFIPS201SecureMessagingDispatchTest {
     ResponseAPDU response =
         transmit(
             new CommandAPDU(
-                commandFragment(command, 5 + firstLength, command.length - 5 - firstLength, true)));
+                commandFragment(
+                    command,
+                    5 + firstLength,
+                    command.length - ISO7816.OFFSET_CDATA - firstLength,
+                    true)));
 
     assertSw(0x9000, response, "protected PUT DATA response");
+    // Protected PUT is an extension, but must still authenticate its success status using
+    // the ordinary SP 800-73-5 Part 2 Section 4.2.6 response envelope.
+    byte[] expectedStatus = hex("990290008E08");
+    byte[] responseMacInput = new byte[20];
+    System.arraycopy(expectedStatus, 0, responseMacInput, 16, 4);
+    byte[] expectedMac = aesCmac(zeroSessionKey(), responseMacInput);
+    byte[] expectedResponse = new byte[14];
+    System.arraycopy(expectedStatus, 0, expectedResponse, 0, expectedStatus.length);
+    System.arraycopy(expectedMac, 0, expectedResponse, 6, 8);
+    assertArrayEquals(expectedResponse, response.getData(), "authenticated success status");
     Object stored =
         method(dataStore.getClass(), "find", byte[].class, short.class, short.class)
             .invoke(dataStore, objectId, (short) 0, (short) objectId.length);
@@ -812,7 +1158,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     ResponseAPDU response =
         transmit(
-            new CommandAPDU(macOnlySecureCommand((byte) 0x0C, (byte) 0xFE, (byte) 0, (byte) 0)));
+            new CommandAPDU(
+                macOnlySecureCommand(
+                    PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0xFE, (byte) 0, (byte) 0)));
     assertSw(0x9000, response, "replacement protected command");
     assertEncapsulatedStatus(
         ISO7816.SW_INS_NOT_SUPPORTED,
@@ -845,7 +1193,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, sessionKeys, (short) 0);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
+      byte[] command =
+          macOnlySecureCommand(
+              PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0xDB, (byte) 0x3F, (byte) 0x00);
       command[14] ^= (byte) 0x01;
       Method unwrapSecureMessagingCommand =
           method(
@@ -862,7 +1212,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
       assertTrue(thrown.getCause() instanceof ISOException, "Bad C-MAC should be rejected");
       assertEquals(
-          (short) 0x6988,
+          PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT,
           ((ISOException) thrown.getCause()).getReason(),
           "Bad C-MAC is an incorrect secure messaging data object: '69 88' (Part 2 Section 4.2.7)");
       assertEquals(
@@ -913,8 +1263,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
-  void plaintextOpacityReestablishmentDuringActiveSecureMessagingDoesNotClearSession()
-      throws Exception {
+  void failedPlaintextOpacityReestablishmentDestroysPreviousSession() throws Exception {
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
@@ -941,9 +1290,10 @@ class OpenFIPS201SecureMessagingDispatchTest {
         response,
         "Plaintext OPACITY re-establishment reaches GENERAL AUTHENTICATE instead of SM teardown");
     assertEquals(
-        true,
+        false,
         method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
-        "Failed plaintext OPACITY re-establishment must not clear the existing SM session");
+        "SP 800-73-5 Part 2 Section 4.3 destroys old keys on a new establishment request");
+    assertSessionDestroyed(piv, secureMessaging);
   }
 
   /**
@@ -1024,7 +1374,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
       // application error (SW_INS_NOT_SUPPORTED) after the secure messaging unwrap succeeded.
       byte[] mcv = new byte[16];
       byte[] first =
-          chainedMacOnlySecureCommand(mcv, (byte) 0x0C, (byte) 0xFE, (byte) 0x00, (byte) 0x00, mcv);
+          chainedMacOnlySecureCommand(
+              mcv,
+              PIVSecureMessaging.CLA_SECURE_MESSAGING,
+              (byte) 0xFE,
+              (byte) 0x00,
+              (byte) 0x00,
+              mcv);
       ResponseAPDU firstResponse = transmit(new CommandAPDU(first));
       assertSw(
           0x9000,
@@ -1038,7 +1394,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
       // The session must survive: the next protected command, MAC-chained from the updated MCV,
       // must be accepted and answered with another wrapped response - not rejected bare.
       byte[] second =
-          chainedMacOnlySecureCommand(mcv, (byte) 0x0C, (byte) 0xFE, (byte) 0x00, (byte) 0x00, mcv);
+          chainedMacOnlySecureCommand(
+              mcv,
+              PIVSecureMessaging.CLA_SECURE_MESSAGING,
+              (byte) 0xFE,
+              (byte) 0x00,
+              (byte) 0x00,
+              mcv);
       ResponseAPDU secondResponse = transmit(new CommandAPDU(second));
       assertSw(
           0x9000,
@@ -1078,7 +1440,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, sessionKeys, (short) 0);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
+      byte[] command =
+          macOnlySecureCommand(
+              PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
       byte[] work = new byte[512];
       method(
               secureMessagingClass,
@@ -1134,7 +1498,9 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, sessionKeys, (short) 0);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
-      byte[] command = macOnlySecureCommand((byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
+      byte[] command =
+          macOnlySecureCommand(
+              PIVSecureMessaging.CLA_SECURE_MESSAGING, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF);
       byte[] work = new byte[512];
       method(
               secureMessagingClass,
@@ -1164,7 +1530,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       assertTrue(first.getCause() instanceof ISOException);
       assertEquals((short) 0x6123, ((ISOException) first.getCause()).getReason());
 
-      apdu.getBuffer()[ISO7816.OFFSET_INS] = (byte) 0xC0;
+      apdu.getBuffer()[ISO7816.OFFSET_INS] = OpenFIPS201.INS_GP_GET_RESPONSE;
       Method continuation = method(pivClass, "processOutgoingSecureContinuation", APDU.class);
       InvocationTargetException second =
           assertThrows(InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
@@ -1209,7 +1575,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       assertTrue(first.getCause() instanceof ISOException);
       assertEquals((short) 0x6106, ((ISOException) first.getCause()).getReason());
 
-      apdu.getBuffer()[ISO7816.OFFSET_INS] = (byte) 0xC0;
+      apdu.getBuffer()[ISO7816.OFFSET_INS] = OpenFIPS201.INS_GP_GET_RESPONSE;
       Method continuation = method(pivClass, "processOutgoingSecureContinuation", APDU.class);
       InvocationTargetException second =
           assertThrows(InvocationTargetException.class, () -> continuation.invoke(piv, apdu));
@@ -1267,7 +1633,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
       byte[] firstMcv = new byte[16];
       byte[] command =
           chainedMacOnlySecureCommand(
-              new byte[16], (byte) 0x0C, (byte) 0xCB, (byte) 0x3F, (byte) 0xFF, firstMcv);
+              new byte[16],
+              PIVSecureMessaging.CLA_SECURE_MESSAGING,
+              (byte) 0xCB,
+              (byte) 0x3F,
+              (byte) 0xFF,
+              firstMcv);
       byte[] work = new byte[512];
       method(
               secureMessagingClass,
@@ -1310,7 +1681,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
       byte[] protectedGetResponse =
           chainedMacOnlySecureCommand(
-              firstMcv, (byte) 0x0C, (byte) 0xC0, (byte) 0x00, (byte) 0x00, new byte[16]);
+              firstMcv,
+              PIVSecureMessaging.CLA_SECURE_MESSAGING,
+              OpenFIPS201.INS_GP_GET_RESPONSE,
+              (byte) 0x00,
+              (byte) 0x00,
+              new byte[16]);
       method(
               secureMessagingClass,
               "unwrapCommand",
@@ -1322,7 +1698,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
           .invoke(secureMessaging, protectedGetResponse, (short) 5, (short) 10, work, (short) 0);
 
       byte[] beforeCompletion = counter(secureMessaging);
-      APDU getResponseApdu = capturingStreamingApdu((byte) 0xC0, protectedResponse);
+      APDU getResponseApdu =
+          capturingStreamingApdu(OpenFIPS201.INS_GP_GET_RESPONSE, protectedResponse);
       InvocationTargetException second =
           assertThrows(
               InvocationTargetException.class,
@@ -1491,7 +1868,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     for (short i = 0; i < 16; i++) {
       out[cursor++] = 0;
     }
-    out[cursor++] = (byte) 0x0C;
+    out[cursor++] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
     out[cursor++] = command[ISO7816.OFFSET_INS];
     out[cursor++] = command[ISO7816.OFFSET_P1];
     out[cursor++] = command[ISO7816.OFFSET_P2];
@@ -1510,11 +1887,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
     short encryptedValueLength = (short) 289; // 0x01 padding indicator + 288 ciphertext bytes.
     short encryptedTlvLength = (short) (4 + encryptedValueLength);
     byte[] command = new byte[5 + encryptedTlvLength + 10];
-    command[ISO7816.OFFSET_CLA] = (byte) 0x0C;
+    command[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
     command[ISO7816.OFFSET_INS] = (byte) 0xCB;
     command[ISO7816.OFFSET_P1] = (byte) 0x3F;
     command[ISO7816.OFFSET_P2] = (byte) 0xFF;
-    command[ISO7816.OFFSET_LC] = (byte) (command.length - 5);
+    command[ISO7816.OFFSET_LC] = (byte) (command.length - ISO7816.OFFSET_CDATA);
 
     short cursor = 5;
     command[cursor++] = (byte) 0x87;
@@ -1528,7 +1905,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     byte[] macInput = new byte[16 + 16 + encryptedTlvLength];
     short macCursor = 16;
-    macInput[macCursor++] = (byte) 0x0C;
+    macInput[macCursor++] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
     macInput[macCursor++] = command[ISO7816.OFFSET_INS];
     macInput[macCursor++] = command[ISO7816.OFFSET_P1];
     macInput[macCursor++] = command[ISO7816.OFFSET_P2];
@@ -1549,7 +1926,10 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   private static byte[] authenticatedEncryptedDataCommand(byte[] plaintext) throws Exception {
-    byte[] paddedPlaintext = iso7816Padded(plaintext);
+    return authenticatedPaddedDataCommand(iso7816Padded(plaintext));
+  }
+
+  private static byte[] authenticatedPaddedDataCommand(byte[] paddedPlaintext) throws Exception {
     byte[] counter = new byte[16];
     counter[15] = (byte) 1;
     byte[] iv = aesEcb(zeroSessionKey(), counter);
@@ -1560,11 +1940,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
             ? (short) 1
             : (encryptedValueLength <= (short) 0x00FF ? (short) 2 : (short) 3);
     byte[] command = new byte[5 + 1 + lengthFieldSize + encryptedValueLength + 10];
-    command[ISO7816.OFFSET_CLA] = (byte) 0x0C;
+    command[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
     command[ISO7816.OFFSET_INS] = (byte) 0xDB;
     command[ISO7816.OFFSET_P1] = (byte) 0x3F;
     command[ISO7816.OFFSET_P2] = (byte) 0xFF;
-    command[ISO7816.OFFSET_LC] = (byte) (command.length - 5);
+    command[ISO7816.OFFSET_LC] = (byte) (command.length - ISO7816.OFFSET_CDATA);
 
     short cursor = 5;
     command[cursor++] = (byte) 0x87;
@@ -1603,11 +1983,14 @@ class OpenFIPS201SecureMessagingDispatchTest {
    */
   private static byte[] commandFragment(
       byte[] complete, int bodyOffset, int bodyLength, boolean finalFrame) {
-    if (bodyLength > 255) {
+    if (bodyLength > OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH) {
       throw new IllegalArgumentException("A short command APDU frame cannot exceed 255 bytes");
     }
     byte[] fragment = new byte[5 + bodyLength];
-    fragment[ISO7816.OFFSET_CLA] = finalFrame ? (byte) 0x0C : (byte) 0x1C;
+    fragment[ISO7816.OFFSET_CLA] =
+        finalFrame
+            ? PIVSecureMessaging.CLA_SECURE_MESSAGING
+            : PIVSecureMessaging.CLA_CHAINED_SECURE_MESSAGING;
     fragment[ISO7816.OFFSET_INS] = complete[ISO7816.OFFSET_INS];
     fragment[ISO7816.OFFSET_P1] = complete[ISO7816.OFFSET_P1];
     fragment[ISO7816.OFFSET_P2] = complete[ISO7816.OFFSET_P2];
@@ -1653,7 +2036,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
   private static byte[] commandMac(byte[] command, short bodyOffset, short bodyEnd) {
     byte[] macInput = new byte[16 + 16 + bodyEnd - bodyOffset];
     short cursor = 16;
-    macInput[cursor++] = (byte) 0x0C;
+    macInput[cursor++] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
     macInput[cursor++] = command[ISO7816.OFFSET_INS];
     macInput[cursor++] = command[ISO7816.OFFSET_P1];
     macInput[cursor++] = command[ISO7816.OFFSET_P2];
@@ -1694,7 +2077,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     short cursor = 0;
     System.arraycopy(mcv, 0, macInput, 0, 16);
     cursor = 16;
-    macInput[cursor++] = (byte) 0x0C;
+    macInput[cursor++] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
     macInput[cursor++] = ins;
     macInput[cursor++] = p1;
     macInput[cursor++] = p2;
@@ -1832,7 +2215,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   private static byte[] tlv(byte tag, byte[] value) {
-    if (value.length > 127) {
+    if (value.length > TLV.LENGTH_1BYTE_MAX) {
       throw new IllegalArgumentException("Test TLV helper supports short-form lengths only");
     }
     byte[] encoded = new byte[value.length + 2];

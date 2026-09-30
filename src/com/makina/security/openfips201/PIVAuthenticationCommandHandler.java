@@ -17,7 +17,6 @@ import javacard.security.CryptoException;
 /** Handles GENERAL AUTHENTICATE, OPACITY dispatch, and asymmetric key generation. */
 final class PIVAuthenticationCommandHandler {
   private final PIV owner;
-  private final Config config;
   private final PIVSecurityProvider cspPIV;
   private final ChainBuffer chainBuffer;
   private final PIVSecureMessaging secureMessaging;
@@ -34,7 +33,6 @@ final class PIVAuthenticationCommandHandler {
 
   PIVAuthenticationCommandHandler(
       PIV owner,
-      Config config,
       PIVSecurityProvider cspPIV,
       ChainBuffer chainBuffer,
       PIVSecureMessaging secureMessaging,
@@ -51,7 +49,6 @@ final class PIVAuthenticationCommandHandler {
       // #endif
       ) {
     this.owner = owner;
-    this.config = config;
     this.cspPIV = cspPIV;
     this.chainBuffer = chainBuffer;
     this.secureMessaging = secureMessaging;
@@ -402,6 +399,20 @@ final class PIVAuthenticationCommandHandler {
    * CS2 / AES-128 / SHA-256; 48-byte field → CS7 / AES-256 / SHA-384) per Section 4.1.4 Table 18.
    */
   private short generalAuthenticateCase1A(
+      PIVKeyObjectECC key, short challengeOffset, short challengeLength) {
+    boolean completed = false;
+    try {
+      short length = establishOpacity(key, challengeOffset, challengeLength);
+      completed = true;
+      return length;
+    } finally {
+      // SP 800-73-5 Part 2 Table 16 C8 and Section 4.3: failed establishment must
+      // destroy Z, partial key bundles, and any keys loaded before the provider failed.
+      if (!completed) owner.clearSecureMessaging();
+    }
+  }
+
+  private short establishOpacity(
       PIVKeyObjectECC key, short challengeOffset, short challengeLength) {
     authenticateReset();
     secureMessaging.clear();

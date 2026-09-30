@@ -2,6 +2,7 @@ package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import com.makina.security.openfips201.PivTestConstants;
 import java.util.concurrent.TimeUnit;
 import javacard.framework.ISO7816;
 import javax.smartcardio.ResponseAPDU;
@@ -35,12 +36,51 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
 
   @Test
+  void managementKeyClearRequiresEmptyValueAndAllowsLaterReimport() {
+    byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x21);
+    provisionManagementKeyOverScp(ALG_AES_128, initialKey);
+    authenticateCardManagementKey(ALG_AES_128, initialKey);
+    assertSw(
+        ISO7816.SW_WRONG_DATA,
+        transmitKeyUpdate(ALG_AES_128, hex("3003E00100")),
+        "E0 clear accepts only an empty value");
+    authenticateCardManagementKey(ALG_AES_128, initialKey);
+    assertSw(
+        ISO7816.SW_NO_ERROR,
+        transmitKeyUpdate(ALG_AES_128, hex("3002E000")),
+        "Authenticated 9B administration can clear symmetric key material without SCP");
+    reconnectAndSelect();
+    assertSw(
+        ISO7816.SW_INCORRECT_P1P2,
+        transmit(
+            0,
+            Byte.toUnsignedInt(PivTestConstants.INS_GENERAL_AUTHENTICATE),
+            ALG_AES_128 & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            hex("7C028100")),
+        "Cleared 9B material cannot authenticate");
+    withMockedScp(
+        () ->
+            assertSw(
+                ISO7816.SW_NO_ERROR,
+                transmit(
+                    0x84,
+                    Byte.toUnsignedInt(PivTestConstants.INS_UPDATE_KEY),
+                    1,
+                    KEY_REF_CARD_MANAGEMENT & 0xFF,
+                    keyUpdateCommand(ALG_AES_128, keyUpdateData(initialKey))),
+                "SCP can restore an existing key definition after its material is cleared"));
+    authenticateCardManagementKey(ALG_AES_128, initialKey);
+  }
+
+  @Test
   void managementKeyChangeRequiresAuthenticatedAdminOutsideSecureChannel() {
     byte[] initialKey = keyMaterial(ALG_AES_128, (byte) 0x11);
     byte[] rotatedKey = keyMaterial(ALG_AES_128, (byte) 0x31);
 
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
-    assertSw(0x9000, selectApplet(), "SELECT before unauthenticated management key change");
+    assertSw(
+        ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before unauthenticated management key change");
 
     ResponseAPDU response = transmitKeyUpdate(ALG_AES_128, keyUpdateData(rotatedKey));
     assertSw(
@@ -58,7 +98,10 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     authenticateCardManagementKey(ALG_AES_128, initialKey);
 
     ResponseAPDU response = transmitKeyUpdate(ALG_AES_128, keyUpdateData(rotatedKey));
-    assertSw(0x9000, response, "Authenticated admin session should permit 9B rotation without SCP");
+    assertSw(
+        ISO7816.SW_NO_ERROR,
+        response,
+        "Authenticated admin session should permit 9B rotation without SCP");
   }
 
   @Test
@@ -68,13 +111,16 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     authenticateCardManagementKey(ALG_AES_128, managementKey);
 
     ResponseAPDU response = transmitPinAdminUpdate(0x80, hex("393837363534FFFF"));
-    assertSw(0x9000, response, "Authenticated 9B must authorize administrative PIN changes");
+    assertSw(
+        ISO7816.SW_NO_ERROR,
+        response,
+        "Authenticated 9B must authorize administrative PIN changes");
   }
 
   @Test
   void localPinAdministrativeChangeSucceedsOverScp() {
     ResponseAPDU response = transmitPinAdminUpdateOverScp(0x80, hex("393837363534FFFF"));
-    assertSw(0x9000, response, "SCP must authorize administrative PIN changes");
+    assertSw(ISO7816.SW_NO_ERROR, response, "SCP must authorize administrative PIN changes");
   }
 
   @Test
@@ -84,13 +130,16 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     authenticateCardManagementKey(ALG_AES_128, managementKey);
 
     ResponseAPDU response = transmitPinAdminUpdate(0x81, hex("3132333435363738"));
-    assertSw(0x9000, response, "Authenticated 9B must authorize administrative PUK changes");
+    assertSw(
+        ISO7816.SW_NO_ERROR,
+        response,
+        "Authenticated 9B must authorize administrative PUK changes");
   }
 
   @Test
   void pukAdministrativeChangeSucceedsOverScp() {
     ResponseAPDU response = transmitPinAdminUpdateOverScp(0x81, hex("3132333435363738"));
-    assertSw(0x9000, response, "SCP must authorize administrative PUK changes");
+    assertSw(ISO7816.SW_NO_ERROR, response, "SCP must authorize administrative PUK changes");
   }
 
   @Test
@@ -101,7 +150,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
     authenticateCardManagementKey(ALG_AES_128, initialKey);
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmitKeyUpdate(ALG_AES_128, keyUpdateData(rotatedKey)),
         "9B rotation should succeed before post-rotation verification");
 
@@ -243,7 +292,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
     authenticateCardManagementKey(ALG_AES_128, initialKey);
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmitKeyUpdate(ALG_AES_128, keyUpdateData(rotatedKey)),
         "Initial authenticated rotation should succeed");
 
@@ -262,11 +311,12 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     byte[] rotatedKey = keyMaterial(ALG_AES_128, (byte) 0x25);
 
     provisionManagementKeyOverScp(ALG_AES_128, initialKey);
-    assertSw(0x9000, selectApplet(), "SELECT before failed external authenticate flow");
+    assertSw(
+        ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before failed external authenticate flow");
 
     ResponseAPDU challenge =
         transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
-    assertSw(0x9000, challenge, "Challenge request should succeed");
+    assertSw(ISO7816.SW_NO_ERROR, challenge, "Challenge request should succeed");
 
     byte[] plaintextChallenge =
         extractChallenge(challenge.getData(), challengeLengthForAlgorithm(ALG_AES_128));
@@ -302,11 +352,11 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     byte[] managementKey = keyMaterial(ALG_AES_128, (byte) 0x29);
     setLocalPinOverScp(hex("313233343536FFFF"));
     provisionManagementKeyOverScp(ALG_AES_128, managementKey);
-    assertSw(0x9000, selectApplet(), "SELECT before interrupted authentication flow");
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before interrupted authentication flow");
 
     ResponseAPDU challenge =
         transmit(0x00, 0x87, ALG_AES_128 & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
-    assertSw(0x9000, challenge, "Challenge request should succeed");
+    assertSw(ISO7816.SW_NO_ERROR, challenge, "Challenge request should succeed");
     byte[] encryptedChallenge =
         encryptManagementChallenge(
             ALG_AES_128,
@@ -314,7 +364,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
             extractChallenge(challenge.getData(), challengeLengthForAlgorithm(ALG_AES_128)));
 
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmit(0x00, 0x20, 0x00, 0x80, hex("313233343536FFFF")),
         "Intervening VERIFY should execute");
 
@@ -355,7 +405,7 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
     provisionManagementKeyOverScp(algorithm, initialKey);
     authenticateCardManagementKey(algorithm, initialKey);
     assertSw(
-        0x9000,
+        ISO7816.SW_NO_ERROR,
         transmitKeyUpdate(algorithm, keyUpdateData(rotatedKey)),
         "PIV algorithm ID " + String.format("0x%02X", algorithm) + " should support 9B update");
   }
@@ -365,13 +415,13 @@ class OpenFIPS201ManagementKeyChangeReferenceDataTest extends OpenFIPS201TestSup
       session.close();
     }
     session = engine.connect();
-    assertSw(0x9000, selectApplet(), "SELECT after reconnect");
+    assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT after reconnect");
   }
 
   private ResponseAPDU transmitPinAdminUpdateOverScp(int id, byte[] data) {
     return withMockedScp(
         () -> {
-          assertSw(0x9000, selectApplet(), "SELECT before SCP management key update");
+          assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT before SCP management key update");
           return transmit(0x84, 0x24, 0x01, id, data);
         });
   }

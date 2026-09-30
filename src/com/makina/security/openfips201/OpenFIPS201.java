@@ -32,6 +32,7 @@ import javacard.framework.AppletEvent;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
+import javacard.framework.Util;
 import javacardx.apdu.ExtendedLength;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
@@ -52,7 +53,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   // GlobalPlatform instructions for establishing a Secure Channel
   private static final byte INS_GP_INITIALIZE_UPDATE = (byte) 0x50;
   private static final byte INS_GP_EXTERNAL_AUTHENTICATE = (byte) 0x82;
-  private static final byte INS_GP_GET_RESPONSE = (byte) 0xC0;
+  static final byte INS_GP_GET_RESPONSE = (byte) 0xC0;
   /*
    * Applet Commands - PIV STANDARD
    */
@@ -61,18 +62,16 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   /*
    * Applet Commands - Administrative
    */
-  private static final byte INS_PIV_GET_DATA = (byte) 0xCB;
+  static final byte INS_PIV_GET_DATA = (byte) 0xCB;
   private static final byte INS_PIV_VERIFY = (byte) 0x20;
-  private static final byte INS_PIV_CHANGE_REFERENCE_DATA = (byte) 0x24;
-  private static final byte INS_ADMIN_UPDATE_KEY = (byte) 0x25;
-  private static final byte INS_PIV_RESET_RETRY_COUNTER = (byte) 0x2C;
-  private static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
+  static final byte INS_PIV_CHANGE_REFERENCE_DATA = (byte) 0x24;
+  static final byte INS_ADMIN_UPDATE_KEY = (byte) 0x25;
+  static final byte INS_PIV_RESET_RETRY_COUNTER = (byte) 0x2C;
+  static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
   private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
   private static final byte INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR = (byte) 0x47;
-  // #if ATTESTATION_ENABLED
   // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key.
-  private static final byte INS_PIV_ATTEST = (byte) 0xF9;
-  // #endif
+  static final byte INS_PIV_ATTEST = (byte) 0xF9;
   // Helper constants
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
@@ -81,6 +80,11 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte FIPS_STATE_FAILED = (byte) 2;
   private final PIV piv;
   private final byte[] fipsState;
+  // ISO 7816 transport blocks fit 256 bytes. Preserve a prefix when the final receive must
+  // reuse the start of CDATA rather than the short remaining tail of the APDU array.
+  static final short MAX_SHORT_APDU_RESPONSE_LENGTH = (short) 256;
+  static final short MAX_SHORT_APDU_DATA_LENGTH = (short) (MAX_SHORT_APDU_RESPONSE_LENGTH - 1);
+  private final byte[] receivePrefix;
 
   //
   // Persistent state definitions
@@ -91,6 +95,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // Create our PIV provider
     piv = new PIV();
     fipsState = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_RESET);
+    receivePrefix =
+        JCSystem.makeTransientByteArray(MAX_SHORT_APDU_RESPONSE_LENGTH, JCSystem.CLEAR_ON_DESELECT);
     ensureFipsOperational();
   }
 
@@ -177,29 +183,56 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * @param apdu The current APDU
    * @return The fully assembled incoming command data length (Nc)
    */
-  private static short receiveAllIncomingData(APDU apdu) {
+  private short receiveAllIncomingData(APDU apdu) {
     short received = apdu.setIncomingAndReceive();
     short offset = apdu.getOffsetCdata();
     short totalLength = apdu.getIncomingLength();
     byte[] buffer = apdu.getBuffer();
 
     // We require contiguous CDATA in the APDU buffer because downstream handlers parse in-place.
-    if (totalLength > (short) (buffer.length - offset)) {
+    if (received < ZERO_SHORT
+        || received > totalLength
+        || totalLength > (short) (buffer.length - offset)) {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
 
     short writeOffset = (short) (offset + received);
 
     while (received < totalLength) {
-      short block = apdu.receiveBytes(writeOffset);
-      if (block <= ZERO_SHORT) {
-        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      short inputBlockSize = APDU.getInBlockSize();
+      short block;
+      if ((short) (buffer.length - writeOffset) < inputBlockSize) {
+        // Java Card 3.0.5 APDU.receiveBytes requires room for a full input block even when
+        // fewer command bytes remain. Receive at CDATA, relocate the block, then restore it.
+        if (inputBlockSize > (short) receivePrefix.length
+            || inputBlockSize > (short) (buffer.length - offset)) {
+          ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        }
+        short saved = received < inputBlockSize ? received : inputBlockSize;
+        Util.arrayCopyNonAtomic(buffer, offset, receivePrefix, ZERO_SHORT, saved);
+        try {
+          block = receiveBlock(apdu, offset, (short) (totalLength - received));
+          Util.arrayCopyNonAtomic(buffer, offset, buffer, writeOffset, block);
+          Util.arrayCopyNonAtomic(receivePrefix, ZERO_SHORT, buffer, offset, saved);
+        } finally {
+          PIVSecurityProvider.zeroise(receivePrefix, ZERO_SHORT, saved);
+        }
+      } else {
+        block = receiveBlock(apdu, writeOffset, (short) (totalLength - received));
       }
       received += block;
       writeOffset += block;
     }
 
     return received;
+  }
+
+  private static short receiveBlock(APDU apdu, short offset, short remaining) {
+    short length = apdu.receiveBytes(offset);
+    if (length <= ZERO_SHORT || length > remaining) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+    return length;
   }
 
   @Override
@@ -271,6 +304,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
     if (pivSecureMessagingCla) {
       length = piv.unwrapSecureMessagingCommand(buffer, offset, length);
+    } else if (!gpSecureMessagingCla && isPlaintextOpacityEstablishment(buffer, offset, length)) {
+      // SP 800-73-5 Part 2 Section 4.3 requires destruction on receipt of a new
+      // establishment request, even when later key lookup or establishment fails.
+      piv.clearSecureMessaging();
     } else if (piv.isSecureMessagingEstablished()
         && !gpSecureMessagingCla
         && !isPlaintextOpacityEstablishment(buffer, offset, length)) {
@@ -371,6 +408,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
+          // SP 800-73-5 Part 2 Section 4.1.8 requires plaintext CLA 00 for OPACITY.
+          // Reject a verified wrapped request under the existing keys before it can replace them.
+          if (piv.isSecureMessagingCommand()
+              && buffer[ISO7816.OFFSET_P2] == PIV.ID_KEY_SECURE_MESSAGING) {
+            ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+          }
           processPIV_GENERAL_AUTHENTICATE(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
@@ -398,7 +441,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     } catch (ISOException ex) {
       short reason = ex.getReason();
       if (!piv.isSecureMessagingCommand()
-          || reason == ISO7816.SW_NO_ERROR
           || (short) (reason & (short) 0xFF00) == ISO7816.SW_BYTES_REMAINING_00) {
         throw ex;
       }
@@ -487,7 +529,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   private boolean isPlaintextOpacityEstablishment(byte[] buffer, short offset, short length) {
-    if (buffer[ISO7816.OFFSET_INS] != INS_PIV_GENERAL_AUTHENTICATE
+    if (buffer[ISO7816.OFFSET_CLA] != (byte) 0
+        || buffer[ISO7816.OFFSET_INS] != INS_PIV_GENERAL_AUTHENTICATE
         || buffer[ISO7816.OFFSET_P1] != PIV.ID_ALG_ECC_SM
         || buffer[ISO7816.OFFSET_P2] != PIV.ID_KEY_SECURE_MESSAGING) {
       return false;

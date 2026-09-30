@@ -99,17 +99,18 @@ final class PIVSecureMessaging {
   private static final short RESPONSE_PHASE_HEADER = (short) 1;
   private static final short RESPONSE_PHASE_DATA = (short) 2;
   private static final short RESPONSE_PHASE_FINAL = (short) 3;
-  private static final short LENGTH_BLOCK = (short) 16;
-  private static final short LENGTH_SHORT_MAC = (short) 8;
-  private static final byte CLA_SECURE_MESSAGING = (byte) 0x0C;
-  private static final byte CLA_CHAINED_SECURE_MESSAGING = (byte) 0x1C;
-  private static final byte INS_GET_RESPONSE = (byte) 0xC0;
+  private static final short LENGTH_BLOCK = PIVCrypto.LENGTH_BLOCK_AES;
+  static final short LENGTH_SHORT_MAC = (short) 8;
+  static final byte CLA_SECURE_MESSAGING = (byte) 0x0C;
+  static final byte CLA_CHAINED_SECURE_MESSAGING = (byte) 0x1C;
+  private static final byte INS_GET_RESPONSE = OpenFIPS201.INS_GP_GET_RESPONSE;
   // BER-TLV Tags defined in NIST SP 800-73-5 Part 2, Section 4.2.1 Table 21
-  private static final byte TAG_ENCRYPTED_DATA = (byte) 0x87; // Padding indicator + encrypted data
-  private static final byte TAG_MAC = (byte) 0x8E; // Cryptographic checksum (C-MAC/R-MAC)
+  static final byte TAG_ENCRYPTED_DATA = (byte) 0x87; // Padding indicator + encrypted data
+  static final byte TAG_MAC = (byte) 0x8E; // Cryptographic checksum (C-MAC/R-MAC)
   private static final byte TAG_LE = (byte) 0x97; // Le encapsulation
-  private static final byte TAG_STATUS = (byte) 0x99; // Status word
-  private static final byte PADDING_INDICATOR = (byte) 0x01; // Padding indicator per Section 4.2.2
+  static final byte TAG_STATUS = (byte) 0x99; // Status word
+  static final byte PADDING_INDICATOR = (byte) 0x01; // Padding indicator per Section 4.2.2
+  static final byte PADDING_DELIMITER = (byte) 0x80; // ISO/IEC 9797-1 padding method 2
 
   // Secure messaging processing status words, NIST SP 800-73-5 Part 2 Section 4.2.7 (Error
   // Handling). These are the SW processing statuses of the secure messaging layer itself and are
@@ -120,7 +121,7 @@ final class PIVSecureMessaging {
   //   '69 88' - secure messaging data objects are incorrect
   private static final short SW_SM_NOT_SUPPORTED = (short) 0x6882;
   private static final short SW_SM_EXPECTED_OBJECTS_MISSING = (short) 0x6987;
-  private static final short SW_SM_OBJECTS_INCORRECT = (short) 0x6988;
+  static final short SW_SM_OBJECTS_INCORRECT = (short) 0x6988;
 
   private final byte[] state;
   private final byte[] commandMcv;
@@ -273,13 +274,20 @@ final class PIVSecureMessaging {
    * keys are zeroized per Section 4.3 (Session Key Destruction).
    */
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
-    PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
     try {
+      PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
       return unwrapCommandChecked(apdu, offset, length, work, workOffset);
     } catch (ISOException ex) {
       // NIST SP 800-73-5 Part 2 Section 4.3 requires key zeroization on secure messaging errors.
       clear();
+      if (ex.getReason() == ISO7816.SW_WRONG_DATA) {
+        ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+      }
       throw ex;
+    } catch (javacard.security.CryptoException ex) {
+      clear();
+      ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+      return (short) 0;
     }
   }
 
@@ -348,14 +356,18 @@ final class PIVSecureMessaging {
    */
   boolean processRejectedCommandFragment(
       byte[] apdu, short offset, short length, boolean finalFrame, byte[] work, short workOffset) {
-    PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
     try {
+      PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
       return processRejectedCommandFragmentChecked(
           apdu, offset, length, finalFrame, work, workOffset);
     } catch (ISOException ex) {
       // Section 4.3 requires session-key destruction after a secure messaging error.
       clear();
       throw ex;
+    } catch (javacard.security.CryptoException ex) {
+      clear();
+      ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+      return false;
     }
   }
 
@@ -627,13 +639,7 @@ final class PIVSecureMessaging {
    * @return {@code true} only for a correctly padded block
    */
   private boolean hasValidPadding(byte[] buffer, short offset, short length) {
-    short cursor = (short) (offset + length - (short) 1);
-    while (cursor >= offset) {
-      if (buffer[cursor] == (byte) 0x80) return true;
-      if (buffer[cursor] != (byte) 0x00) return false;
-      cursor--;
-    }
-    return false;
+    return paddingStart(buffer, offset, length) >= offset;
   }
 
   private short unwrapCommandChecked(
@@ -656,10 +662,11 @@ final class PIVSecureMessaging {
     // SP 800-73-5 Part 2 Section 4.2.7.
     while (cursor < end) {
       byte tag = apdu[cursor];
-      short tlvLength = TLVReader.getLength(apdu, cursor);
-      short valueOffset = TLVReader.getDataOffset(apdu, cursor);
-      short next = (short) (valueOffset + tlvLength);
-      if (next > end) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+      // Section 4.2.7 maps malformed protected objects to 6988. Parse within this command's
+      // actual slice, never the unused tail of the larger APDU/reassembly buffer.
+      short tlvLength = TLV.readLength(apdu, cursor, end, false);
+      short valueOffset = TLV.dataOffset(apdu, cursor, end, false);
+      short next = TLV.objectEnd(apdu, cursor, end, false);
 
       if (tag == TAG_ENCRYPTED_DATA) {
         if (expectedTag != TAG_ENCRYPTED_DATA) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
@@ -808,10 +815,6 @@ final class PIVSecureMessaging {
     if (!isResponseStreamActive()) return;
     if (shouldIncrementCounter()) incrementCounter();
     clearResponseState();
-    Util.arrayFillNonAtomic(responseIv, (short) 0, LENGTH_BLOCK, (byte) 0);
-    Util.arrayFillNonAtomic(responseBlock, (short) 0, LENGTH_BLOCK, (byte) 0);
-    Util.arrayFillNonAtomic(responseCandidateMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
-    Util.arrayFillNonAtomic(responseTail, (short) 0, (short) responseTail.length, (byte) 0);
   }
 
   short getResponseStreamStatusWord() {
@@ -828,7 +831,7 @@ final class PIVSecureMessaging {
     out[cursor++] = apdu[ISO7816.OFFSET_INS];
     out[cursor++] = apdu[ISO7816.OFFSET_P1];
     out[cursor++] = apdu[ISO7816.OFFSET_P2];
-    out[cursor++] = (byte) 0x80;
+    out[cursor++] = PADDING_DELIMITER;
     Util.arrayFillNonAtomic(out, cursor, (short) 11, (byte) 0);
   }
 
@@ -895,7 +898,7 @@ final class PIVSecureMessaging {
 
     short paddingOffset = copied;
     if (paddingOffset < LENGTH_BLOCK) {
-      responseBlock[paddingOffset++] = (byte) 0x80;
+      responseBlock[paddingOffset++] = PADDING_DELIMITER;
       responseState[OFFSET_RESPONSE_PADDING_REMAINING]--;
       short zeroes = (short) (LENGTH_BLOCK - paddingOffset);
       Util.arrayFillNonAtomic(responseBlock, paddingOffset, zeroes, (byte) 0);
@@ -992,14 +995,22 @@ final class PIVSecureMessaging {
   private short stripPadding(byte[] buffer, short offset, short length) {
     // Invalid ISO 7816-4 padding in the recovered plaintext means the '87' encrypted-data
     // object was incorrect: '69 88' per NIST SP 800-73-5 Part 2 Section 4.2.7.
-    short cursor = (short) (offset + length - 1);
-    while (cursor >= offset) {
-      if (buffer[cursor] == (byte) 0x80) return (short) (cursor - offset);
-      if (buffer[cursor] != (byte) 0x00) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
-      cursor--;
-    }
+    short cursor = paddingStart(buffer, offset, length);
+    if (cursor >= offset) return (short) (cursor - offset);
     ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
     return (short) 0;
+  }
+
+  /** Section 4.2.2 permits exactly 1..16 padding octets, confined to the final AES block. */
+  private short paddingStart(byte[] buffer, short offset, short length) {
+    short cursor = (short) (offset + length - 1);
+    short lower = length > LENGTH_BLOCK ? (short) (offset + length - LENGTH_BLOCK) : offset;
+    while (cursor >= lower) {
+      if (buffer[cursor] == PADDING_DELIMITER) return cursor;
+      if (buffer[cursor] != (byte) 0) return (short) -1;
+      cursor--;
+    }
+    return (short) -1;
   }
 
   private short paddedLength(short length) {
@@ -1029,5 +1040,8 @@ final class PIVSecureMessaging {
       responseState[index] = (short) 0;
     }
     Util.arrayFillNonAtomic(responseCandidateMcv, (short) 0, LENGTH_BLOCK, (byte) 0);
+    Util.arrayFillNonAtomic(responseIv, (short) 0, LENGTH_BLOCK, (byte) 0);
+    Util.arrayFillNonAtomic(responseBlock, (short) 0, LENGTH_BLOCK, (byte) 0);
+    Util.arrayFillNonAtomic(responseTail, (short) 0, (short) responseTail.length, (byte) 0);
   }
 }
