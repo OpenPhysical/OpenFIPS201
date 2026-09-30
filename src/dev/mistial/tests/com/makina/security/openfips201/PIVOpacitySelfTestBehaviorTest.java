@@ -59,6 +59,41 @@ class PIVOpacitySelfTestBehaviorTest {
     }
   }
 
+  @Test
+  void sessionKeyDerivationClearsTransientKdfInput() throws Exception {
+    byte[] output = new byte[768];
+    byte[] workspace = new byte[448];
+    short pointOffset = 8;
+    short zOffset = 73;
+    short nonceOffset = 105;
+    short cardIdOffset = 121;
+    java.util.Arrays.fill(workspace, zOffset, zOffset + 32, (byte) 0x5A);
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      new PIVOpacity(output, workspace)
+          .deriveSessionKeys(
+              (short) 32,
+              (short) 16,
+              (byte) 0x09,
+              (short) 160,
+              zOffset,
+              nonceOffset,
+              (short) 16,
+              (short) 0,
+              pointOffset,
+              cardIdOffset);
+    }
+
+    boolean derivedKeyPresent = false;
+    for (int index = 0; index < 64; index++) {
+      derivedKeyPresent |= output[index] != (byte) 0;
+    }
+    assertTrue(derivedKeyPresent, "derived session keys must remain available");
+    for (int index = 128; index < output.length; index++) {
+      assertTrue(output[index] == (byte) 0, "transient KDF input must be cleared");
+    }
+  }
+
   private static byte[] filled(short length) {
     byte[] result = new byte[length];
     java.util.Arrays.fill(result, (byte) 0xA5);

@@ -129,6 +129,7 @@ public final class CardstockPreparationService {
 
       byte proofSlot = (byte) Integer.parseInt(profile.attestation.proofSlot, 16);
       byte[] proofPin = HexUtil.parse(profile.attestation.proofPin);
+      byte[] proofPublicPoint;
       boolean proofKeyCreated = false;
       try (GlobalPlatformSession piv =
           transport.openGlobalPlatformSession(
@@ -147,7 +148,7 @@ public final class CardstockPreparationService {
         receipt.operationsPerformed.add("F9 authority imported");
         AttestationProofService proofService = new AttestationProofService();
         proofService.setProofPin(piv, proofPin);
-        proofService.createAndGenerateProofKey(piv, proofSlot);
+        proofPublicPoint = proofService.createAndGenerateProofKey(piv, proofSlot);
         proofKeyCreated = true;
       }
 
@@ -165,7 +166,9 @@ public final class CardstockPreparationService {
                 new AttestationProofService().deleteCreatedProofKey(cleanup, proofSlot);
           }
         }
-        proof = new AttestationProofService.Result(proofCertificate, proofKeyDeleted);
+        proof =
+            new AttestationProofService.Result(
+                proofCertificate, proofPublicPoint, proofKeyDeleted);
         receipt.operationsPerformed.add("attestation proof collected");
       } catch (Exception e) {
         if (profile.attestation.deleteProofKey && proofKeyCreated) {
@@ -206,7 +209,7 @@ public final class CardstockPreparationService {
     }
 
     verifyProofMatchesF9Instance(
-        authority.issuerCertificate, authority.instanceId, proof.certificate);
+        authority.issuerCertificate, authority.instanceId, proof.publicPoint, proof.certificate);
     receipt.operationsPerformed.add("attestation proof issuer matches F9 instanceId");
 
     receipt.instanceId = authority.instanceId;
@@ -238,6 +241,14 @@ public final class CardstockPreparationService {
    */
   public static void verifyProofMatchesF9Instance(
       X509Certificate f9Certificate, String instanceId, byte[] proofLeafDer) {
+    verifyProofMatchesF9Instance(f9Certificate, instanceId, null, proofLeafDer);
+  }
+
+  public static void verifyProofMatchesF9Instance(
+      X509Certificate f9Certificate,
+      String instanceId,
+      byte[] expectedPublicPoint,
+      byte[] proofLeafDer) {
     if (f9Certificate == null) {
       throw new IllegalStateException("F9 certificate is required");
     }
@@ -246,6 +257,13 @@ public final class CardstockPreparationService {
     }
     if (proofLeafDer == null || proofLeafDer.length == 0) {
       throw new IllegalStateException("Attestation proof leaf is required");
+    }
+    X509Certificate proofCertificate;
+    try {
+      proofCertificate = AttestationProofService.parseCertificate(proofLeafDer);
+      proofCertificate.verify(f9Certificate.getPublicKey());
+    } catch (Exception e) {
+      throw new IllegalStateException("Attestation proof signature is not valid under F9", e);
     }
     if (!F9InstanceId.subjectsMatch(f9Certificate, proofLeafDer)) {
       throw new IllegalStateException(
@@ -259,6 +277,12 @@ public final class CardstockPreparationService {
           "Attestation proof leaf issuer does not carry F9 instance id "
               + instanceId
               + " (subject embedding / applet profile mismatch)");
+    }
+    if (expectedPublicPoint != null
+        && !java.util.Arrays.equals(
+            expectedPublicPoint, AttestationProofService.publicPoint(proofCertificate))) {
+      throw new IllegalStateException(
+          "Attestation proof public key does not match the generated proof key");
     }
   }
 

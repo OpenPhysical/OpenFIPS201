@@ -12,6 +12,7 @@ import static dev.mistial.tools.openfips201.common.ByteArrays.concat;
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.common.ApduSupport;
+import dev.mistial.tools.openfips201.common.BerTlvReader;
 import dev.mistial.tools.openfips201.common.CardSession;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.CardTransport;
@@ -24,7 +25,7 @@ public final class AttestationProofService {
   public static final byte DEFAULT_PROOF_SLOT = (byte) 0x9A;
 
   public Result prove(CardSession session, byte slot, boolean deleteProofKey) throws Exception {
-    createAndGenerateProofKey(session, slot);
+    byte[] publicPoint = createAndGenerateProofKey(session, slot);
     boolean deleted = false;
     byte[] certificate = null;
     try {
@@ -35,10 +36,10 @@ public final class AttestationProofService {
         deleted = deleteProofKey(session, slot);
       }
     }
-    return new Result(certificate, deleted);
+    return new Result(certificate, publicPoint, deleted);
   }
 
-  public void createAndGenerateProofKey(CardSession session, byte slot) {
+  public byte[] createAndGenerateProofKey(CardSession session, byte slot) {
     createProofKey(session, slot);
     try {
       ResponseAPDU generated =
@@ -57,6 +58,7 @@ public final class AttestationProofService {
       if (generated.getData().length == 0) {
         throw new IllegalStateException("proof key generation returned no public key");
       }
+      return extractPublicPoint(generated.getData());
     } catch (RuntimeException e) {
       try {
         deleteProofKey(session, slot);
@@ -117,12 +119,32 @@ public final class AttestationProofService {
 
   public static final class Result {
     public final byte[] certificate;
+    public final byte[] publicPoint;
     public final boolean proofKeyDeleted;
 
     public Result(byte[] certificate, boolean proofKeyDeleted) {
+      this(certificate, null, proofKeyDeleted);
+    }
+
+    public Result(byte[] certificate, byte[] publicPoint, boolean proofKeyDeleted) {
       this.certificate = certificate;
+      this.publicPoint = publicPoint == null ? null : publicPoint.clone();
       this.proofKeyDeleted = proofKeyDeleted;
     }
+  }
+
+  static byte[] extractPublicPoint(byte[] generatedKey) {
+    BerTlvReader.Tlv template = BerTlvReader.read(generatedKey, 0);
+    if (template.tag != 0x7F49 || template.nextOffset != generatedKey.length) {
+      throw new IllegalStateException("generated proof key has an invalid public-key template");
+    }
+    BerTlvReader.Tlv point =
+        BerTlvReader.read(generatedKey, template.valueOffset, template.nextOffset);
+    if (point.tag != 0x86 || point.length != 65 || point.nextOffset != template.nextOffset) {
+      throw new IllegalStateException("generated proof key has no P-256 public point");
+    }
+    return java.util.Arrays.copyOfRange(
+        generatedKey, point.valueOffset, point.valueOffset + point.length);
   }
 
   private static void createProofKey(CardSession session, byte slot) {
@@ -235,9 +257,13 @@ public final class AttestationProofService {
     return response;
   }
 
-  private static X509Certificate parseCertificate(byte[] der) throws Exception {
+  public static X509Certificate parseCertificate(byte[] der) throws Exception {
     return (X509Certificate)
         CertificateFactory.getInstance("X.509")
             .generateCertificate(new java.io.ByteArrayInputStream(der));
+  }
+
+  public static byte[] publicPoint(X509Certificate certificate) {
+    return AttestationSupport.publicPoint(certificate.getPublicKey());
   }
 }

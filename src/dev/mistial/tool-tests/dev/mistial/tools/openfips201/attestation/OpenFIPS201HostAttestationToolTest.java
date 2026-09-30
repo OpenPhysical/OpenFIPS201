@@ -256,6 +256,50 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   @Test
+  void proofVerificationRejectsWrongSignatureAndGeneratedPublicKey() throws Exception {
+    F9InstanceId id = F9InstanceId.generate();
+    KeyPair f9KeyPair = AttestationSupport.generateF9KeyPair();
+    X509Certificate f9 =
+        AttestationSupport.createIssuerCertificate(
+            f9KeyPair,
+            id.composeSubject("CN=Factory F9"),
+            id.toSerialNumber(),
+            utcDate("2026-01-01"),
+            utcDate("2030-01-01"));
+    KeyPair generatedProofKey = AttestationSupport.generateF9KeyPair();
+    KeyPair otherSigner = AttestationSupport.generateF9KeyPair();
+    X509Certificate wrongSignature =
+        AttestationSupport.createLeafCertificate(
+            otherSigner,
+            X500Name.getInstance(f9.getSubjectX500Principal().getEncoded()),
+            new X500Name("CN=PIV Attestation 9A"),
+            generatedProofKey.getPublic(),
+            utcDate("2026-01-01"),
+            utcDate("2027-01-01"));
+    KeyPair wrongProofKey = AttestationSupport.generateF9KeyPair();
+    X509Certificate wrongPublicKey =
+        AttestationSupport.createLeafCertificate(
+            f9KeyPair,
+            X500Name.getInstance(f9.getSubjectX500Principal().getEncoded()),
+            new X500Name("CN=PIV Attestation 9A"),
+            wrongProofKey.getPublic(),
+            utcDate("2026-01-01"),
+            utcDate("2027-01-01"));
+    byte[] expectedPoint = AttestationSupport.publicPoint(generatedProofKey.getPublic());
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            CardstockPreparationService.verifyProofMatchesF9Instance(
+                f9, id.toHex(), expectedPoint, wrongSignature.getEncoded()));
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            CardstockPreparationService.verifyProofMatchesF9Instance(
+                f9, id.toHex(), expectedPoint, wrongPublicKey.getEncoded()));
+  }
+
+  @Test
   void f9InstanceIdRejectsInvalidHexAndEmptyTemplate() {
     assertThrows(IllegalArgumentException.class, () -> F9InstanceId.fromHex("ABCD"));
     assertThrows(IllegalArgumentException.class, () -> F9InstanceId.fromHex("not-hex"));
@@ -735,17 +779,21 @@ class OpenFIPS201HostAttestationToolTest {
 
   private static final class ProofTransportSession implements CardSession {
     private final byte[] certificate;
+    private final byte[] generatedKey;
     final List<CommandAPDU> commands = new ArrayList<CommandAPDU>();
 
     ProofTransportSession(byte[] certificate) {
       this.certificate = certificate.clone();
+      byte[] point = new byte[65];
+      point[0] = 0x04;
+      this.generatedKey = AttestationSupport.tlv(0x7F49, AttestationSupport.tlv(0x86, point));
     }
 
     @Override
     public ResponseAPDU transmit(CommandAPDU command) {
       commands.add(command);
       if (command.getINS() == 0x47) {
-        return response(new byte[] {0x01}, 0x9000);
+        return response(generatedKey, 0x9000);
       }
       if (command.getINS() == 0xF9) {
         return sw(0x6100 | Math.min(certificate.length, 0xFF));

@@ -151,26 +151,33 @@ final class PIVOpacity {
       short cardIdOffset) {
     short outputLength = (short) (sessionKeyLength * 4);
     short written = ZERO;
-    for (byte counter = (byte) 1; written < outputLength; counter++) {
-      short inputLength =
-          buildKdfInput(
-              KDF_INPUT_OFFSET,
-              counter,
-              algorithmId,
-              zOffset,
-              hashLength,
-              nonceOffset,
-              nonceLength,
-              hostIdOffset,
-              hostPointOffset,
-              cardIdOffset);
-      PIVCrypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
-      short copyLength = hashLength;
-      if ((short) (written + copyLength) > outputLength) {
-        copyLength = (short) (outputLength - written);
+    try {
+      for (byte counter = (byte) 1; written < outputLength; counter++) {
+        short inputLength =
+            buildKdfInput(
+                KDF_INPUT_OFFSET,
+                counter,
+                algorithmId,
+                zOffset,
+                hashLength,
+                nonceOffset,
+                nonceLength,
+                hostIdOffset,
+                hostPointOffset,
+                cardIdOffset);
+        PIVCrypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
+        short copyLength = hashLength;
+        if ((short) (written + copyLength) > outputLength) {
+          copyLength = (short) (outputLength - written);
+        }
+        Util.arrayCopyNonAtomic(workspace, hashOffset, output, written, copyLength);
+        written += copyLength;
       }
-      Util.arrayCopyNonAtomic(workspace, hashOffset, output, written, copyLength);
-      written += copyLength;
+    } finally {
+      // SP 800-73-5 Part 2 Section 4.1, Case 1A uses Z only as KDF input. buildKdfInput()
+      // copies Z above the derived-key region, so clear that transient copy on success and error.
+      PIVSecurityProvider.zeroise(
+          output, KDF_INPUT_OFFSET, (short) (output.length - KDF_INPUT_OFFSET));
     }
   }
 
