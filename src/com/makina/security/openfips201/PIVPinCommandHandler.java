@@ -277,6 +277,9 @@ final class PIVPinCommandHandler {
     // well-formed but non-matching pairing code. Pairing has no retry counter.
     if (!PIVSecurityProvider.arrayEqualsConstantTime(
         object.content, (short) (contentOffset + 2), buffer, offset, (short) 8)) {
+      // SP 800-73-5 Part 2 Section 3.2.1.3 requires a 63 00 pairing failure to set the
+      // pairing-code security status to FALSE. The secure-messaging session remains established.
+      secureMessaging.resetPairingVerified();
       ISOException.throwIt(SW_VERIFICATION_FAILED);
     }
 

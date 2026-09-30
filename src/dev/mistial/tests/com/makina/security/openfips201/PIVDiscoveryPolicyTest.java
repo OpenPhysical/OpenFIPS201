@@ -58,30 +58,33 @@ class PIVDiscoveryPolicyTest {
     // objects; populated storage alone is not sufficient for the irreversible transition.
     assertFalse(PIVDataCommandHandler.isStructurallyValidMandatoryObject(null, (byte) 0x07));
     assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("00")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("F00100")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("01810100")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("0182000100")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("5F2F0100")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("1F80")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("1F8000")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("0180")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("018201")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("018300000100")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("010200")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("F00100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("5303F00100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("530401810100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("53050182000100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("53045F2F0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53021F80")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53031F8000")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53020180")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("5303018201")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("5306018300000100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("5303010200")));
 
-    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("700100710100FE00")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("70010071810100FE00")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("700100710100")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("710100700100FE00")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("70010071020000FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("700100710100FE00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("5308700100710100FE00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("530970010071810100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("5306700100710100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("5308710100700100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("530970010071020000FE00")));
 
-    assertTrue(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0100")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0100FE00")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA00BB0100")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA020101BB0100")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BC0100")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0200")));
-    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB010000")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("BA03010101BB0100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x06, hex("5308BA03010101BB0100")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x06, hex("530ABA03010101BB0100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("5305BA00BB0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("5307BA020101BB0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("5308BA03010101BC0100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("5309BA03010101BB0200")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x06, hex("5309BA03010101BB010000")));
   }
 
   @Test

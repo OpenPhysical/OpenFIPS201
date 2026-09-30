@@ -28,6 +28,13 @@ public final class ApduSupport {
     return response;
   }
 
+  /** Returns command metadata without exposing a potentially secret command-data field. */
+  public static String describeCommand(CommandAPDU command) {
+    return String.format(
+        "%02X %02X %02X %02X Nc=%d",
+        command.getCLA(), command.getINS(), command.getP1(), command.getP2(), command.getNc());
+  }
+
   /** Selects an application by DF name and requires a successful response. */
   public static ResponseAPDU selectApplication(
       Transmitter transmitter, byte[] aid, String context) {

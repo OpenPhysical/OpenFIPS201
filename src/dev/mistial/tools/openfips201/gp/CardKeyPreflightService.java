@@ -55,11 +55,16 @@ public final class CardKeyPreflightService {
             request.target, GlobalPlatformSession.ISD_AID, request.current)) {
       // Opening SCP with the current keys is the non-mutating readiness check.
     }
-    return new Result(kdd, request.current, target, rollbackCommand(request, kdd));
+    return new Result(
+        kdd,
+        request.current,
+        target,
+        rollbackCommand(request, kdd),
+        request.stockScpKey != null);
   }
 
-  private static String rollbackCommand(Request request, byte[] kdd) {
-    if (request.profilePath == null || request.stockScpKey == null) {
+  static String rollbackCommand(Request request, byte[] kdd) {
+    if (request.profilePath == null) {
       return null;
     }
     return "openfips201 gp keys keyroll backward --profile "
@@ -70,8 +75,6 @@ public final class CardKeyPreflightService {
         + HexUtil.format(kdd)
         + " --stock-scp-key-version "
         + request.current.keyVersion
-        + " --stock-scp-key "
-        + request.stockScpKey
         + " --yes";
   }
 
@@ -95,8 +98,14 @@ public final class CardKeyPreflightService {
     public final String targetMacKcv;
     public final String targetDekKcv;
     public final String rollbackCommand;
+    public final boolean rollbackRequiresStockScpKey;
 
-    Result(byte[] kdd, ScpConfig current, DerivedScpKeys target, String rollbackCommand) {
+    Result(
+        byte[] kdd,
+        ScpConfig current,
+        DerivedScpKeys target,
+        String rollbackCommand,
+        boolean rollbackRequiresStockScpKey) {
       this.kdd = kdd.clone();
       this.kddHex = HexUtil.format(kdd);
       this.currentKeyVersion = current.keyVersion;
@@ -105,6 +114,7 @@ public final class CardKeyPreflightService {
       this.targetMacKcv = target.macKcv;
       this.targetDekKcv = target.dekKcv;
       this.rollbackCommand = rollbackCommand;
+      this.rollbackRequiresStockScpKey = rollbackRequiresStockScpKey;
     }
   }
 }

@@ -16,6 +16,7 @@ import pro.javacard.capfile.CAPFile;
 import pro.javacard.gp.GPCardKeys;
 import pro.javacard.gp.GPCommands;
 import pro.javacard.gp.GPData;
+import pro.javacard.gp.GPKeyInfo;
 import pro.javacard.gp.GPRegistryEntry;
 import pro.javacard.gp.GPSecureChannelVersion;
 import pro.javacard.gp.GPSession;
@@ -84,6 +85,11 @@ public final class GlobalPlatformSession implements CardSession {
     return scpMode;
   }
 
+  /** Returns the key version selected by the card during INITIALIZE UPDATE. */
+  public int authenticatedKeyVersion() {
+    return session.getScpKeyVersion();
+  }
+
   public void installCap(
       CAPFile cap, AID packageAid, AID appletAid, AID instanceAid, byte[] params, boolean loadCap)
       throws Exception {
@@ -100,6 +106,21 @@ public final class GlobalPlatformSession implements CardSession {
 
   public void putKeys(GPCardKeys keys, boolean replace) throws Exception {
     session.putKeys(keys, replace);
+  }
+
+  /** Deletes every key in one key-version set. */
+  public void deleteKeyVersion(int keyVersion) throws Exception {
+    session.deleteKey(Integer.valueOf(keyVersion), null);
+  }
+
+  /** Returns whether the card's key information template contains the given version. */
+  public boolean hasKeyVersion(int keyVersion) throws Exception {
+    for (GPKeyInfo key : session.getKeyInfoTemplate()) {
+      if (key.getVersion() == keyVersion) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @Override

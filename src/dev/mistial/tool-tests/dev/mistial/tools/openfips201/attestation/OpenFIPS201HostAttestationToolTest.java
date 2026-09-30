@@ -410,6 +410,40 @@ class OpenFIPS201HostAttestationToolTest {
   }
 
   @Test
+  void failedPrivateKeyImportDoesNotDiscloseTheScalar() {
+    byte[] privateScalar = hex("5A5B5C5D5E5F606162636465666768696A6B6C6D6E6F70717273747576777879");
+    F9Profile profile =
+        new F9Profile(new byte[0x41], privateScalar, hex("3000"), hex("3000"));
+    CardSession session =
+        new CardSession() {
+          @Override
+          public ResponseAPDU transmit(CommandAPDU command) {
+            byte[] data = command.getData();
+            if (command.getINS() == 0x24 && data.length > 2 && data[2] == (byte) 0x87) {
+              return sw(0x6A80);
+            }
+            return ResponseAPDU.OK;
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    IllegalStateException failure =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                AttestationAuthorityService.provisionAuthority(
+                    session,
+                    profile,
+                    new byte[] {(byte) 0x01},
+                    AttestationSupport.DEFAULT_ISSUER_OBJECT_ID));
+
+    assertTrue(failure.getMessage().contains("command=84 24 11 F9"));
+    assertTrue(!failure.getMessage().contains("5A5B5C5D"), failure.getMessage());
+  }
+
+  @Test
   void proofServiceDeletesTemporaryKeyWhenGenerationFails() throws Exception {
     ProofCleanupSession session = new ProofCleanupSession(0x6A80, 0x9000);
 

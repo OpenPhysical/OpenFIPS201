@@ -223,7 +223,7 @@ public final class AttestationAuthorityService {
             + statusMeaning(response.getSW())
             + ")"
             + " command="
-            + command.toLogString());
+            + ApduSupport.describeCommand(command));
   }
 
   private static String statusMeaning(int sw) {

@@ -176,6 +176,43 @@ class OpenFIPS201VciEndToEndTest {
     }
   }
 
+  @Test
+  void wrongPairingCodeClearsAnEarlierPairingAuthorization(@TempDir Path tempDir) throws Exception {
+    assumeTrue(isCs2Build(), "CS2 E2E test requires -Dvci.suite=CS2");
+    String caPrefix = tempDir.resolve("vci-ca").toString();
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.provision(bibo, null, null, caPrefix, "12345678", null);
+    }
+
+    try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
+      VciProvisioning.EstablishedSession established =
+          VciProvisioning.establishSecureMessaging(bibo, caPrefix + ".crt");
+      assertNotNull(established);
+
+      assertEquals(
+          0x9000,
+          VciProvisioning.verifyReferenceDataOverSm(
+                  bibo,
+                  established.session,
+                  (byte) 0x98,
+                  "12345678".getBytes(StandardCharsets.US_ASCII))
+              .statusWord);
+      assertEquals(
+          0x6300,
+          VciProvisioning.verifyReferenceDataOverSm(
+                  bibo,
+                  established.session,
+                  (byte) 0x98,
+                  "87654321".getBytes(StandardCharsets.US_ASCII))
+              .statusWord);
+      assertEquals(
+          0x6982,
+          VciProvisioning.getReferenceStatusOverSm(bibo, established.session, (byte) 0x98)
+              .statusWord,
+          "SP 800-73-5 Part 2 Section 3.2.1.3 requires failed pairing to clear status");
+    }
+  }
+
   /**
    * Malformed pairing code length is rejected. SP 800-73-5 requires the pairing code to be exactly
    * 8 bytes (AS01.17 / Part 2).

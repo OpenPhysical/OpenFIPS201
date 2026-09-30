@@ -332,6 +332,9 @@ public final class OpenFips201Tool implements Callable<Integer> {
           System.out.println("DEK KCV " + result.targetDekKcv);
           if (result.rollbackCommand != null) {
             System.out.println("Rollback " + result.rollbackCommand);
+            if (result.rollbackRequiresStockScpKey) {
+              System.out.println("Supply the stock SCP key again when running the rollback.");
+            }
           }
           return 0;
         }

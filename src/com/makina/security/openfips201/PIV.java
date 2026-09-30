@@ -427,6 +427,11 @@ final class PIV {
 
     length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
     secureMessagingCommand[ZERO] = (byte) 1;
+    // chainBuffer has reconstructed the complete protected command. Do not expose the first
+    // transport frame's chaining bit to command handlers, or they will start a second logical
+    // command chain from the already-reassembled plaintext.
+    smCommand[ISO7816.OFFSET_CLA] =
+        (byte) (smCommand[ISO7816.OFFSET_CLA] & (byte) ~ChainBuffer.CLA_CHAINING);
     Util.arrayCopyNonAtomic(smCommand, ZERO, buffer, ZERO, (short) 5);
     if (length > ZERO && (short) (offset + length) <= (short) buffer.length) {
       Util.arrayCopyNonAtomic(smCommand, (short) 5, buffer, offset, length);

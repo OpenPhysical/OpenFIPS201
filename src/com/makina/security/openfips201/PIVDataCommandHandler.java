@@ -286,6 +286,16 @@ final class PIVDataCommandHandler {
     byte[] content = object.content;
     short limit = object.getLength();
     short offset = (short) 0;
+
+    // SP 800-73-5 Part 2 Section 3.3.1 defines PUT DATA as 5C <tag list> followed by
+    // 53 <data>. PIVDataObject stores that complete 53 data object, so validate its value rather
+    // than treating the outer container as the first Part 1 data element.
+    if (content[offset] != (byte) 0x53) return false;
+    short containerEnd = tlvEnd(content, offset, limit);
+    if (containerEnd != limit) return false;
+    offset = TLVReader.getDataOffset(content, offset);
+    limit = containerEnd;
+    if (offset >= limit) return false;
     if (suffix == (byte) 0x05 || suffix == (byte) 0x01) {
       if (content[offset] != (byte) 0x70) return false;
       offset = tlvEnd(content, offset, limit);

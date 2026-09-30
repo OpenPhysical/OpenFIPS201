@@ -375,7 +375,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_PIV_PUT_DATA: // Case 2
-          processPIV_PUT_DATA(apdu, length);
+          processPIV_PUT_DATA(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
@@ -645,7 +645,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * @param apdu The incoming APDU object
    * @param length The incoming APDU command-data length
    */
-  private void processPIV_PUT_DATA(APDU apdu, short length) {
+  private void processPIV_PUT_DATA(
+      APDU apdu, byte[] commandDataBuffer, short commandDataOffset, short length) {
 
     final byte CONST_P1 = (byte) 0x3F;
     final byte CONST_P2 = (byte) 0xFF;
@@ -670,7 +671,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       if (!piv.isInterfacePermittedForAdmin()) {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
       }
-      piv.putDataAdmin(buffer, apdu.getOffsetCdata(), length);
+      piv.putDataAdmin(commandDataBuffer, commandDataOffset, length);
       return;
     }
 
@@ -699,8 +700,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      */
 
     // STEP 1 - Call the applicable PIV 'PUT DATA' command
-    short offset = apdu.getOffsetCdata();
-    piv.putData(buffer, offset, length);
+    piv.putData(commandDataBuffer, commandDataOffset, length);
   }
 
   /**

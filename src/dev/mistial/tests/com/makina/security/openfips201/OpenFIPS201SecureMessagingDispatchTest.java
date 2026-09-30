@@ -678,6 +678,79 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   @Test
+  void largeProtectedPutDataUsesTheReassembledPlaintextBuffer() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT before protected PUT DATA");
+
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object dataStore = field(piv, "dataStore").get(piv);
+    Object securityProvider = field(piv, "cspPIV").get(piv);
+    Object secureMessaging = field(piv, "secureMessaging").get(piv);
+    Class<?> secureMessagingClass = secureMessaging.getClass();
+    byte[] objectId = hex("5FC108");
+
+    try (AutoCloseable ignored = enterEngineContext()) {
+      // Admin key 00 matches the fresh transient authorization state. This isolates dispatch and
+      // storage from management-key authentication, which has separate conformance coverage.
+      method(
+              dataStore.getClass(),
+              "create",
+              byte[].class,
+              short.class,
+              short.class,
+              byte.class,
+              byte.class,
+              byte.class,
+              short.class)
+          .invoke(
+              dataStore,
+              objectId,
+              (short) 0,
+              (short) objectId.length,
+              PIVObject.ACCESS_MODE_ALWAYS,
+              PIVObject.ACCESS_MODE_ALWAYS,
+              (byte) 0x00,
+              (short) 300);
+      method(securityProvider.getClass(), "setAuthenticatedKey", byte.class)
+          .invoke(securityProvider, (byte) 0x9B);
+      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
+          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
+    }
+
+    // A 260-byte plaintext crosses the simulator's APDU-buffer boundary after decryption while
+    // remaining within the CS2 secure-command buffer.
+    byte[] value = new byte[252];
+    for (int i = 0; i < value.length; i++) value[i] = (byte) i;
+    byte[] plaintext = new byte[8 + value.length];
+    System.arraycopy(hex("5C035FC1085381FC"), 0, plaintext, 0, 8);
+    System.arraycopy(value, 0, plaintext, 8, value.length);
+    byte[] command = authenticatedEncryptedDataCommand(plaintext);
+
+    int firstLength = 150;
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(commandFragment(command, 5, firstLength, false))),
+        "first protected PUT DATA frame");
+    ResponseAPDU response =
+        transmit(
+            new CommandAPDU(
+                commandFragment(command, 5 + firstLength, command.length - 5 - firstLength, true)));
+
+    assertSw(0x9000, response, "protected PUT DATA response");
+    Object stored =
+        method(dataStore.getClass(), "find", byte[].class, short.class, short.class)
+            .invoke(dataStore, objectId, (short) 0, (short) objectId.length);
+    assertEquals((short) 255, method(stored.getClass(), "getLength").invoke(stored));
+    byte[] storedContent = (byte[]) field(stored, "content").get(stored);
+    assertEquals((byte) 0x53, storedContent[0]);
+    assertEquals(value[251], storedContent[254]);
+  }
+
+  @Test
   void largeContactlessPutDataChainRejectsBadFinalCmacAndClearsSession() throws Exception {
     assertSw(
         0x9000,
