@@ -229,7 +229,7 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests() : null;
+    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests(curves, ecPointValidator) : null;
 
     // Create our configuration provider
     config = new Config();
@@ -318,7 +318,7 @@ final class PIV {
     try {
       return fipsSelfTest.run(scratch) && opacity.runCryptographicAlgorithmSelfTest();
     } finally {
-      PIVSecurityProvider.zeroise(scratch, ZERO, (short) 64);
+      PIVSecurityProvider.zeroise(scratch, ZERO, FipsPowerUpSelfTests.LENGTH_SCRATCH);
     }
   }
 
@@ -514,14 +514,23 @@ final class PIV {
       ISOException.throwIt(sw);
     }
 
-    if (apdu.getBuffer()[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE
-        && !chainBuffer.isOutgoingActive()) {
+    boolean getResponse = apdu.getBuffer()[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE;
+    if (getResponse && isSecureMessagingResponseActive()) {
+      // SP 800-73-5 Part 2 Section 4.2.6 continues a response under PIV secure messaging with GET
+      // RESPONSE (Figure 7: "an APDU of '00 C0 00 00 00' will be sent to request the second
+      // response"). The dispatcher routes that plaintext form and the protected form to the
+      // secure-messaging continuation, so a GET RESPONSE reaching this path carries GP SCP
+      // protection and must not release the response outside secure messaging.
+      abortOutgoingResponse();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    if (getResponse && !chainBuffer.isOutgoingActive()) {
       // An idle GET RESPONSE cannot continue an incoming command. Roll back its staging
       // just like any other command that interrupts ISO/IEC 7816-4 command chaining.
       chainBuffer.abort();
       dataStore.abortPendingUpdates();
     }
-    chainBuffer.processOutgoing(apdu);
+    chainBuffer.processOutgoing(apdu, currentProtection());
   }
 
   void processOutgoingSecure(APDU apdu, short sw) {
@@ -657,11 +666,15 @@ final class PIV {
     return getSecureMessagingKey() != null;
   }
 
-  /** Returns the initialised SM key (CS2 or CS7), or null if VCI is off / key not ready. */
+  /**
+   * Returns the initialised SM key (CS2 or CS7), or null when key 04 or its CVC is not ready.
+   *
+   * <p>Secure messaging is available whenever key 04 holds key material and its CVC, independent of
+   * the VCI configuration, so the APT advertisement follows the key alone. SP 800-73-5 Part 2
+   * Section 3.1.1: "Tag 0xAC SHALL be present and indicate algorithm identifier 0x27 or 0x2E (but
+   * not both) when the PIV Card Application supports secure messaging."
+   */
   private PIVKeyObject getSecureMessagingKey() {
-    if (!isVciConfigured()) {
-      return null;
-    }
     PIVKeyObject key = cspPIV.selectKey(ID_KEY_SECURE_MESSAGING, ID_ALG_ECC_SM);
     return (key != null && key.isInitialised()) ? key : null;
   }

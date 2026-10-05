@@ -494,7 +494,7 @@ final class DERValidator {
    */
   static short derObjectEnd(byte[] buffer, short offset, short limit) {
     try {
-      return TLV.objectEnd(buffer, offset, limit, true);
+      return TLV.objectEnd(buffer, offset, limit);
     } catch (ISOException e) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (short) 0x00;
@@ -508,7 +508,7 @@ final class DERValidator {
    */
   static short derContentOffset(byte[] buffer, short offset, short limit) {
     try {
-      return TLV.dataOffset(buffer, offset, limit, true);
+      return TLV.dataOffset(buffer, offset, limit);
     } catch (ISOException e) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (short) 0x00;

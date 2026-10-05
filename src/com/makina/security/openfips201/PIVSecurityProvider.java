@@ -32,6 +32,7 @@ import javacard.framework.JCSystem;
 import javacard.framework.PINException;
 import javacard.framework.Util;
 import javacard.security.AESKey;
+import javacard.security.CryptoException;
 import javacard.security.KeyBuilder;
 
 /**
@@ -322,10 +323,27 @@ final class PIVSecurityProvider {
       ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
     }
 
-    // Create our new key
-    PIVKeyObject key =
-        PIVKeyObject.create(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
+    if (!PIVCrypto.supportsKeyRole(mechanism, role)) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
+
+    // Create our new key. Its key containers are built here, at definition time. JC 3.0.5 API
+    // KeyBuilder.buildKey throws CryptoException.NO_SUCH_ALGORITHM "if the requested algorithm
+    // associated with the specified type, size of key and key encryption interface is not
+    // supported", which reports the unsupported key length as an unsupported mechanism. The
+    // partially built object is never linked into the key store.
+    PIVKeyObject key;
+    try {
+      key =
+          PIVKeyObject.create(
+              id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
+    } catch (CryptoException e) {
+      if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+      if (e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+      }
+      throw e;
+    }
 
     // Add it to our linked list
     // NOTE: If this is the first key added, just set our firstKey. Otherwise add it to the head

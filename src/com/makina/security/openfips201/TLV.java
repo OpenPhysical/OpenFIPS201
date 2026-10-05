@@ -111,8 +111,8 @@ final class TLV {
    * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} when {@link #valueLengthOrInvalid}
    *     rejects the header
    */
-  static short readLength(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    return requireValid(valueLengthOrInvalid(buffer, tlvOffset, limit, strictDer));
+  static short readLength(byte[] buffer, short tlvOffset, short limit) {
+    return requireValid(valueLengthOrInvalid(buffer, tlvOffset, limit));
   }
 
   /**
@@ -121,8 +121,8 @@ final class TLV {
    * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} when {@link #valueOffsetOrInvalid}
    *     rejects the header
    */
-  static short dataOffset(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    return requireValid(valueOffsetOrInvalid(buffer, tlvOffset, limit, strictDer));
+  static short dataOffset(byte[] buffer, short tlvOffset, short limit) {
+    return requireValid(valueOffsetOrInvalid(buffer, tlvOffset, limit));
   }
 
   /**
@@ -131,8 +131,8 @@ final class TLV {
    * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} when {@link #endOrInvalid} rejects the
    *     object
    */
-  static short objectEnd(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    return requireValid(endOrInvalid(buffer, tlvOffset, limit, strictDer));
+  static short objectEnd(byte[] buffer, short tlvOffset, short limit) {
+    return requireValid(endOrInvalid(buffer, tlvOffset, limit));
   }
 
   /**
@@ -143,11 +143,10 @@ final class TLV {
    * DATA. ISO/IEC 7816-4 Section 6.3 "precludes the use of the "indefinite length" (coded '80')"
    * and "recommends to use the shortest possible coding of the length field, according to DER
    * encoding rules". Long-form lengths are limited to two subsequent octets that encode a
-   * non-negative {@code short}. The shortest coding is required only with {@code strictDer}; BER
-   * permits longer codings, so other callers accept them.
+   * non-negative {@code short}. Every caller parses command data or DER content, and both require
+   * the shortest coding, so a long-form length that a shorter form could encode is rejected.
    */
-  static short valueLengthOrInvalid(
-      byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+  static short valueLengthOrInvalid(byte[] buffer, short tlvOffset, short limit) {
     short lengthOffset = lengthOffsetOrInvalid(buffer, tlvOffset, limit);
     if (lengthOffset == INVALID) return INVALID;
     short first = (short) (buffer[lengthOffset] & 0xFF);
@@ -170,7 +169,7 @@ final class TLV {
       length = Util.getShort(buffer, (short) (lengthOffset + 1));
       minimum = (short) (LENGTH_2BYTE_MAX + 1);
     }
-    if (length < (short) 0 || (strictDer && length < minimum)) return INVALID;
+    if (length < minimum) return INVALID;
     return length;
   }
 
@@ -178,9 +177,8 @@ final class TLV {
    * Returns the offset of the first value octet of the BER-TLV object at {@code tlvOffset}, or
    * {@link #INVALID} when {@link #valueLengthOrInvalid} rejects the header.
    */
-  static short valueOffsetOrInvalid(
-      byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    if (valueLengthOrInvalid(buffer, tlvOffset, limit, strictDer) == INVALID) return INVALID;
+  static short valueOffsetOrInvalid(byte[] buffer, short tlvOffset, short limit) {
+    if (valueLengthOrInvalid(buffer, tlvOffset, limit) == INVALID) return INVALID;
     short lengthOffset = lengthOffsetOrInvalid(buffer, tlvOffset, limit);
     byte first = buffer[lengthOffset];
     short count = (first & MASK_LONG_LENGTH) == 0 ? (short) 0 : (short) (first & MASK_LENGTH);
@@ -191,10 +189,10 @@ final class TLV {
    * Returns the exclusive end of the BER-TLV object at {@code tlvOffset}, or {@link #INVALID} when
    * its header is malformed or its value does not end at or before {@code limit}.
    */
-  static short endOrInvalid(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    short length = valueLengthOrInvalid(buffer, tlvOffset, limit, strictDer);
+  static short endOrInvalid(byte[] buffer, short tlvOffset, short limit) {
+    short length = valueLengthOrInvalid(buffer, tlvOffset, limit);
     if (length == INVALID) return INVALID;
-    short valueOffset = valueOffsetOrInvalid(buffer, tlvOffset, limit, strictDer);
+    short valueOffset = valueOffsetOrInvalid(buffer, tlvOffset, limit);
     if (length > (short) (limit - valueOffset)) return INVALID;
     return (short) (valueOffset + length);
   }

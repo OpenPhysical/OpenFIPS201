@@ -87,7 +87,7 @@ final class TLVReader {
    * @return The length of the data element
    */
   static short getLength(byte[] data, short offset) throws ISOException {
-    return TLV.readLength(data, offset, (short) data.length, false);
+    return TLV.readLength(data, offset, (short) data.length);
   }
 
   /**
@@ -98,7 +98,7 @@ final class TLVReader {
    * @return The data element offset
    */
   static short getDataOffset(byte[] data, short offset) {
-    return TLV.dataOffset(data, offset, (short) data.length, false);
+    return TLV.dataOffset(data, offset, (short) data.length);
   }
 
   /**
@@ -151,9 +151,9 @@ final class TLVReader {
         continue;
       }
 
-      short objectEnd = TLV.endOrInvalid(data, position, parentEnd, false);
+      short objectEnd = TLV.endOrInvalid(data, position, parentEnd);
       if (objectEnd == TLV.INVALID) return false;
-      short valueOffset = TLV.valueOffsetOrInvalid(data, position, parentEnd, false);
+      short valueOffset = TLV.valueOffsetOrInvalid(data, position, parentEnd);
       if ((data[position] & TLV.MASK_CONSTRUCTED) == 0 || valueOffset == objectEnd) {
         position = objectEnd;
         continue;

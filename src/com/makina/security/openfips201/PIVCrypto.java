@@ -105,6 +105,11 @@ final class PIVCrypto {
     JCSystem.requestObjectDeletion();
   }
 
+  /** Returns whether {@link #init()} has created the engines and no later terminate() ran. */
+  static boolean isInitialised() {
+    return cspRNG != null;
+  }
+
   static void init() {
     // Create all CSP's
 
@@ -245,8 +250,9 @@ final class PIVCrypto {
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
         // SP 800-78 permits only ECDSA P-256 with SHA-256 and P-384 with SHA-384, so SHA-1 and
-        // SHA-512 ECDSA engines are not provided. ECDH support also satisfies ECC mechanisms.
-        return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
+        // SHA-512 ECDSA engines are not provided. The curve's ECDSA engine or ECDH satisfies the
+        // mechanism; supportsKeyRole() checks the engine each role needs.
+        return ((ecdsaForMechanism(mechanism) != null) || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
         // #if VCI_CS2
@@ -276,6 +282,31 @@ final class PIVCrypto {
       default:
         return false;
     }
+  }
+
+  /**
+   * Returns whether the platform provides the engine every role of a key definition needs.
+   *
+   * <p>An ECC signing key needs its curve's ECDSA engine (P-256 with SHA-256, P-384 with SHA-384)
+   * and a key-establishment key needs ECDH, so a definition the card could never use is rejected
+   * when it is created rather than failing at GENERAL AUTHENTICATE.
+   */
+  static boolean supportsKeyRole(byte mechanism, byte role) {
+    switch (mechanism) {
+      case PIV.ID_ALG_ECC_P256:
+      case PIV.ID_ALG_ECC_P384:
+        if ((role & PIVKeyObject.ROLE_SIGN) != (byte) 0 && ecdsaForMechanism(mechanism) == null) {
+          return false;
+        }
+        return (role & PIVKeyObject.ROLE_KEY_ESTABLISH) == (byte) 0 || cspECDH != null;
+
+      default:
+        return true;
+    }
+  }
+
+  private static Signature ecdsaForMechanism(byte mechanism) {
+    return (mechanism == PIV.ID_ALG_ECC_P384) ? cspECCSHA384 : cspECCSHA256;
   }
 
   static boolean isSymmetricMechanism(byte mechanism) {

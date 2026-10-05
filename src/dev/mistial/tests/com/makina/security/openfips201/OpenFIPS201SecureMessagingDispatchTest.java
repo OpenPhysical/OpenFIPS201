@@ -2037,6 +2037,160 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
+   * A protected GET RESPONSE continues only a response started under PIV secure messaging. A
+   * pending plaintext response cannot be reassembled as a protected command, so the exchange fails
+   * as incorrect secure messaging data: SP 800-73-5 Part 2 Section 4.2.7 returns '69 88' "without
+   * performing further secure messaging" and the session keys are destroyed.
+   */
+  @Test
+  void protectedGetResponseDoesNotContinueAPlaintextResponse() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      establishSyntheticSession(sm);
+
+      byte[] outgoing = new byte[300];
+      java.util.Arrays.fill(outgoing, SYNTHETIC_PLAINTEXT_BYTE);
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  method(chainBuffer.getClass(), "processOutgoing", APDU.class, byte.class)
+                      .invoke(
+                          chainBuffer,
+                          capturingStreamingApdu(
+                              OpenFIPS201.INS_PIV_GET_DATA,
+                              (short) 256,
+                              new ByteArrayOutputStream()),
+                          ChainBuffer.PROTECTION_PLAIN));
+      assertEquals(
+          (short) 0x6100,
+          (short) (((ISOException) first.getCause()).getReason() & (short) 0xFF00),
+          "the plaintext response is pending");
+
+      byte[] mcv = new byte[16];
+      ResponseAPDU protectedGetResponse =
+          transmit(
+              new CommandAPDU(
+                  chainedMacOnlySecureCommand(
+                      mcv,
+                      PIVSecureMessaging.CLA_SECURE_MESSAGING,
+                      OpenFIPS201.INS_GP_GET_RESPONSE,
+                      (byte) 0x00,
+                      (byte) 0x00,
+                      mcv)));
+      assertSw(0x6988, protectedGetResponse, "protected GET RESPONSE on a plaintext response");
+      assertEquals(false, method(sm.getClass(), "isEstablished").invoke(sm));
+      assertSw(
+          0x6985,
+          transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0)),
+          "the mismatched GET RESPONSE abandons the plaintext response");
+    }
+  }
+
+  /**
+   * A GP SCP-protected GET RESPONSE must not release a pending PIV secure messaging response
+   * outside secure messaging; the protected response is abandoned with '69 85'.
+   */
+  @Test
+  void globalPlatformGetResponseDoesNotReleaseAProtectedResponse() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      establishSyntheticSession(sm);
+
+      byte[] mcv = new byte[16];
+      byte[] getData =
+          chainedMacOnlySecureCommand(
+              mcv,
+              PIVSecureMessaging.CLA_SECURE_MESSAGING,
+              OpenFIPS201.INS_PIV_GET_DATA,
+              (byte) 0x3F,
+              (byte) 0xFF,
+              mcv);
+      method(
+              sm.getClass(),
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(sm, getData, (short) 5, (short) 10, new byte[512], (short) 0);
+      byte[] outgoing = new byte[300];
+      java.util.Arrays.fill(outgoing, SYNTHETIC_PLAINTEXT_BYTE);
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  method(piv.getClass(), "processOutgoingSecure", APDU.class, short.class)
+                      .invoke(
+                          piv,
+                          capturingStreamingApdu(
+                              OpenFIPS201.INS_PIV_GET_DATA,
+                              (short) 256,
+                              new ByteArrayOutputStream()),
+                          ISO7816.SW_NO_ERROR));
+      assertEquals(
+          (short) 0x6100,
+          (short) (((ISOException) first.getCause()).getReason() & (short) 0xFF00),
+          "first chunk leaves the protected response pending");
+
+      try (org.mockito.MockedStatic<org.globalplatform.GPSystem> gp =
+          Mockito.mockStatic(org.globalplatform.GPSystem.class)) {
+        org.globalplatform.SecureChannel channel =
+            Mockito.mock(org.globalplatform.SecureChannel.class);
+        when(channel.getSecurityLevel())
+            .thenReturn(
+                (byte)
+                    (org.globalplatform.SecureChannel.AUTHENTICATED
+                        | org.globalplatform.SecureChannel.C_DECRYPTION
+                        | org.globalplatform.SecureChannel.C_MAC));
+        when(channel.unwrap(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+            .thenAnswer(invocation -> (short) invocation.getArgument(2));
+        gp.when(org.globalplatform.GPSystem::getSecureChannel).thenReturn(channel);
+
+        ResponseAPDU scpGetResponse = transmit(new CommandAPDU(0x84, 0xC0, 0x00, 0x00, 0));
+        assertSw(0x6985, scpGetResponse, "GP SCP GET RESPONSE on a protected response");
+        assertEquals(0, scpGetResponse.getData().length, "no response data is released");
+      }
+      assertEquals(
+          false,
+          method(piv.getClass(), "isSecureMessagingResponseActive").invoke(piv),
+          "the protected response is abandoned");
+    }
+  }
+
+  /**
    * A command sent with the PIV secure messaging class that is rejected before unwrap still fails
    * with a status other than '61 XX' or '90 00', which is an error in secure messaging (SP 800-73-5
    * Part 2 Section 4.3, footnote 25); card and host both zeroize the session keys.

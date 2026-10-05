@@ -188,7 +188,7 @@ final class PIVAuthenticationCommandHandler {
     // whole data field, and each Table 7 object may appear at most once, so that one byte string
     // has exactly one interpretation. Anything else is "Incorrect parameter in command data field".
     if (scratch[ZERO] != CONST_TAG_AUTH_TEMPLATE
-        || TLV.objectEnd(scratch, ZERO, length, false) != length) {
+        || TLV.objectEnd(scratch, ZERO, length) != length) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return ZERO; // Keep compiler happy
     }
@@ -211,10 +211,10 @@ final class PIVAuthenticationCommandHandler {
     short responseLength = ZERO;
     short exponentiationLength = ZERO;
 
-    offset = TLV.dataOffset(scratch, ZERO, length, false);
+    offset = TLV.dataOffset(scratch, ZERO, length);
     while (offset < length) {
-      short valueOffset = TLV.dataOffset(scratch, offset, length, false);
-      short valueLength = TLV.readLength(scratch, offset, length, false);
+      short valueOffset = TLV.dataOffset(scratch, offset, length);
+      short valueLength = TLV.readLength(scratch, offset, length);
       switch (scratch[offset]) {
         case CONST_TAG_AUTH_WITNESS:
           if (witnessOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -239,7 +239,7 @@ final class PIVAuthenticationCommandHandler {
         default:
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
-      offset = TLV.objectEnd(scratch, offset, length, false);
+      offset = TLV.objectEnd(scratch, offset, length);
     }
 
     // Presence of each object, for the exact combinations that select an authentication case.
@@ -505,11 +505,12 @@ final class PIVAuthenticationCommandHandler {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // Suite geometry from field length (Table 18).
-    final short field = key.getKeyLengthBytes(); // 32 (CS2) or 48 (CS7)
-    final short pointLen = (short) (1 + field + field); // uncompressed Q_eH
-    final short nLen = (short) (field / 2); // N_ICC
-    final short sessionKeyLen = (short) (field - 16); // AES-128 or AES-256
+    // Suite geometry (Table 18), shared with the OPACITY KDA self-test. The mechanism check above
+    // binds the key to the compiled suite, so its field length is PIVOpacity.FIELD_LENGTH.
+    final short field = PIVOpacity.FIELD_LENGTH;
+    final short pointLen = PIVOpacity.POINT_LENGTH; // uncompressed Q_eH
+    final short nLen = PIVOpacity.NONCE_LENGTH; // N_ICC
+    final short sessionKeyLen = PIVOpacity.SESSION_KEY_LENGTH; // AES-128 or AES-256
     final short xyLen = (short) (field + field); // Q_eH without leading 0x04
 
     // Challenge: CB_H(1) || ID_sH(8) || Q_eH. Table 16 C2: "CB_ICC = CB_H & 'F0'", which
@@ -522,11 +523,11 @@ final class PIVAuthenticationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    final short offIdH = ZERO;
-    final short offQeh = (short) 8;
-    final short offZ = (short) (offQeh + pointLen);
-    final short offN = (short) (offZ + field);
-    final short offIdSicc = (short) (offN + nLen);
+    final short offIdH = PIVOpacity.OFFSET_ID_H;
+    final short offQeh = PIVOpacity.OFFSET_Q_EH;
+    final short offZ = PIVOpacity.OFFSET_Z;
+    final short offN = PIVOpacity.OFFSET_N;
+    final short offIdSicc = PIVOpacity.OFFSET_ID_SICC;
 
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offIdH, (short) 8);
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offQeh, pointLen);
@@ -551,18 +552,7 @@ final class PIVAuthenticationCommandHandler {
     // #endif
 
     // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
-    opacity.deriveSessionKeys(
-        field,
-        sessionKeyLen,
-        OPACITY_KDF_ALG_ID,
-        OPACITY_HASH_TMP,
-        offZ,
-        offN,
-        nLen,
-        offIdH,
-        offQeh,
-        offIdSicc,
-        hostControlByte);
+    opacity.deriveSuiteSessionKeys(hostControlByte);
     secureMessaging.setSessionKeys(scratch, ZERO, sessionKeyLen);
     PIVSecurityProvider.zeroise(scratch, ZERO, (short) (sessionKeyLen * 4));
     PIVSecurityProvider.zeroise(smResponse, offZ, field);
@@ -1203,13 +1193,12 @@ final class PIVAuthenticationCommandHandler {
     TLVReader reader = TLVReader.getInstance();
     reader.init(buffer, offset, length);
     short limit = (short) (offset + length);
-    if (buffer[offset] != CONST_TAG_TEMPLATE
-        || TLV.objectEnd(buffer, offset, limit, false) != limit) {
+    if (buffer[offset] != CONST_TAG_TEMPLATE || TLV.objectEnd(buffer, offset, limit) != limit) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     short templateEnd = limit;
-    offset = TLV.dataOffset(buffer, offset, limit, false);
+    offset = TLV.dataOffset(buffer, offset, limit);
 
     // PRE-CONDITION 2 - The 'MECHANISM' tag must be present in the supplied buffer
     if (offset >= templateEnd || buffer[offset] != CONST_TAG_MECHANISM) {
@@ -1217,18 +1206,17 @@ final class PIVAuthenticationCommandHandler {
     }
 
     // PRE-CONDITION 3 - The 'MECHANISM' tag must have a length of 1
-    if (TLV.readLength(buffer, offset, templateEnd, false) != (short) 1) {
+    if (TLV.readLength(buffer, offset, templateEnd) != (short) 1) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
-    short mechanismOffset = TLV.dataOffset(buffer, offset, templateEnd, false);
-    short next = TLV.objectEnd(buffer, offset, templateEnd, false);
+    short mechanismOffset = TLV.dataOffset(buffer, offset, templateEnd);
+    short next = TLV.objectEnd(buffer, offset, templateEnd);
 
     // Tag 81 is the only conditional element in the control reference template. Its value is
     // checked against the key's mechanism in PRE-CONDITION 5B.
     short parameterOffset = ZERO;
     if (next < templateEnd) {
-      if (buffer[next] != (byte) 0x81
-          || TLV.objectEnd(buffer, next, templateEnd, false) != templateEnd) {
+      if (buffer[next] != (byte) 0x81 || TLV.objectEnd(buffer, next, templateEnd) != templateEnd) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
       parameterOffset = next;
@@ -1285,8 +1273,8 @@ final class PIVAuthenticationCommandHandler {
         && !(key instanceof PIVKeyObjectRSA
             && PIVKeyObjectRSA.isPivPublicExponent(
                 buffer,
-                TLV.dataOffset(buffer, parameterOffset, templateEnd, false),
-                TLV.readLength(buffer, parameterOffset, templateEnd, false)))) {
+                TLV.dataOffset(buffer, parameterOffset, templateEnd),
+                TLV.readLength(buffer, parameterOffset, templateEnd)))) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 

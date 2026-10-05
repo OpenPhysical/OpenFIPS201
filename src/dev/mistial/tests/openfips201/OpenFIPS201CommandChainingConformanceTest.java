@@ -100,6 +100,60 @@ class OpenFIPS201CommandChainingConformanceTest extends OpenFIPS201TestSupport {
         "A rejected GET RESPONSE abandons the pending response");
   }
 
+  /**
+   * GET RESPONSE continues a response only within the class family of the command that started it.
+   * GP SCP protects commands only, so a plaintext GET RESPONSE ('00' or '80') continues any
+   * response on the plaintext path; a GP SCP GET RESPONSE continues only a response started under
+   * GP SCP.
+   */
+  @Test
+  void getResponseIsBoundToTheClassFamilyOfTheInitiatingCommand() {
+    createObject(OBJECT_ID, 0x0040);
+    byte[] object = hex("530A00112233445566778899");
+    byte[] template = selectApplet().getData();
+    ResponseAPDU first =
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 8));
+    assertEquals(0x6100, first.getSW() & 0xFF00, "SELECT leaves a pending response");
+    ResponseAPDU rest = transmit(new CommandAPDU(0x80, 0xC0, 0x00, 0x00, 256));
+    assertSw(0x9000, rest, "A proprietary-class plaintext GET RESPONSE continues the response");
+    assertArrayEquals(template, concat(first.getData(), rest.getData()));
+
+    withMockedScp(
+        () -> {
+          ResponseAPDU plain =
+              transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 8));
+          assertEquals(0x6100, plain.getSW() & 0xFF00, "SELECT leaves a pending response");
+          assertSw(
+              0x6985,
+              transmit(new CommandAPDU(0x84, 0xC0, 0x00, 0x00, 256)),
+              "A GP SCP GET RESPONSE does not continue a plaintext response");
+          assertSw(
+              0x6985,
+              transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 256)),
+              "The mismatched GET RESPONSE abandons the pending response");
+
+          assertSw(0x9000, selectApplet(), "SELECT before PUT DATA");
+          assertSw(0x9000, putData(0x84, concat(OBJECT_TAG_LIST, object)), "seed");
+
+          ResponseAPDU scpFirst =
+              transmit(new CommandAPDU(0x84, 0xCB, 0x3F, 0xFF, OBJECT_TAG_LIST, 4));
+          assertEquals(0x6100, scpFirst.getSW() & 0xFF00, "GET DATA leaves a pending response");
+          ResponseAPDU scpRest = transmit(new CommandAPDU(0x84, 0xC0, 0x00, 0x00, 256));
+          assertSw(0x9000, scpRest, "A GP SCP GET RESPONSE continues a GP SCP response");
+          assertArrayEquals(object, concat(scpFirst.getData(), scpRest.getData()));
+
+          scpFirst = transmit(new CommandAPDU(0x84, 0xCB, 0x3F, 0xFF, OBJECT_TAG_LIST, 4));
+          assertEquals(0x6100, scpFirst.getSW() & 0xFF00, "GET DATA leaves a pending response");
+          assertArrayEquals(
+              object,
+              concat(
+                  scpFirst.getData(),
+                  collectResponse(
+                      transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 256)),
+                      "A plaintext GET RESPONSE continues the unprotected response")));
+        });
+  }
+
   @Test
   void emptyIntermediatePutDataFrameDoesNotBreakTheChain() {
     createObject(OBJECT_ID, 0x0200);
@@ -118,6 +172,42 @@ class OpenFIPS201CommandChainingConformanceTest extends OpenFIPS201TestSupport {
         concat(hex("53820100"), value),
         collectResponse(transmit(0x00, 0xCB, 0x3F, 0xFF, OBJECT_TAG_LIST, 256), "GET DATA"),
         "the chained object is committed intact");
+  }
+
+  /**
+   * PUT DATA requires the shortest BER length coding (ISO/IEC 7816-4 Section 6.3 "recommends to use
+   * the shortest possible coding of the length field"; the applet requires it). A long form that a
+   * shorter form could encode is malformed command data, '6A 80', and stores nothing.
+   */
+  @Test
+  void putDataRejectsNonMinimalLengthEncodings() {
+    createObject(OBJECT_ID, 0x0200);
+    byte[] value = new byte[0x80];
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before PUT DATA");
+          assertSw(0x9000, putData(0x84, concat(OBJECT_TAG_LIST, hex("5303010203"))), "seed");
+          assertSw(
+              0x6A80,
+              putData(0x84, concat(OBJECT_TAG_LIST, hex("538103010203"))),
+              "'81' long form for a length below 0x80");
+          assertSw(
+              0x6A80,
+              putData(0x84, concat(OBJECT_TAG_LIST, hex("53820003010203"))),
+              "'82' long form for a length below 0x80");
+          assertSw(
+              0x6A80,
+              putData(0x84, concat(OBJECT_TAG_LIST, hex("53820080"), value)),
+              "'82' long form for a length below 0x100");
+          assertSw(
+              0x6A80,
+              putData(0x84, hex("5C81035FFF105303010203")),
+              "'81' long form for the tag list length");
+        });
+    assertArrayEquals(
+        hex("5303010203"),
+        collectResponse(transmit(0x00, 0xCB, 0x3F, 0xFF, OBJECT_TAG_LIST, 256), "GET DATA"),
+        "rejected commands leave the object unchanged");
   }
 
   @Test

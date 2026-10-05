@@ -177,11 +177,12 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
   @Override
   void clear() {
+    // Unpublish before wiping, so a power loss during the wipe leaves an unusable key.
+    clearOrigin();
+    resetImportedPairReady();
+    resetImportedParts();
     publicKey.clearKey();
     privateKey.clearKey();
-    clearOrigin();
-    resetImportedParts();
-    resetImportedPairReady();
   }
 
   @Override

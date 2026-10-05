@@ -51,11 +51,7 @@ final class PIVSecureMessaging {
   private static final short OFFSET_LAST_CLA = (short) 2;
   private static final short OFFSET_LAST_INS = (short) 3;
   private static final short LENGTH_STATE = (short) 4;
-  // #if VCI_CS2
-  private static final short LENGTH_SESSION_KEY = (short) 16;
-  // #else
-  private static final short LENGTH_SESSION_KEY = (short) 32;
-  // #endif
+  private static final short LENGTH_SESSION_KEY = PIVOpacity.SESSION_KEY_LENGTH;
   private static final short OFFSET_RESPONSE_PHASE = (short) 0;
   private static final short OFFSET_RESPONSE_PHASE_OFFSET = (short) 1;
   private static final short OFFSET_RESPONSE_PLAIN_REMAINING = (short) 2;
@@ -688,9 +684,9 @@ final class PIVSecureMessaging {
       byte tag = apdu[cursor];
       // Section 4.2.7 maps malformed protected objects to 6988. Parse within this command's
       // actual slice, never the unused tail of the larger APDU/reassembly buffer.
-      short tlvLength = TLV.readLength(apdu, cursor, end, false);
-      short valueOffset = TLV.dataOffset(apdu, cursor, end, false);
-      short next = TLV.objectEnd(apdu, cursor, end, false);
+      short tlvLength = TLV.readLength(apdu, cursor, end);
+      short valueOffset = TLV.dataOffset(apdu, cursor, end);
+      short next = TLV.objectEnd(apdu, cursor, end);
 
       if (tag == TAG_ENCRYPTED_DATA) {
         if (expectedTag != TAG_ENCRYPTED_DATA) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);

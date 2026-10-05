@@ -253,6 +253,9 @@ final class PIVDataCommandHandler {
         if ((short) (offset + 1) >= end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         offset++;
         idLength = (short) (buffer[offset] & 0xFF);
+        // A tag list of at most three bytes has a one-byte length; any long-form length is a
+        // non-minimal BER length and therefore malformed command data.
+        if (idLength > TLV.LENGTH_1BYTE_MAX) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         if (idLength < (short) 1 || idLength > (short) 3) {
           ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
         }
@@ -285,9 +288,9 @@ final class PIVDataCommandHandler {
     }
 
     // The tag and length fields must lie inside this frame; the value may continue in later
-    // chained frames.
-    short valueOffset = TLV.dataOffset(buffer, offset, end, false);
-    short objectLength = TLV.readLength(buffer, offset, end, false);
+    // chained frames. TLV rejects a non-minimal length with '6A 80'.
+    short valueOffset = TLV.dataOffset(buffer, offset, end);
+    short objectLength = TLV.readLength(buffer, offset, end);
     if (objectLength == 0) {
       // SP 800-73-5 Part 2 Section 3.3.1 Table 10: the data field is the tag list followed by the
       // '53' object only. An empty object is complete in this frame, so neither trailing bytes nor
@@ -340,8 +343,8 @@ final class PIVDataCommandHandler {
     // 53 <data>. PIVDataObject stores that complete 53 data object, so validate its value rather
     // than treating the outer container as the first Part 1 data element.
     if (content[offset] != PIV.CONST_TAG_DATA) return false;
-    if (TLV.endOrInvalid(content, offset, limit, false) != limit) return false;
-    offset = TLV.valueOffsetOrInvalid(content, offset, limit, false);
+    if (TLV.endOrInvalid(content, offset, limit) != limit) return false;
+    offset = TLV.valueOffsetOrInvalid(content, offset, limit);
     if (offset >= limit) return false;
     if (suffix == (byte) 0x05 || suffix == (byte) 0x01) {
       offset = element(content, offset, limit, (byte) 0x70, (short) -1);
@@ -379,7 +382,7 @@ final class PIVDataCommandHandler {
       return element(content, offset, limit, (byte) 0xFE, (short) 0) == limit;
     }
     while (offset < limit) {
-      offset = TLV.endOrInvalid(content, offset, limit, false);
+      offset = TLV.endOrInvalid(content, offset, limit);
       if (offset == TLV.INVALID) return false;
     }
     return true;
@@ -427,7 +430,7 @@ final class PIVDataCommandHandler {
     if (length < (short) 0 || (expectedLength >= (short) 0 && length != expectedLength)) {
       return TLV.INVALID;
     }
-    return TLV.endOrInvalid(data, offset, limit, false);
+    return TLV.endOrInvalid(data, offset, limit);
   }
 
   /**
@@ -436,7 +439,7 @@ final class PIVDataCommandHandler {
   private static short valueOffsetOf(
       byte[] data, short offset, short limit, byte tag, short expectedLength) {
     if (element(data, offset, limit, tag, expectedLength) == TLV.INVALID) return TLV.INVALID;
-    return TLV.valueOffsetOrInvalid(data, offset, limit, false);
+    return TLV.valueOffsetOrInvalid(data, offset, limit);
   }
 
   /** Returns the value length of a complete element with {@code tag}, or {@link TLV#INVALID}. */
@@ -444,9 +447,9 @@ final class PIVDataCommandHandler {
     if (offset < (short) 0
         || offset >= limit
         || data[offset] != tag
-        || TLV.endOrInvalid(data, offset, limit, false) == TLV.INVALID) {
+        || TLV.endOrInvalid(data, offset, limit) == TLV.INVALID) {
       return TLV.INVALID;
     }
-    return TLV.valueLengthOrInvalid(data, offset, limit, false);
+    return TLV.valueLengthOrInvalid(data, offset, limit);
   }
 }

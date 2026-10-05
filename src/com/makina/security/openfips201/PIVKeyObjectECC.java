@@ -354,6 +354,13 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
   @Override
   void clear() {
+    // Unpublish before wiping: the origin, ready flag and CVC length are each a single atomic
+    // persistent write, so a power loss during the non-atomic wipe below leaves an unusable key
+    // rather than a published key or CVC with partly erased content.
+    smCvcLength = (short) 0;
+    clearOrigin();
+    resetImportedPairReady();
+    resetImportedParts();
     publicKey.clearKey();
     privateKey.clearKey();
     setPublicParams();
@@ -362,10 +369,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       PIVSecurityProvider.zeroise(smCvc, (short) 0, (short) smCvc.length);
       PIVSecurityProvider.zeroise(smCvcStaging, (short) 0, (short) smCvcStaging.length);
     }
-    smCvcLength = (short) 0;
-    clearOrigin();
-    resetImportedParts();
-    resetImportedPairReady();
   }
 
   @Override

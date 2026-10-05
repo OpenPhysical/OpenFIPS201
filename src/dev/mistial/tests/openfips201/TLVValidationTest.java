@@ -30,13 +30,34 @@ class TLVValidationTest {
   @Test
   void acceptsWellFormedNestedAndLongFormValues() {
     init(new byte[] {(byte) 0x7C, 0x03, (byte) 0x81, 0x01, 0x00});
-    init(new byte[] {(byte) 0x53, (byte) 0x81, 0x01, 0x00});
-    init(new byte[] {(byte) 0x53, (byte) 0x82, 0x00, 0x01, 0x00});
     byte[] value = new byte[132];
     value[0] = 0x53;
     value[1] = (byte) 0x81;
     value[2] = (byte) 0x81;
     init(value);
+    byte[] twoByte = new byte[260];
+    twoByte[0] = 0x53;
+    twoByte[1] = (byte) 0x82;
+    twoByte[2] = 0x01;
+    twoByte[3] = 0x00;
+    init(twoByte);
+  }
+
+  /**
+   * ISO/IEC 7816-4 Section 6.3 "recommends to use the shortest possible coding of the length
+   * field"; the applet requires it, so a long form that a shorter form could encode is rejected.
+   */
+  @Test
+  void rejectsNonMinimalLengthEncodings() {
+    assertInvalid(new byte[] {(byte) 0x53, (byte) 0x81, 0x01, 0x00});
+    assertInvalid(new byte[] {(byte) 0x53, (byte) 0x82, 0x00, 0x01, 0x00});
+    byte[] value = new byte[132];
+    value[0] = 0x53;
+    value[1] = (byte) 0x82;
+    value[2] = 0x00;
+    value[3] = (byte) 0x80;
+    assertInvalid(value);
+    assertInvalid(new byte[] {(byte) 0x7C, 0x04, (byte) 0x81, (byte) 0x81, 0x01, 0x00});
   }
 
   @Test

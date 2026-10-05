@@ -2,9 +2,13 @@ package com.makina.security.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
@@ -67,6 +71,66 @@ class PIVKeyObjectSYMTest {
       key.updateElement(PIVKeyObjectSYM.ELEMENT_KEY, repeated, (short) 0, (short) 24);
       assertTrue(key.isInitialised());
     }
+  }
+
+  /**
+   * Key rotation reuses the two key containers built when the key object was defined: JC 3.0.5 API
+   * JCSystem.isObjectDeletionSupported() exists because a container allocated per update cannot be
+   * assumed reclaimable.
+   */
+  @Test
+  void keyRotationAndClearReuseTheContainersBuiltAtDefinition() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      PIVKeyObjectSYM key =
+          PIVKeyObjectSYM.create(
+              (byte) 0x9B,
+              PIVObject.ACCESS_MODE_ALWAYS,
+              PIVObject.ACCESS_MODE_NEVER,
+              (byte) 0x9B,
+              PIV.ID_ALG_AES_128,
+              PIVKeyObject.ROLE_AUTHENTICATE,
+              (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE));
+      Object first = field("keyA").get(key);
+      Object second = field("keyB").get(key);
+      assertNotNull(first);
+      assertNotNull(second);
+      assertNotSame(first, second);
+
+      Object previous = null;
+      for (int rotation = 0; rotation < 4; rotation++) {
+        byte[] value = new byte[16];
+        java.util.Arrays.fill(value, (byte) (rotation + 1));
+        key.updateElement(PIVKeyObjectSYM.ELEMENT_KEY, value, (short) 0, (short) 16);
+        Object active = field("key").get(key);
+        assertTrue(active == first || active == second, "Rotation must not build a new key");
+        assertNotSame(previous, active, "Each rotation publishes the inactive container");
+        if (previous != null) {
+          assertFalse(
+              ((javacard.security.Key) previous).isInitialized(),
+              "The replaced key value is cleared");
+        }
+        assertTrue(key.isInitialised());
+        previous = active;
+      }
+
+      key.updateElement(PIVKeyObjectSYM.ELEMENT_KEY_CLEAR, new byte[0], (short) 0, (short) 0);
+      assertFalse(key.isInitialised());
+      assertFalse(((javacard.security.Key) first).isInitialized());
+      assertFalse(((javacard.security.Key) second).isInitialized());
+      assertSame(first, field("keyA").get(key));
+      assertSame(second, field("keyB").get(key));
+
+      byte[] value = new byte[16];
+      key.updateElement(PIVKeyObjectSYM.ELEMENT_KEY, value, (short) 0, (short) 16);
+      Object active = field("key").get(key);
+      assertTrue(active == first || active == second, "Re-import after clear reuses a container");
+    }
+  }
+
+  private static Field field(String name) throws NoSuchFieldException {
+    Field field = PIVKeyObjectSYM.class.getDeclaredField(name);
+    field.setAccessible(true);
+    return field;
   }
 
   private static PIVKeyObjectSYM createTdea() {

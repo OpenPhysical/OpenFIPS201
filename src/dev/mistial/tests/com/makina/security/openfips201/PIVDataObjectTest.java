@@ -123,6 +123,69 @@ class PIVDataObjectTest {
     }
   }
 
+  @Test
+  void dynamicObjectWithDeletionReusesRetainedBufferForUpdatesThatFit() {
+    PIVDataObject object = fixedObject((short) 0);
+
+    try (MockedStatic<JCSystem> jcSystem = Mockito.mockStatic(JCSystem.class)) {
+      jcSystem.when(JCSystem::isObjectDeletionSupported).thenReturn(true);
+
+      byte[] first = object.beginUpdate((short) 4);
+      java.util.Arrays.fill(first, (byte) 1);
+      object.commitUpdate();
+      byte[] second = object.beginUpdate((short) 4);
+      java.util.Arrays.fill(second, (byte) 2);
+      object.commitUpdate();
+
+      assertSame(first, object.beginUpdate((short) 3), "A replacement that fits reuses the buffer");
+      assertArrayEquals(new byte[] {0, 0, 0, 0}, first);
+      object.abortUpdate();
+      assertArrayEquals(
+          new byte[] {2, 2, 2, 2},
+          new byte[] {object.content[0], object.content[1], object.content[2], object.content[3]});
+
+      byte[] grown = object.beginUpdate((short) 6);
+      assertEquals(6, grown.length, "Growth allocates the required length");
+    }
+  }
+
+  /**
+   * JC 3.0.5 API Util.arrayFillNonAtomic is "suitable for use only when the contents of the byte
+   * array can be left in a partially filled state in the event of a power loss in the middle of the
+   * fill operation", so the published length is withdrawn before the content wipe begins.
+   */
+  @Test
+  void clearUnpublishesTheObjectBeforeWipingItsContent() {
+    PIVDataObject object = fixedObject((short) 4);
+    boolean[] publishedDuringWipe = new boolean[] {false};
+    boolean[] contentWiped = new boolean[] {false};
+
+    try (MockedStatic<JCSystem> ignored = Mockito.mockStatic(JCSystem.class)) {
+      byte[] stage = object.beginUpdate((short) 4);
+      System.arraycopy(new byte[] {1, 2, 3, 4}, 0, stage, 0, 4);
+      object.commitUpdate();
+      byte[] published = object.content;
+
+      try (MockedStatic<PIVSecurityProvider> provider =
+          Mockito.mockStatic(
+              PIVSecurityProvider.class,
+              invocation -> {
+                if ("zeroise".equals(invocation.getMethod().getName())
+                    && invocation.getArgument(0) == published) {
+                  contentWiped[0] = true;
+                  publishedDuringWipe[0] |= object.isInitialised();
+                }
+                return invocation.callRealMethod();
+              })) {
+        object.clear();
+      }
+    }
+
+    assertTrue(contentWiped[0]);
+    assertFalse(publishedDuringWipe[0], "No reader may see the object while it is being wiped");
+    assertFalse(object.isInitialised());
+  }
+
   private static PIVDataObject fixedObject(short capacity) {
     return new PIVDataObject(
         new byte[] {0x7E},

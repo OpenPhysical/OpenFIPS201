@@ -90,6 +90,16 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
     return importPartForElement(element) != (byte) 0;
   }
 
+  /**
+   * Returns true when recording this element would complete a fresh imported key pair, without
+   * changing the import state.
+   */
+  final boolean isLastImportedPart(byte element) {
+    byte importedPart = importPartForElement(element);
+    if (importedPart == (byte) 0) return false;
+    return (byte) ((importedParts | importedPart) & requiredImportParts()) == requiredImportParts();
+  }
+
   /** Returns true exactly when this element completes a fresh imported key pair. */
   final boolean completesImportedKeyPair(byte element) {
     byte importedPart = importPartForElement(element);

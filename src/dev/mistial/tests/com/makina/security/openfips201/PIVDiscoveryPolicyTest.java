@@ -62,8 +62,10 @@ class PIVDiscoveryPolicyTest {
     assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("00")));
     assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("F00100")));
     assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("5303F00100")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("530401810100")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("53050182000100")));
+    // Incoming BER-TLV lengths must use the shortest coding, so a long form for a short length is
+    // malformed.
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("530401810100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53050182000100")));
     assertTrue(mandatoryObjectIsValid((byte) 0x07, hex("53045F2F0100")));
     assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53021F80")));
     assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53031F8000")));
@@ -74,7 +76,7 @@ class PIVDiscoveryPolicyTest {
 
     assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("700100710100FE00")));
     assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("5308700100710100FE00")));
-    assertTrue(mandatoryObjectIsValid((byte) 0x05, hex("530970010071810100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("530970010071810100FE00")));
     assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("5306700100710100")));
     assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("5308710100700100FE00")));
     assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("530970010071020000FE00")));

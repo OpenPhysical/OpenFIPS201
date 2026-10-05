@@ -476,11 +476,20 @@ final class ChainBuffer {
   /**
    * Starts or continues processing for an outgoing buffer being transmitted to the host
    *
+   * <p>The response is bound to the class family of the command that started it. The initiating
+   * command records its transport {@code protection}. GP SCP protects commands only (this applet
+   * applies no response MAC or encryption), so every response on this path is plaintext and a
+   * plaintext GET RESPONSE (CLA '00' or '80') continues it, whichever class started it. A GP
+   * SCP-protected GET RESPONSE continues only a response started under GP SCP; any other GP SCP
+   * continuation abandons the response and returns '69 85'.
+   *
    * @param apdu The current APDU buffer to transmit with
+   * @param protection The transport protection of the current command
    */
-  void processOutgoing(APDU apdu) throws ISOException {
+  void processOutgoing(APDU apdu, byte protection) throws ISOException {
     byte[] apduBuffer = apdu.getBuffer();
-    if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) requireGetResponseHeader(apduBuffer);
+    boolean getResponse = apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE;
+    if (getResponse) requireGetResponseHeader(apduBuffer);
 
     // GET RESPONSE is valid only while an outgoing response is pending. Rejecting an idle request
     // exposes a host state error instead of reporting a successful command with no response data.
@@ -492,14 +501,21 @@ final class ChainBuffer {
     // CASE 0 - If the remaining data is EQUAL TO the total data, ignore the INS
     // CASE 1 - If the remaining data is LESS THAN the total data, look for a GET RESPONSE command
     // (clear if it isn't)
-    if (apduBuffer[ISO7816.OFFSET_INS] != INS_GET_RESPONSE
-        && context[CONTEXT_REMAINING] != context[CONTEXT_LENGTH]) {
+    if (!getResponse && context[CONTEXT_REMAINING] != context[CONTEXT_LENGTH]) {
 
       // Clear the apdu buffer
       reset();
 
       // Ignore this and let the applet handle this as a new command
       return;
+    }
+
+    if (!getResponse) {
+      context[CONTEXT_PROTECTION] = (short) protection;
+    } else if (protection != PROTECTION_PLAIN
+        && context[CONTEXT_PROTECTION] != (short) protection) {
+      reset();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
     //

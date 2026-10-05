@@ -835,8 +835,8 @@ final class Config {
         ISOException.throwIt(ISO7816.SW_DATA_INVALID);
       }
 
-      short policyEnd = TLV.objectEnd(data, cursor, end, false);
-      short child = TLV.dataOffset(data, cursor, policyEnd, false);
+      short policyEnd = TLV.objectEnd(data, cursor, end);
+      short child = TLV.dataOffset(data, cursor, policyEnd);
       if (child == policyEnd) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
       validatePolicyChildren(data, child, policyEnd, (byte) policy);
       previousPolicy = policy;
@@ -886,11 +886,11 @@ final class Config {
           || tag > maximumTag
           || tag <= previousTag
           || (data[cursor] & TLV.MASK_CONSTRUCTED) != (byte) 0
-          || TLV.readLength(data, cursor, end, false) != (short) 1) {
+          || TLV.readLength(data, cursor, end) != (short) 1) {
         ISOException.throwIt(ISO7816.SW_DATA_INVALID);
       }
       previousTag = tag;
-      cursor = TLV.objectEnd(data, cursor, end, false);
+      cursor = TLV.objectEnd(data, cursor, end);
     }
     if (cursor != end) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
   }

@@ -43,6 +43,15 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
   static final byte ELEMENT_KEY_CLEAR = ELEMENT_CLEAR;
   // Length of one DES key within a 3TDEA key bundle
   private static final short LENGTH_DES_KEY = (short) 8;
+  // Two key containers are built when the key object is defined. An update writes the inactive
+  // container and publishes it by a transactional swap of the active reference, so a key rotation
+  // allocates no persistent memory and a power loss leaves either the previous or the new key
+  // active. JC 3.0.5 API JCSystem.isObjectDeletionSupported() "is used to determine if the
+  // implementation for the Java Card platform supports the object deletion mechanism", so a
+  // container built per update cannot be assumed reclaimable.
+  private final SecretKey keyA;
+  private final SecretKey keyB;
+  // The active container (keyA or keyB), or null when no key value is published.
   private SecretKey key;
 
   private PIVKeyObjectSYM(
@@ -55,6 +64,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       byte attributes)
       throws ISOException {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+    keyA = allocateKey();
+    keyB = allocateKey();
   }
 
   static PIVKeyObjectSYM create(
@@ -91,7 +102,7 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
           if (isTdea() && !hasDistinctTdeaKeys(buffer, offset)) {
             ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           }
-          SecretKey replacement = allocateKey();
+          SecretKey replacement = (key == keyA) ? keyB : keyA;
           try {
             if (replacement.getType() == KeyBuilder.TYPE_DES) {
               ((DESKey) replacement).setKey(buffer, offset);
@@ -110,7 +121,6 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
           key = replacement;
           JCSystem.commitTransaction();
           if (previous != null) previous.clearKey();
-          runGc();
           break;
 
         default:
@@ -175,11 +185,10 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
 
   @Override
   void clear() {
-    if (key != null) {
-      key.clearKey();
-      key = null;
-      runGc();
-    }
+    // Unpublish before wiping, so an interrupted clear never leaves a partly cleared key active.
+    key = null;
+    keyA.clearKey();
+    keyB.clearKey();
     clearOrigin();
   }
 

@@ -496,6 +496,115 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
         "The current PIN is unchanged");
   }
 
+  /**
+   * A history rejection must not turn the successful comparison into a retry-counter reset: the PIN
+   * retry counter returns to its value before the command.
+   */
+  @Test
+  void changeReferenceDataHistoryRejectionRestoresPinRetryCounter() {
+    byte[] second = NEW_PIN_VALID;
+    byte[] third = hex("373839303132FFFF");
+    assertSw(0x9000, selectApplet(), "SELECT before PIN history checks");
+    enablePinHistory();
+    changePin(StandardCardProfile.PIN, second);
+    changePin(second, third);
+    int initial =
+        assert63cxAndGetRetries(
+            transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE, WRONG_PIN_FORMAT_VALID),
+            "Wrong PIN decrements the retry counter");
+
+    assertSw(
+        0x6984,
+        transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0x00, LOCAL_PIN_REFERENCE, concat(third, second)),
+        "PIN history rejects a recent value");
+
+    assertEquals(
+        initial,
+        assert63cxAndGetRetries(
+            transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE),
+            "PIN retry counter after a history rejection"),
+        "A history rejection must leave the PIN retry counter at its pre-command value");
+    assertSw(
+        0x9000,
+        transmit(0x00, INS_VERIFY, 0x00, LOCAL_PIN_REFERENCE, third),
+        "The current PIN is unchanged");
+  }
+
+  /**
+   * A history rejection in RESET RETRY COUNTER must not reset the PUK retry counter as a side
+   * effect of the PUK comparison.
+   */
+  @Test
+  void resetRetryCounterHistoryRejectionRestoresPukRetryCounter() {
+    byte[] second = hex("363534333231FFFF");
+    assertSw(0x9000, selectApplet(), "SELECT before PIN history checks");
+    enablePinHistory();
+    changePin(StandardCardProfile.PIN, second);
+    int afterFirstFailure =
+        assert63cxAndGetRetries(
+            transmit(
+                0x00,
+                INS_RESET_RETRY_COUNTER,
+                0x00,
+                LOCAL_PIN_REFERENCE,
+                concat(WRONG_PUK, second)),
+            "Wrong PUK decrements the PUK retry counter");
+
+    assertSw(
+        0x6984,
+        transmit(
+            0x00,
+            INS_RESET_RETRY_COUNTER,
+            0x00,
+            LOCAL_PIN_REFERENCE,
+            concat(StandardCardProfile.PUK, second)),
+        "PIN history rejects a recent value after the PUK comparison");
+
+    assertEquals(
+        afterFirstFailure - 1,
+        assert63cxAndGetRetries(
+            transmit(
+                0x00,
+                INS_RESET_RETRY_COUNTER,
+                0x00,
+                LOCAL_PIN_REFERENCE,
+                concat(WRONG_PUK, second)),
+            "PUK retry counter after a history rejection"),
+        "A history rejection must leave the PUK retry counter at its pre-command value");
+  }
+
+  /** A disabled PUK is reference data that does not exist for both PUK-consuming commands. */
+  @Test
+  void disabledPukReportsReferenceNotFound() {
+    byte[] second = hex("363534333231FFFF");
+    assertSw(0x9000, selectApplet(), "SELECT before PUK configuration");
+    withMockedScp(
+        () ->
+            assertSw(
+                0x9000,
+                transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A103800100")),
+                "Disable the PUK"));
+
+    assertSw(
+        0x6A88,
+        transmit(
+            0x00,
+            INS_CHANGE_REFERENCE_DATA,
+            0x00,
+            PUK_REFERENCE,
+            concat(StandardCardProfile.PUK, StandardCardProfile.PUK)),
+        "CHANGE REFERENCE DATA 81 with the PUK disabled");
+    assertSw(
+        0x6A88,
+        transmit(
+            0x00,
+            INS_RESET_RETRY_COUNTER,
+            0x00,
+            LOCAL_PIN_REFERENCE,
+            concat(StandardCardProfile.PUK, second)),
+        "RESET RETRY COUNTER with the PUK disabled");
+  }
+
   private void enablePinHistory() {
     withMockedScp(
         () ->

@@ -21,9 +21,9 @@ import org.mockito.Mockito;
  * <p>Seeded random BER-TLV trees and their mutations are parsed by {@link TLV}, {@link TLVReader}
  * and the personalization structure check, and every result is compared with an independent
  * reference model of the same rules: one to three tag bytes with a minimal first subsequent byte,
- * definite lengths of at most two subsequent bytes encoding 0 to 0x7FFF, shortest form only in
- * strict DER mode, and at most eight open non-empty constructed objects. Every rejection must be
- * {@link ISO7816#SW_WRONG_DATA}; no other exception may escape.
+ * definite lengths of at most two subsequent bytes encoding 0 to 0x7FFF in their shortest form, and
+ * at most eight open non-empty constructed objects. Every rejection must be {@link
+ * ISO7816#SW_WRONG_DATA}; no other exception may escape.
  */
 class TlvParserPropertyTest {
   private static final long SEED = 0x5F2F_7E61_4F0BL;
@@ -35,33 +35,31 @@ class TlvParserPropertyTest {
     Random random = new Random(SEED);
     for (int i = 0; i < CASES; i++) {
       byte[] data = mutate(random, tree(random, 0, 4), random.nextInt(4));
-      for (boolean strict : new boolean[] {false, true}) {
-        int limit = data.length;
-        int[] header = referenceHeader(data, 0, limit, strict);
-        short length = TLV.valueLengthOrInvalid(data, (short) 0, (short) limit, strict);
-        short offset = TLV.valueOffsetOrInvalid(data, (short) 0, (short) limit, strict);
-        short end = TLV.endOrInvalid(data, (short) 0, (short) limit, strict);
-        String label = hex(data) + " strict=" + strict;
-        if (header == null) {
-          assertEquals(TLV.INVALID, length, label);
-          assertEquals(TLV.INVALID, offset, label);
-          assertEquals(TLV.INVALID, end, label);
-          assertWrongData(() -> TLV.readLength(data, (short) 0, (short) limit, strict));
-          assertWrongData(() -> TLV.dataOffset(data, (short) 0, (short) limit, strict));
-          assertWrongData(() -> TLV.objectEnd(data, (short) 0, (short) limit, strict));
-          continue;
-        }
-        assertEquals(header[1], length, label);
-        assertEquals(header[0], offset, label);
-        int expectedEnd = header[0] + header[1] <= limit ? header[0] + header[1] : -1;
-        assertEquals(expectedEnd, end, label);
-        assertEquals(header[1], TLV.readLength(data, (short) 0, (short) limit, strict), label);
-        assertEquals(header[0], TLV.dataOffset(data, (short) 0, (short) limit, strict), label);
-        if (expectedEnd < 0) {
-          assertWrongData(() -> TLV.objectEnd(data, (short) 0, (short) limit, strict));
-        } else {
-          assertEquals(expectedEnd, TLV.objectEnd(data, (short) 0, (short) limit, strict), label);
-        }
+      int limit = data.length;
+      int[] header = referenceHeader(data, 0, limit);
+      short length = TLV.valueLengthOrInvalid(data, (short) 0, (short) limit);
+      short offset = TLV.valueOffsetOrInvalid(data, (short) 0, (short) limit);
+      short end = TLV.endOrInvalid(data, (short) 0, (short) limit);
+      String label = hex(data);
+      if (header == null) {
+        assertEquals(TLV.INVALID, length, label);
+        assertEquals(TLV.INVALID, offset, label);
+        assertEquals(TLV.INVALID, end, label);
+        assertWrongData(() -> TLV.readLength(data, (short) 0, (short) limit));
+        assertWrongData(() -> TLV.dataOffset(data, (short) 0, (short) limit));
+        assertWrongData(() -> TLV.objectEnd(data, (short) 0, (short) limit));
+        continue;
+      }
+      assertEquals(header[1], length, label);
+      assertEquals(header[0], offset, label);
+      int expectedEnd = header[0] + header[1] <= limit ? header[0] + header[1] : -1;
+      assertEquals(expectedEnd, end, label);
+      assertEquals(header[1], TLV.readLength(data, (short) 0, (short) limit), label);
+      assertEquals(header[0], TLV.dataOffset(data, (short) 0, (short) limit), label);
+      if (expectedEnd < 0) {
+        assertWrongData(() -> TLV.objectEnd(data, (short) 0, (short) limit));
+      } else {
+        assertEquals(expectedEnd, TLV.objectEnd(data, (short) 0, (short) limit), label);
       }
     }
   }
@@ -97,7 +95,7 @@ class TlvParserPropertyTest {
       byte[] value = mutate(random, sequence(random, 0, 2), random.nextInt(3));
       byte[] content = wrap(0x53, value, random.nextInt(3));
       if (random.nextInt(8) == 0) content = mutate(random, content, 1);
-      int[] header = referenceHeader(content, 0, content.length, false);
+      int[] header = referenceHeader(content, 0, content.length);
       boolean expected =
           content.length >= 2
               && (content[0] & 0xFF) == 0x53
@@ -134,21 +132,17 @@ class TlvParserPropertyTest {
 
   @Test
   void tagFieldsAreLimitedToThreeMinimalBytes() {
-    assertEquals(3, TLV.valueOffsetOrInvalid(hexBytes("5F2F0100"), (short) 0, (short) 4, false));
-    assertEquals(4, TLV.valueOffsetOrInvalid(hexBytes("5FC1020100"), (short) 0, (short) 5, false));
+    assertEquals(3, TLV.valueOffsetOrInvalid(hexBytes("5F2F0100"), (short) 0, (short) 4));
+    assertEquals(4, TLV.valueOffsetOrInvalid(hexBytes("5FC1020100"), (short) 0, (short) 5));
     assertEquals(
-        TLV.INVALID, TLV.valueOffsetOrInvalid(hexBytes("5F80010100"), (short) 0, (short) 5, false));
+        TLV.INVALID, TLV.valueOffsetOrInvalid(hexBytes("5F80010100"), (short) 0, (short) 5));
     assertEquals(
-        TLV.INVALID, TLV.valueOffsetOrInvalid(hexBytes("5FC1818100"), (short) 0, (short) 5, false));
+        TLV.INVALID, TLV.valueOffsetOrInvalid(hexBytes("5FC1818100"), (short) 0, (short) 5));
     assertEquals(
-        TLV.INVALID,
-        TLV.valueLengthOrInvalid(hexBytes("538280000000"), (short) 0, (short) 6, false));
-    assertEquals(
-        TLV.INVALID, TLV.valueLengthOrInvalid(hexBytes("53830000"), (short) 0, (short) 4, false));
-    assertEquals(
-        TLV.INVALID, TLV.valueLengthOrInvalid(hexBytes("538101"), (short) 0, (short) 3, true));
-    assertEquals(1, TLV.valueLengthOrInvalid(hexBytes("538101"), (short) 0, (short) 3, false));
-    assertFalse(TLV.endOrInvalid(hexBytes("530300"), (short) 0, (short) 3, false) >= 0);
+        TLV.INVALID, TLV.valueLengthOrInvalid(hexBytes("538280000000"), (short) 0, (short) 6));
+    assertEquals(TLV.INVALID, TLV.valueLengthOrInvalid(hexBytes("53830000"), (short) 0, (short) 4));
+    assertEquals(TLV.INVALID, TLV.valueLengthOrInvalid(hexBytes("538101"), (short) 0, (short) 3));
+    assertFalse(TLV.endOrInvalid(hexBytes("530300"), (short) 0, (short) 3) >= 0);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -156,7 +150,7 @@ class TlvParserPropertyTest {
   // ---------------------------------------------------------------------------------------------
 
   /** Returns {valueOffset, length} for the header at {@code offset}, or null when it is invalid. */
-  private static int[] referenceHeader(byte[] data, int offset, int limit, boolean strict) {
+  private static int[] referenceHeader(byte[] data, int offset, int limit) {
     if (offset < 0 || offset >= limit) return null;
     int cursor = offset;
     if ((data[cursor] & 0x1F) == 0x1F) {
@@ -178,14 +172,14 @@ class TlvParserPropertyTest {
     int length = 0;
     for (int i = 0; i < count; i++) length = (length << 8) | (data[cursor + 1 + i] & 0xFF);
     if (length > 0x7FFF) return null;
-    if (strict && length < (count == 1 ? 0x80 : 0x100)) return null;
+    if (length < (count == 1 ? 0x80 : 0x100)) return null;
     return new int[] {cursor + 1 + count, length};
   }
 
   private static boolean referenceValid(byte[] data, int start, int end, int depth) {
     int position = start;
     while (position < end) {
-      int[] header = referenceHeader(data, position, end, false);
+      int[] header = referenceHeader(data, position, end);
       if (header == null || header[0] + header[1] > end) return false;
       int valueEnd = header[0] + header[1];
       if ((data[position] & 0x20) != 0 && header[1] != 0) {
@@ -201,7 +195,7 @@ class TlvParserPropertyTest {
     if (start >= end) return false;
     int position = start;
     while (position < end) {
-      int[] header = referenceHeader(data, position, end, false);
+      int[] header = referenceHeader(data, position, end);
       if (header == null || header[0] + header[1] > end) return false;
       position = header[0] + header[1];
     }

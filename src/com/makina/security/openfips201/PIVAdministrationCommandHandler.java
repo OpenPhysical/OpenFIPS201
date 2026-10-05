@@ -802,29 +802,42 @@ final class PIVAdministrationCommandHandler {
             && importedKey.isImportedKeyMaterial(elementTag)) {
           ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
         }
-        JCSystem.beginTransaction();
+        // The element is written and the pair-wise consistency test runs outside any transaction.
+        // JC 3.0.5 API Util.arrayCopyNonAtomic "does not use the transaction facility during the
+        // copy operation even if a transaction is in progress", and the API leaves the transaction
+        // participation of key-component setters unspecified, so an abort cannot be relied on to
+        // restore them. A component of an incomplete import is not usable, because isInitialised()
+        // requires the ready flag. Only the import-state flags are committed as one transaction,
+        // which bounds its commit-capacity use (JCRE 3.0.5 Section 7.8) to a few bytes. A failure
+        // clears the key after any transaction has closed, so the cleared state is what persists.
+        short failure = ZERO;
         try {
           key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
           if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
-            if (importedKey.completesImportedKeyPair(elementTag)
+            if (importedKey.isLastImportedPart(elementTag)
                 && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
-              key.clear();
-              ISOException.throwIt(ISO7816.SW_FILE_INVALID);
-            }
-            if (!importedKey.hasPendingImportedParts() && importedKey.hasPrivateMaterial()) {
-              importedKey.markImportedPairReady();
+              failure = ISO7816.SW_FILE_INVALID;
+            } else {
+              JCSystem.beginTransaction();
+              importedKey.completesImportedKeyPair(elementTag);
+              if (!importedKey.hasPendingImportedParts() && importedKey.hasPrivateMaterial()) {
+                importedKey.markImportedPairReady();
+              }
+              JCSystem.commitTransaction();
             }
           }
-          JCSystem.commitTransaction();
         } catch (CryptoException e) {
           // Key material the provider refuses, including during the pair-wise consistency test, is
           // an "Incorrect parameter in command data field" (SP 800-73-5 Part 2 Section 3.2.2).
-          key.clear();
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          failure = ISO7816.SW_WRONG_DATA;
         } finally {
           if (JCSystem.getTransactionDepth() != (byte) 0) {
             JCSystem.abortTransaction();
           }
+        }
+        if (failure != ZERO) {
+          key.clear();
+          ISOException.throwIt(failure);
         }
       } else {
         key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);

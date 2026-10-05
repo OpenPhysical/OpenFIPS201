@@ -196,15 +196,40 @@ final class PIVPinCommandHandler {
    *
    * <p>PIN history is evaluated inside {@link PIVSecurityProvider#updatePIN} after the comparison,
    * so a history match is never reported to a caller that has not proven the current PIN or PUK.
-   * When history or the platform rejects the update, the reference data is unchanged and the
-   * authenticator's security status returns to its value before the comparison.
+   * When history or the platform rejects the update, the reference data is unchanged and both the
+   * retry counter and the security status of the authenticator return to their values before the
+   * comparison.
+   *
+   * <p>A successful comparison resets the retry counter to its maximum. The counter is returned to
+   * {@code triesBefore} by presenting, once per lost decrement, the authentication data at {@code
+   * authOffset} with its first byte inverted; that value differs from the reference data that just
+   * matched, so each presentation fails and decrements the counter by one. The authentication data
+   * is restored afterwards. JC 3.0.5 API {@code OwnerPIN.check}: "Even if a transaction is in
+   * progress, update of internal state - the try counter, the validated flag, and the blocking
+   * state, shall not participate in the transaction." The restore is therefore not atomic: a tear
+   * part way through leaves the counter between {@code triesBefore} and the maximum, which only
+   * benefits a caller that has already presented the correct reference data.
    */
   private void commitReferenceData(
-      byte id, PIN authenticator, boolean wasValidated, byte[] buffer, short offset) {
+      byte id,
+      PIN authenticator,
+      boolean wasValidated,
+      byte triesBefore,
+      byte[] buffer,
+      short authOffset,
+      short offset) {
     try {
       cspPIV.updatePIN(
           id, buffer, offset, LENGTH_REFERENCE_FIELD, config.readValue(Config.CONFIG_PIN_HISTORY));
     } catch (ISOException e) {
+      byte excess = (byte) (authenticator.getTriesRemaining() - triesBefore);
+      if (excess > (byte) 0) {
+        buffer[authOffset] = (byte) ~buffer[authOffset];
+        for (; excess > (byte) 0; excess--) {
+          authenticator.check(buffer, authOffset, LENGTH_REFERENCE_FIELD);
+        }
+        buffer[authOffset] = (byte) ~buffer[authOffset];
+      }
       if (!wasValidated) authenticator.reset();
       ISOException.throwIt(e.getReason());
     }
@@ -468,6 +493,7 @@ final class PIVPinCommandHandler {
 
     // Verify the authentication reference data (old PIN/PUK) value
     boolean wasValidated = pin.isValidated();
+    byte triesBefore = pin.getTriesRemaining();
     if (!pin.check(buffer, offset, LENGTH_REFERENCE_FIELD)) {
       throwRetriesRemaining(pin, intermediateRetries);
     }
@@ -481,7 +507,7 @@ final class PIVPinCommandHandler {
     // value associated with the key reference.
 
     // STEP 1 - Update the reference data
-    commitReferenceData(id, pin, wasValidated, buffer, newReferenceOffset);
+    commitReferenceData(id, pin, wasValidated, triesBefore, buffer, offset, newReferenceOffset);
 
     // STEP 2 - Verify the new reference data, which sets the security status to TRUE and resets the
     // retry counter. The update succeeded, so a mismatch is an internal failure.
@@ -523,8 +549,11 @@ final class PIVPinCommandHandler {
     }
 
     // PRE-CONDITION 2 - The PUK must be enabled
+    // A disabled PUK has no reset retry counter reference data, so the command reports '6A 88'
+    // (ISO/IEC 7816-4 Table 6: "Referenced data, reference data or DO not found"), the same status
+    // word that CHANGE REFERENCE DATA returns for key reference '81' in this configuration.
     if (!config.readFlag(Config.CONFIG_PUK_ENABLED)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
 
     // PRE-CONDITION 3 - The command is never performed over the contactless interface.
@@ -594,6 +623,7 @@ final class PIVPinCommandHandler {
     // PIN's key reference shall be set to FALSE, and the PUK's retry counter shall be decremented
     // by one.
     boolean pukWasValidated = puk.isValidated();
+    byte pukTriesBefore = puk.getTriesRemaining();
     if (!puk.check(buffer, offset, LENGTH_REFERENCE_FIELD)) {
       pin.reset();
       throwRetriesRemaining(puk, intermediateRetries);
@@ -613,7 +643,8 @@ final class PIVPinCommandHandler {
     boolean wasValidated = pin.isValidated();
 
     // Update, reset and unblock the PIN.
-    commitReferenceData(id, puk, pukWasValidated, buffer, newReferenceOffset);
+    commitReferenceData(
+        id, puk, pukWasValidated, pukTriesBefore, buffer, offset, newReferenceOffset);
 
     // SP 800-73-5 Part 2 Section 3.2.3 requires successful RESET RETRY COUNTER to
     // leave the PIN security status unchanged. OwnerPIN.update clears validation.

@@ -113,6 +113,28 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     fipsState[0] = FIPS_STATE_PASSED;
   }
 
+  /**
+   * Recreates the package-wide engines and codec singletons after {@link #uninstall()} released
+   * them.
+   *
+   * <p>JCRE 3.0.5 Section 11.3.4.2 refuses deleting an applet instance when "An object owned by the
+   * applet instance is referenced from a static field on any package on the card", so uninstall()
+   * must release these statics. The deletion can still fail, and JC 3.0.5 API AppletEvent states
+   * "The Java Card runtime environment will not rollback state automatically if applet deletion
+   * fails"; another instance of this package also shares the statics. Either instance therefore
+   * rebuilds them on its next command, and the rebuilt engines repeat the FIPS self-tests before
+   * first use. Command processing allocates only on this path, which follows an uninstall().
+   */
+  private void restoreSharedServices() {
+    if (PIVCrypto.isInitialised()) return;
+    PIVCrypto.init();
+    TLVReader.getInstance();
+    TLVWriter.getInstance();
+    DERWriter.initialize();
+    // A failed self-test stays latched until reset; a passed one is repeated on the new engines.
+    if (fipsState[0] == FIPS_STATE_PASSED) fipsState[0] = (byte) 0;
+  }
+
   public static void install(byte[] bArray, short bOffset, byte bLength) {
     byte aidLength = (bArray == null || bArray.length == 0) ? (byte) 0 : bArray[bOffset];
     new OpenFIPS201().register(bArray, (short) (bOffset + 1), aidLength);
@@ -180,7 +202,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   @Override
   public void uninstall() {
     // Release package-level singleton references so cards that enforce object reachability can
-    // delete this applet instance and package cleanly.
+    // delete this applet instance and package cleanly. A surviving instance rebuilds them through
+    // restoreSharedServices().
     TLVReader.terminate();
     TLVWriter.terminate();
     DERWriter.terminate();
@@ -251,6 +274,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   @Override
   public void process(APDU apdu) {
 
+    restoreSharedServices();
     ensureFipsOperational();
 
     //
@@ -288,6 +312,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // command data. A GP SCP-protected GET RESPONSE must not take this shortcut: the platform
     // secure-channel layer has to unwrap it so the host and card SCP state stay synchronized.
     if (plaintextGetResponse) {
+      // The secure-channel flag describes the current command; this one is not SCP-protected.
+      piv.setIsSecureChannel(false);
       piv.clearSecureMessagingCommand();
       if (piv.isSecureMessagingResponseActive()) {
         piv.processOutgoingSecureContinuation(apdu);

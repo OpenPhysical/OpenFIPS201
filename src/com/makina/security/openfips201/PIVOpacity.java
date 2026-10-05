@@ -13,6 +13,27 @@ import javacard.framework.Util;
 final class PIVOpacity {
   private static final short ZERO = (short) 0;
   private static final short KDF_INPUT_OFFSET = (short) 128;
+
+  // SP 800-73-5 Part 2 Table 18 fixes the compiled suite: CS2 uses "ECDH (Curve P-256)", "AES
+  // 128" session keys and a "16 bytes" N_ICC; CS7 uses "ECDH (Curve P-384)", "AES 256" and "24
+  // bytes". The OPACITY establishment and its KDA self-test both use these values.
+  // #if VCI_CS2
+  static final short FIELD_LENGTH = (short) 32;
+  // #else
+  static final short FIELD_LENGTH = (short) 48;
+  // #endif
+  static final short SESSION_KEY_LENGTH = (short) (FIELD_LENGTH - (short) 16);
+  static final short POINT_LENGTH = (short) (FIELD_LENGTH * (short) 2 + (short) 1);
+  static final short NONCE_LENGTH = (short) (FIELD_LENGTH / (short) 2);
+
+  // Workspace layout shared by establishment and self-test: ID_sH(8) || Q_eH || Z || N_ICC ||
+  // ID_sICC(8).
+  static final short OFFSET_ID_H = ZERO;
+  static final short OFFSET_Q_EH = (short) 8;
+  static final short OFFSET_Z = (short) (OFFSET_Q_EH + POINT_LENGTH);
+  static final short OFFSET_N = (short) (OFFSET_Z + FIELD_LENGTH);
+  static final short OFFSET_ID_SICC = (short) (OFFSET_N + NONCE_LENGTH);
+
   // #if VCI_CS2
   private static final byte[] KDA_EXPECTED = {
     (byte) 0xA4, (byte) 0x28, (byte) 0xFA, (byte) 0x53,
@@ -84,47 +105,17 @@ final class PIVOpacity {
    * complete OPACITY FixedInfo construction, counter processing, suite hash and truncation.
    */
   boolean runCryptographicAlgorithmSelfTest() {
-    // #if VCI_CS2
-    final short fieldLength = (short) 32;
-    final short sessionKeyLength = (short) 16;
-    final byte algorithmId = (byte) 0x09;
-    final short hashOffset = (short) 160;
-    // #else
-    final short fieldLength = (short) 48;
-    final short sessionKeyLength = (short) 32;
-    final byte algorithmId = (byte) 0x0D;
-    final short hashOffset = (short) 400;
-    // #endif
-    final short pointLength = (short) (fieldLength * (short) 2 + (short) 1);
-    final short nonceLength = (short) (fieldLength / (short) 2);
-    final short idHOffset = ZERO;
-    final short pointOffset = (short) 8;
-    final short zOffset = (short) (pointOffset + pointLength);
-    final short nonceOffset = (short) (zOffset + fieldLength);
-    final short idSiccOffset = (short) (nonceOffset + nonceLength);
-
     Util.arrayFillNonAtomic(output, ZERO, (short) output.length, (byte) 0);
     Util.arrayFillNonAtomic(workspace, ZERO, (short) workspace.length, (byte) 0);
     try {
-      fillSequence(workspace, idHOffset, (short) 8, (byte) 0x10);
-      workspace[pointOffset] = (byte) 0x04;
-      fillSequence(workspace, (short) (pointOffset + 1), (short) (pointLength - 1), (byte) 0x21);
-      fillSequence(workspace, zOffset, fieldLength, (byte) 0x40);
-      fillSequence(workspace, nonceOffset, nonceLength, (byte) 0x70);
-      fillSequence(workspace, idSiccOffset, (short) 8, (byte) 0x30);
+      fillSequence(workspace, OFFSET_ID_H, (short) 8, (byte) 0x10);
+      workspace[OFFSET_Q_EH] = (byte) 0x04;
+      fillSequence(workspace, (short) (OFFSET_Q_EH + 1), (short) (POINT_LENGTH - 1), (byte) 0x21);
+      fillSequence(workspace, OFFSET_Z, FIELD_LENGTH, (byte) 0x40);
+      fillSequence(workspace, OFFSET_N, NONCE_LENGTH, (byte) 0x70);
+      fillSequence(workspace, OFFSET_ID_SICC, (short) 8, (byte) 0x30);
 
-      deriveSessionKeys(
-          fieldLength,
-          sessionKeyLength,
-          algorithmId,
-          hashOffset,
-          zOffset,
-          nonceOffset,
-          nonceLength,
-          idHOffset,
-          pointOffset,
-          idSiccOffset,
-          (byte) 0x00);
+      deriveSuiteSessionKeys((byte) 0x00);
       return PIVSecurityProvider.arrayEqualsConstantTime(
           output, ZERO, KDA_EXPECTED, ZERO, (short) KDA_EXPECTED.length);
     } finally {
@@ -140,13 +131,34 @@ final class PIVOpacity {
   }
 
   /**
+   * Derives the compiled suite's session keys from the shared workspace layout ({@link
+   * #OFFSET_ID_H}, {@link #OFFSET_Q_EH}, {@link #OFFSET_Z}, {@link #OFFSET_N}, {@link
+   * #OFFSET_ID_SICC}) with {@link PIV#OPACITY_KDF_ALG_ID} and {@link PIV#OPACITY_HASH_TMP}. This is
+   * the only derivation entry point for OPACITY establishment and for its known-answer test.
+   */
+  void deriveSuiteSessionKeys(byte hostControlByte) {
+    deriveSessionKeys(
+        FIELD_LENGTH,
+        SESSION_KEY_LENGTH,
+        PIV.OPACITY_KDF_ALG_ID,
+        PIV.OPACITY_HASH_TMP,
+        OFFSET_Z,
+        OFFSET_N,
+        NONCE_LENGTH,
+        OFFSET_ID_H,
+        OFFSET_Q_EH,
+        OFFSET_ID_SICC,
+        hostControlByte);
+  }
+
+  /**
    * Derives SK_CFRM || SK_MAC || SK_ENC || SK_RMAC into {@code output} (SP 800-73-5 Part 2 Section
    * 4.1.6).
    *
    * @param hostControlByte CB_H as received from the client application; OtherInfo carries it
    *     verbatim ("0x01 || CB_H") while CB_ICC is always 0x00 (Table 16 steps C2 and C3)
    */
-  void deriveSessionKeys(
+  private void deriveSessionKeys(
       short hashLength,
       short sessionKeyLength,
       byte algorithmId,

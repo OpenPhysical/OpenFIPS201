@@ -188,6 +188,24 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   /**
+   * SP 800-73-5 Part 2 Section 3.1.1: "Tag 0xAC SHALL be present and indicate algorithm identifier
+   * 0x27 or 0x2E (but not both) when the PIV Card Application supports secure messaging." Key 04
+   * with its CVC establishes secure messaging whether or not VCI is configured, so the APT
+   * advertises the suite in both configurations.
+   */
+  @Test
+  void applicationPropertyTemplateAdvertisesSecureMessagingWithoutVci() {
+    byte[] advertisement = new byte[] {(byte) 0x80, (byte) 0x01, activeAlgorithm()};
+    createVciKeyOverScp(ATTR_NONE);
+    generateVciKeyOverScp();
+    loadVciCvcOverScp(hex("7F210401020304"));
+
+    assertTrue(
+        contains(selectAppletWithData().getData(), advertisement),
+        "APT must advertise the suite whenever secure messaging is available");
+  }
+
+  /**
    * Verifies that a non-importable VCI key accepts CVC loading but rejects private key import.
    *
    * <p>Aligned with NIST SP 800-73-5 Part 2, Section 3.2.1 Table 2 & Section 4.1.8. Administrative
