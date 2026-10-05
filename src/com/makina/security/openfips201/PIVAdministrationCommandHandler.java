@@ -13,6 +13,7 @@ import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.framework.Util;
+import javacard.security.CryptoException;
 import org.globalplatform.GPSystem;
 
 /** Handles proprietary administration, configuration, deletion, version, and status commands. */
@@ -170,7 +171,9 @@ final class PIVAdministrationCommandHandler {
     }
 
     if (!FipsPolicy.allowsObjectDefinition(
-        reader.getBuffer(), idOffset, objectIdLength, modeContact, modeContactless)) {
+            reader.getBuffer(), idOffset, objectIdLength, modeContact, modeContactless)
+        || !FipsPolicy.allowsObjectCapacity(
+            reader.getBuffer(), idOffset, objectIdLength, capacity)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -422,6 +425,8 @@ final class PIVAdministrationCommandHandler {
     // SECURITY PRE-CONDITION
     //
 
+    requireAdministrativeInterface();
+
     // The command must have been sent over SCP with CEnc+CMac
     if (!cspPIV.getIsSecureChannel()) {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
@@ -555,6 +560,19 @@ final class PIVAdministrationCommandHandler {
   }
 
   /**
+   * Refuses a proprietary administrative command on an interface where administration is not
+   * permitted ({@code OPTION_RESTRICT_CONTACTLESS_ADMIN}). {@link #putDataAdmin} and {@link
+   * #changeReferenceDataAdmin} apply it before chaining or authorization, so the rule holds for
+   * every CLA/INS form that reaches them (INS DB, 24 and 25), whether authorized by SCP or by a
+   * prior admin-key authentication.
+   */
+  private void requireAdministrativeInterface() {
+    if (!owner.isInterfacePermittedForAdmin()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+  }
+
+  /**
    * This method is the equivalent of the CHANGE REFERENCE DATA command, however it is intended to
    * operate on key references that are NOT listed in SP 800-73-5. This is the primary method by
    * which administrative key references are updated and is intended to fill in the gap in PIV that
@@ -581,6 +599,7 @@ final class PIVAdministrationCommandHandler {
     // to be changed by the PIV Card Application CHANGE REFERENCE DATA, if PIV Card Application will
     // only perform the command with other key references if the requirements specified in Section
     // 2.9.2 of FIPS 201-2 are satisfied.
+    requireAdministrativeInterface();
 
     //
     // COMMAND CHAIN HANDLING
@@ -797,6 +816,11 @@ final class PIVAdministrationCommandHandler {
             }
           }
           JCSystem.commitTransaction();
+        } catch (CryptoException e) {
+          // Key material the provider refuses, including during the pair-wise consistency test, is
+          // an "Incorrect parameter in command data field" (SP 800-73-5 Part 2 Section 3.2.2).
+          key.clear();
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         } finally {
           if (JCSystem.getTransactionDepth() != (byte) 0) {
             JCSystem.abortTransaction();

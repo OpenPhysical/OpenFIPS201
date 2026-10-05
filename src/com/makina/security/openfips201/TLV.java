@@ -59,6 +59,10 @@ final class TLV {
   static final byte MASK_LONG_LENGTH = (byte) 0x80;
   static final byte MASK_LENGTH = (byte) 0x7F;
 
+  // Parser limits and the non-throwing parsers' failure result
+  static final short INVALID = (short) -1;
+  private static final short MAX_SUBSEQUENT_TAG_BYTES = (short) 2;
+
   // Universal tags
   static final byte ASN1_BOOLEAN = (byte) 0x01;
   static final byte ASN1_INTEGER = (byte) 0x02;
@@ -101,70 +105,128 @@ final class TLV {
     return LENGTH_3BYTE;
   }
 
+  /**
+   * Returns the value length of the BER-TLV object at {@code tlvOffset}.
+   *
+   * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} when {@link #valueLengthOrInvalid}
+   *     rejects the header
+   */
   static short readLength(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    short lengthOffset = lengthOffset(buffer, tlvOffset, limit);
-    byte lengthByte = buffer[lengthOffset];
-    if ((lengthByte & MASK_LONG_LENGTH) != MASK_LONG_LENGTH) {
-      return (short) (lengthByte & 0xFF);
-    }
+    return requireValid(valueLengthOrInvalid(buffer, tlvOffset, limit, strictDer));
+  }
 
-    byte count = (byte) (lengthByte & MASK_LENGTH);
-    short valueOffset = (short) (lengthOffset + 1);
-    short valueEnd = (short) (valueOffset + count);
-    if (count == (byte) 0 || count > (byte) 2 || valueEnd > limit || valueEnd < valueOffset) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
+  /**
+   * Returns the offset of the first value octet of the BER-TLV object at {@code tlvOffset}.
+   *
+   * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} when {@link #valueOffsetOrInvalid}
+   *     rejects the header
+   */
+  static short dataOffset(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    return requireValid(valueOffsetOrInvalid(buffer, tlvOffset, limit, strictDer));
+  }
 
+  /**
+   * Returns the exclusive end of the BER-TLV object at {@code tlvOffset}.
+   *
+   * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} when {@link #endOrInvalid} rejects the
+   *     object
+   */
+  static short objectEnd(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    return requireValid(endOrInvalid(buffer, tlvOffset, limit, strictDer));
+  }
+
+  /**
+   * Returns the value length of the BER-TLV object at {@code tlvOffset}, or {@link #INVALID}.
+   *
+   * <p>This is the single BER-TLV header parser of the applet. Only the tag and length fields must
+   * lie below {@code limit}; the value may extend past it, as for the first frame of a chained PUT
+   * DATA. ISO/IEC 7816-4 Section 6.3 "precludes the use of the "indefinite length" (coded '80')"
+   * and "recommends to use the shortest possible coding of the length field, according to DER
+   * encoding rules". Long-form lengths are limited to two subsequent octets that encode a
+   * non-negative {@code short}. The shortest coding is required only with {@code strictDer}; BER
+   * permits longer codings, so other callers accept them.
+   */
+  static short valueLengthOrInvalid(
+      byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    short lengthOffset = lengthOffsetOrInvalid(buffer, tlvOffset, limit);
+    if (lengthOffset == INVALID) return INVALID;
+    short first = (short) (buffer[lengthOffset] & 0xFF);
+    if (first <= LENGTH_1BYTE_MAX) return first;
+
+    short count = (short) (first & MASK_LENGTH);
+    short valueOffset = (short) (lengthOffset + 1 + count);
+    if (count == (short) 0
+        || count > (short) 2
+        || valueOffset > limit
+        || valueOffset < lengthOffset) {
+      return INVALID;
+    }
     short length;
-    if (count == (byte) 1) {
-      length = (short) (buffer[valueOffset] & 0xFF);
-      if (strictDer && length <= LENGTH_1BYTE_MAX) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      return length;
+    short minimum;
+    if (count == (short) 1) {
+      length = (short) (buffer[(short) (lengthOffset + 1)] & 0xFF);
+      minimum = (short) (LENGTH_1BYTE_MAX + 1);
+    } else {
+      length = Util.getShort(buffer, (short) (lengthOffset + 1));
+      minimum = (short) (LENGTH_2BYTE_MAX + 1);
     }
-
-    length = Util.getShort(buffer, valueOffset);
-    if (length < (short) 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    if (strictDer && length <= LENGTH_2BYTE_MAX) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    if (length < (short) 0 || (strictDer && length < minimum)) return INVALID;
     return length;
   }
 
-  static short dataOffset(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    short lengthOffset = lengthOffset(buffer, tlvOffset, limit);
-    byte lengthByte = buffer[lengthOffset];
-    if ((lengthByte & MASK_LONG_LENGTH) != MASK_LONG_LENGTH) {
-      return (short) (lengthOffset + 1);
-    }
-
-    byte count = (byte) (lengthByte & MASK_LENGTH);
-    short offset = (short) (lengthOffset + 1 + count);
-    if (count == (byte) 0 || count > (byte) 2 || offset > limit || offset < lengthOffset) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-    if (strictDer) {
-      readLength(buffer, tlvOffset, limit, true);
-    }
-    return offset;
+  /**
+   * Returns the offset of the first value octet of the BER-TLV object at {@code tlvOffset}, or
+   * {@link #INVALID} when {@link #valueLengthOrInvalid} rejects the header.
+   */
+  static short valueOffsetOrInvalid(
+      byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    if (valueLengthOrInvalid(buffer, tlvOffset, limit, strictDer) == INVALID) return INVALID;
+    short lengthOffset = lengthOffsetOrInvalid(buffer, tlvOffset, limit);
+    byte first = buffer[lengthOffset];
+    short count = (first & MASK_LONG_LENGTH) == 0 ? (short) 0 : (short) (first & MASK_LENGTH);
+    return (short) (lengthOffset + 1 + count);
   }
 
-  static short objectEnd(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
-    short contentOffset = dataOffset(buffer, tlvOffset, limit, strictDer);
-    short length = readLength(buffer, tlvOffset, limit, strictDer);
-    short end = (short) (contentOffset + length);
-    if (end > limit || end < contentOffset) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    return end;
+  /**
+   * Returns the exclusive end of the BER-TLV object at {@code tlvOffset}, or {@link #INVALID} when
+   * its header is malformed or its value does not end at or before {@code limit}.
+   */
+  static short endOrInvalid(byte[] buffer, short tlvOffset, short limit, boolean strictDer) {
+    short length = valueLengthOrInvalid(buffer, tlvOffset, limit, strictDer);
+    if (length == INVALID) return INVALID;
+    short valueOffset = valueOffsetOrInvalid(buffer, tlvOffset, limit, strictDer);
+    if (length > (short) (limit - valueOffset)) return INVALID;
+    return (short) (valueOffset + length);
   }
 
-  private static short lengthOffset(byte[] buffer, short tlvOffset, short limit) {
-    if (tlvOffset < (short) 0 || tlvOffset >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+  /**
+   * Returns the offset of the length field of the BER-TLV object at {@code tlvOffset}, or {@link
+   * #INVALID}.
+   *
+   * <p>ISO/IEC 7816-4 Section 6.3: "ISO/IEC 7816 (all parts) supports tag fields of one, two and
+   * three bytes; longer tag fields are RFU." A first subsequent tag byte with bits b7-b1 set to
+   * zero is a non-minimal tag number and is rejected.
+   */
+  private static short lengthOffsetOrInvalid(byte[] buffer, short tlvOffset, short limit) {
+    if (tlvOffset < (short) 0 || tlvOffset >= limit) return INVALID;
     short cursor = tlvOffset;
     if ((buffer[cursor] & MASK_TAG_MULTI_BYTE) == MASK_TAG_MULTI_BYTE) {
+      short subsequent = (short) 0;
       do {
         cursor++;
-        if (cursor >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        if (cursor >= limit || subsequent == MAX_SUBSEQUENT_TAG_BYTES) return INVALID;
+        if (subsequent == (short) 0 && (buffer[cursor] & MASK_HIGH_TAG_NUMBER) == 0) {
+          return INVALID;
+        }
+        subsequent++;
       } while ((buffer[cursor] & MASK_HIGH_TAG_MOREDATA) == MASK_HIGH_TAG_MOREDATA);
     }
     cursor++;
-    if (cursor >= limit) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    return cursor;
+    return cursor < limit ? cursor : INVALID;
+  }
+
+  private static short requireValid(short value) {
+    if (value == INVALID) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    return value;
   }
 }

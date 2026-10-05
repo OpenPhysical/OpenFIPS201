@@ -65,13 +65,22 @@ final class PIVCVMPIN implements PIVPIN {
     if (cvm != null) cvm.resetState();
   }
 
+  /**
+   * Sets a new Global PIN value through the platform CVM.
+   *
+   * <p>GP Card Specification v2.3.1 Section 8.2.1 makes "Setting a new value for the CVM value"
+   * depend on "the requesting Application having the CVM Management privilege". {@code CVM.update}
+   * reports a refused update by returning {@code false}, which this method raises as {@link
+   * PINException#ILLEGAL_VALUE} so a caller never reports a change that did not happen.
+   *
+   * @throws PINException with reason {@link PINException#ILLEGAL_VALUE} when the CVM is unavailable
+   *     or refuses the update
+   */
   @Override
   public void update(byte[] pin, short offset, byte length) throws PINException {
-    if (cvm == null) {
+    if (cvm == null || !cvm.update(pin, offset, length, CVM.FORMAT_HEX)) {
       PINException.throwIt(PINException.ILLEGAL_VALUE);
-      return;
     }
-    cvm.update(pin, offset, length, CVM.FORMAT_HEX);
   }
 
   @Override

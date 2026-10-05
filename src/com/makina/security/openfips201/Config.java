@@ -105,7 +105,7 @@ final class Config {
         // #if FIPS_MODE
         (byte) 0x89,
         // #else
-        (byte) 0x92,
+        (byte) 0x8F,
         // #endif
 
         // 2 + 11 bytes - Application identifier of application (TAG '4F')
@@ -229,12 +229,12 @@ final class Config {
         'd',
         'f',
 
-        // 2 + 33 - Cryptographic Algorithm Identifier Template (Tag 'AC')
+        // 2 + 30 - Cryptographic Algorithm Identifier Template (Tag 'AC')
         (byte) 0xAC,
         // #if FIPS_MODE
         (byte) 0x18,
         // #else
-        (byte) 0x21,
+        (byte) 0x1E,
         // #endif
 
         // Supported mechanisms
@@ -256,12 +256,10 @@ final class Config {
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_AES_256,
-        // #if FIPS_MODE
-        // #else
-        (byte) 0x80,
-        (byte) 0x01,
-        PIV.ID_ALG_RSA_1024,
-        // #endif
+        // SP 800-73-5 Part 2 Section 3.1.1: "Tag 0xAC encodes the cryptographic algorithms
+        // supported by the PIV Card Application." RSA-1024 ('06') is omitted: SP 800-78-5 Table 10
+        // admits it only on retired key-management references, which keep it for compatibility,
+        // and no other key reference accepts it.
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_RSA_2048,
@@ -516,7 +514,12 @@ final class Config {
       reader.moveInto();
 
       // Enable Local
+      // SP 800-73-5 Part 2 Section 3.2.1: "Key reference '80' SHALL be able to be verified by the
+      // PIV Card Application VERIFY command." Part 1 Section 5.1: "The access control rules for PIV
+      // data object access SHALL reference the PIV Card Application PIN". The mandatory PIN
+      // therefore cannot be disabled; only the enabled value is accepted.
       if (reader.match(TAG_PIN_ENABLE_LOCAL)) {
+        if (reader.toByte() == TLV.FALSE) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         setBoolean(CONFIG_PIN_ENABLE_LOCAL, reader.toByte());
         reader.moveNext();
       }

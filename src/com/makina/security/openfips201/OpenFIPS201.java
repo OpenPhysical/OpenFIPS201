@@ -129,12 +129,20 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
         (media == APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_A)
             || (media == APDU.PROTOCOL_MEDIA_CONTACTLESS_TYPE_B);
 
-    // Update the interface
+    // Update the interface. Security status survives reselection in CLEAR_ON_RESET memory, so the
+    // GP secure-channel flag, which deselect() has already reset at the platform, is cleared here.
     piv.setIsContactless(contactless);
+    piv.setIsSecureChannel(false);
 
     // Check if we are permitted to be selected over the current interface. If not, decline to be
     // selected, which means the only way to recover this is to be used over a contact interface.
-    return piv.isInterfacePermitted();
+    if (!piv.isInterfacePermitted()) {
+      // A declined reselection leaves no PIV application selected, so its security status must
+      // not survive in CLEAR_ON_RESET memory until the next selection.
+      piv.deselect();
+      return false;
+    }
+    return true;
   }
 
   @Override
@@ -161,7 +169,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     //			applet, then the PIV applet should remain selected and the security conditions
     //			must not be reset.
 
-    // Reset the PIV security status only if we are not reselecting the current applet
+    // Reset the PIV security status only if we are not reselecting the current applet. The status
+    // is held in CLEAR_ON_RESET memory because JCRE 3.0.5 Section 5.1 clears CLEAR_ON_DESELECT
+    // objects even when the SELECT "Reselects the same applet".
     if (!reSelectingApplet()) {
       piv.deselect();
     }
@@ -264,6 +274,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
 
     validateCommandClass(apdu, buffer);
+    rejectUnsupportedCommandChaining(buffer);
 
     boolean pivSecureMessagingCla = piv.isSecureMessagingCLA(buffer[ISO7816.OFFSET_CLA]);
     boolean gpSecureMessagingCla = apdu.isSecureMessagingCLA();
@@ -316,14 +327,14 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // SP 800-73-5 Part 2 Section 4.3 requires destruction on receipt of a new
       // establishment request, even when later key lookup or establishment fails.
       piv.clearSecureMessaging();
-    } else if (piv.isSecureMessagingEstablished()
-        && !gpSecureMessagingCla
-        && !isPlaintextOpacityEstablishment(buffer, offset, length)) {
-      // OpenFIPS201 keeps a fail-closed policy for plaintext PIV APDUs while PIV secure
-      // messaging is live. The exception is the SP 800-73-5 Part 2 Section 4.1.8 OPACITY
-      // re-establishment command, which is sent as plaintext GENERAL AUTHENTICATE.
-      piv.clearSecureMessaging();
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    } else if (piv.isSecureMessagingEstablished() && !gpSecureMessagingCla) {
+      // SP 800-73-5 Part 2 Section 4.2: after key establishment "subsequent communication with the
+      // card CAN be performed using secure messaging"; SM-AUTH (Appendix A.6.1) continues in
+      // plaintext. A plaintext command is processed under the plaintext access rules: VCI is
+      // satisfied only by a protected command (PIV.isVciSatisfied()). Section 4.3 lists the only
+      // session-key destruction triggers, so the session is kept. ISO/IEC 7816-4 command chaining
+      // abandons an incomplete protected command when a different command arrives.
+      piv.abandonSecureMessagingCommandStream();
     } else if (gpSecureMessagingCla) {
       SecureChannel secureChannel = GPSystem.getSecureChannel();
       if ((secureChannel.getSecurityLevel() & SC_MASK) == SC_MASK) {
@@ -396,23 +407,23 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_PIV_GET_DATA: // Case 4
-          processPIV_GET_DATA(apdu, length);
+          processPIV_GET_DATA(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_PIV_VERIFY: // Case 2
-          processPIV_VERIFY(apdu, length);
+          processPIV_VERIFY(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_PIV_CHANGE_REFERENCE_DATA: // Case 2
-          processPIV_CHANGE_REFERENCE_DATA(apdu, length);
+          processPIV_CHANGE_REFERENCE_DATA(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_ADMIN_UPDATE_KEY:
-          processADMIN_UPDATE_KEY(apdu, length);
+          processADMIN_UPDATE_KEY(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_PIV_RESET_RETRY_COUNTER: // Case 2
-          processPIV_RESET_RETRY_COUNTER(apdu, length);
+          processPIV_RESET_RETRY_COUNTER(apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
         case INS_PIV_GENERAL_AUTHENTICATE: // Case 4
@@ -420,6 +431,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           // Reject a verified wrapped request under the existing keys before it can replace them.
           if (piv.isSecureMessagingCommand()
               && buffer[ISO7816.OFFSET_P2] == PIV.ID_KEY_SECURE_MESSAGING) {
+            // A failed GENERAL AUTHENTICATE also abandons any pending challenge or witness.
+            piv.abortAuthenticationExchange();
             ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
           }
           processPIV_GENERAL_AUTHENTICATE(apdu, commandDataBuffer, commandDataOffset, length);
@@ -430,7 +443,8 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
           break;
 
         case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR: // Case 2
-          processPIV_GENERATE_ASYMMETRIC_KEYPAIR(apdu, length);
+          processPIV_GENERATE_ASYMMETRIC_KEYPAIR(
+              apdu, commandDataBuffer, commandDataOffset, length);
           break;
 
           // #if ATTESTATION_ENABLED
@@ -463,6 +477,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       // session continues. Secure messaging processing errors are zeroized at the point they
       // are detected, in PIVSecureMessaging.unwrapCommand().
       piv.processOutgoing(apdu, ex.getReason());
+    } catch (RuntimeException ex) {
+      // A runtime fault inside a protected exchange returns a status other than '61 XX' or
+      // '90 00', which is an error in secure messaging; SP 800-73-5 Part 2 Section 4.3 then
+      // requires the session keys to be zeroized.
+      if (piv.isSecureMessagingCommand()) piv.clearSecureMessaging();
+      throw ex;
     }
   }
 
@@ -470,12 +490,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     byte cla = buffer[ISO7816.OFFSET_CLA];
     byte ins = buffer[ISO7816.OFFSET_INS];
 
-    if (ins == INS_GP_INITIALIZE_UPDATE) {
-      if (cla != (byte) 0x80) ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
-      return;
-    }
-    if (ins == INS_GP_EXTERNAL_AUTHENTICATE) {
-      if (cla != (byte) 0x84) ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+    if (ins == INS_GP_INITIALIZE_UPDATE || ins == INS_GP_EXTERNAL_AUTHENTICATE) {
+      byte expected = ins == INS_GP_INITIALIZE_UPDATE ? (byte) 0x80 : (byte) 0x84;
+      if (cla != expected) {
+        // A command sent with secure messaging that fails with a status other than '61 XX' or
+        // '90 00' is an error in secure messaging (SP 800-73-5 Part 2 Section 4.3, footnote 25),
+        // after which the host zeroizes its session keys; the card does the same.
+        if (piv.isSecureMessagingCLA(cla)) piv.clearSecureMessaging();
+        ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+      }
       return;
     }
 
@@ -517,6 +540,37 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     if (baseCla != (byte) 0x00) {
       ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
     }
+  }
+
+  /**
+   * Rejects a command that announces more data to follow when its instruction does not support
+   * command chaining, before any part of it executes.
+   *
+   * <p>ISO/IEC 7816-4 Section 5.3.3: "If bit b5 is set to 1, then the command is not the last
+   * command of a chain." and "If SW1-SW2 is set to '6884', then command chaining is not supported."
+   * SP 800-73-5 Part 2 Table 2 lists command chaining for GENERAL AUTHENTICATE, PUT DATA and
+   * GENERATE ASYMMETRIC KEY PAIR, and for VERIFY and CHANGE REFERENCE DATA "only if the PIV Card
+   * Application supports OCC", which this applet does not. The proprietary key and reference-data
+   * updates chain as well. PIV secure messaging reassembles its chained transport frames before the
+   * protected command is processed, so its class is exempt here.
+   */
+  private void rejectUnsupportedCommandChaining(byte[] buffer) {
+    byte cla = buffer[ISO7816.OFFSET_CLA];
+    if ((cla & ChainBuffer.CLA_CHAINING) == (byte) 0 || piv.isSecureMessagingCLA(cla)) return;
+    switch (buffer[ISO7816.OFFSET_INS]) {
+      case INS_PIV_GENERAL_AUTHENTICATE:
+      case INS_PIV_PUT_DATA:
+      case INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR:
+      case INS_ADMIN_UPDATE_KEY:
+        return;
+      case INS_PIV_CHANGE_REFERENCE_DATA:
+        if ((cla & (byte) 0x80) != (byte) 0) return;
+        break;
+      default:
+        break;
+    }
+    piv.abandonChains();
+    ISOException.throwIt(ISO7816.SW_COMMAND_CHAINING_NOT_SUPPORTED);
   }
 
   private static boolean isAdministrativeInstruction(byte ins) {
@@ -592,6 +646,16 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     short length = secureChannel.processSecurity(apdu);
     short offset = apdu.getOffsetCdata();
 
+    // STEP 2 - GP SCP03 v1.1.2 Section 5.5 sets R_MAC or R_ENCRYPTION "after successful processing
+    // of an EXTERNAL AUTHENTICATE command with P1 indicating R-MAC (P1='1x' or '3x')". This applet
+    // protects commands only and never wraps responses, so it refuses a session at a security level
+    // it would not honour rather than return unprotected responses under it.
+    if ((secureChannel.getSecurityLevel() & (SecureChannel.R_MAC | SecureChannel.R_ENCRYPTION))
+        != (byte) 0) {
+      secureChannel.resetSecurity();
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+
     // Send the response
     apdu.setOutgoingAndSend(offset, length);
   }
@@ -602,9 +666,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * @param apdu The incoming APDU object
    */
   private void processPIV_SELECT(APDU apdu) {
-
-    byte[] buffer = apdu.getBuffer();
-    short ne = apdu.setOutgoing();
 
     /*
      * PRE-CONDITIONS
@@ -620,26 +681,23 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      */
 
     // STEP 1 - Call the PIV 'SELECT' command in all cases to handle the PIV SELECT rules
-    short length = piv.select(buffer, (short) 0);
+    piv.select();
 
-    // STEP 2 - Check the ne value
-    if (ne < length) {
-      // Caller requested less data than the length.  Return as much as caller requested.
-      length = ne;
-    }
-
-    // Step 3 - Return data from select command
-    apdu.setOutgoingLength(length);
-    apdu.sendBytes((short) 0, length);
+    // STEP 2 - Return the APT through the response chain: an Ne shorter than the APT yields
+    // '61 XX' and GET RESPONSE rather than a truncated template with '90 00'.
+    piv.processOutgoing(apdu);
   }
 
   /**
    * Process the PIV 'GET DATA' command
    *
    * @param apdu The incoming APDU object
+   * @param commandData buffer holding the command data after any secure-messaging unwrap
+   * @param commandDataOffset first command-data octet
    * @param length The incoming APDU command-data length
    */
-  private void processPIV_GET_DATA(APDU apdu, short length) {
+  private void processPIV_GET_DATA(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
 
     final byte P1 = (byte) 0x3F;
     final byte P2 = (byte) 0xFF;
@@ -655,7 +713,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       }
-      piv.getDataExtended(buffer, apdu.getOffsetCdata(), length);
+      piv.getDataExtended(commandData, commandDataOffset, length);
       piv.processOutgoing(apdu);
       return;
     }
@@ -680,8 +738,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      */
 
     // STEP 1 - Call the PIV 'GET DATA' command
-    short offset = apdu.getOffsetCdata();
-    piv.getData(buffer, offset, length);
+    piv.getData(commandData, commandDataOffset, length);
 
     // NOTE: If no exception occurred during processing, the ChainBuffer now contains a reference
     //		 to a data object to write to the client.
@@ -719,9 +776,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
       if (buffer[ISO7816.OFFSET_P1] != (byte) 0xFF || buffer[ISO7816.OFFSET_P2] != (byte) 0xFF) {
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       }
-      if (!piv.isInterfacePermittedForAdmin()) {
-        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-      }
       piv.putDataAdmin(commandDataBuffer, commandDataOffset, length);
       return;
     }
@@ -758,9 +812,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * Process the PIV 'VERIFY' command
    *
    * @param apdu The incoming APDU object
+   * @param commandData buffer holding the command data after any secure-messaging unwrap
+   * @param commandDataOffset first command-data octet
    * @param length The incoming APDU command-data length
    */
-  private void processPIV_VERIFY(APDU apdu, short length) {
+  private void processPIV_VERIFY(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
 
     final byte CONST_P1_AUTH = (byte) 0x00;
     final byte CONST_P1_RESET = (byte) 0xFF;
@@ -805,10 +862,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // CASE 3 - If P1='00', and Lc and the command data field are present, then the authentication
     //          data in the command data field shall be compared against the reference data
     //          associated with the key reference [...]
-    short offset = apdu.getOffsetCdata();
     if (buffer[ISO7816.OFFSET_P1] == CONST_P1_AUTH && length != ZERO_SHORT) {
       // Verify using the key reference supplied in P2
-      piv.verify(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
+      piv.verify(buffer[ISO7816.OFFSET_P2], commandData, commandDataOffset, length);
       return;
     }
 
@@ -820,9 +876,12 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * Process the PIV 'CHANGE REFERENCE DATA' command
    *
    * @param apdu The incoming APDU object
+   * @param commandData buffer holding the command data after any secure-messaging unwrap
+   * @param commandDataOffset first command-data octet
    * @param length The incoming APDU command-data length
    */
-  private void processPIV_CHANGE_REFERENCE_DATA(APDU apdu, short length) {
+  private void processPIV_CHANGE_REFERENCE_DATA(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
 
@@ -839,7 +898,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       }
       piv.changeReferenceDataAdmin(
-          buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
+          buffer[ISO7816.OFFSET_P2], commandData, commandDataOffset, length);
       return;
     }
 
@@ -852,7 +911,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
             && buffer[ISO7816.OFFSET_P2] != PIV.ID_CVM_PUK;
     if (protectedKeyUpdate) {
       piv.changeReferenceDataAdmin(
-          buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
+          buffer[ISO7816.OFFSET_P2], commandData, commandDataOffset, length);
       return;
     }
 
@@ -878,34 +937,37 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      */
 
     // STEP 1 - Change the selected standard reference data.
-    short offset = apdu.getOffsetCdata();
-    piv.changeReferenceData(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
+    piv.changeReferenceData(buffer[ISO7816.OFFSET_P2], commandData, commandDataOffset, length);
   }
 
   /**
    * Replaces an issuer-managed key value through the proprietary administrative command.
    *
    * @param apdu incoming APDU
+   * @param commandData buffer holding the command data after any secure-messaging unwrap
+   * @param commandDataOffset first command-data octet
    * @param length command-data length
    */
-  private void processADMIN_UPDATE_KEY(APDU apdu, short length) {
+  private void processADMIN_UPDATE_KEY(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
     byte[] buffer = apdu.getBuffer();
-    if (!piv.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
     if (buffer[ISO7816.OFFSET_P1] != (byte) 0x01) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
-    piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], buffer, apdu.getOffsetCdata(), length);
+    // The administrative interface rule is enforced inside changeReferenceDataAdmin.
+    piv.changeReferenceDataAdmin(buffer[ISO7816.OFFSET_P2], commandData, commandDataOffset, length);
   }
 
   /**
    * Process the PIV 'RESET RETRY COUNTER' command
    *
    * @param apdu The incoming APDU object
+   * @param commandData buffer holding the command data after any secure-messaging unwrap
+   * @param commandDataOffset first command-data octet
    * @param length The incoming APDU command-data length
    */
-  private void processPIV_RESET_RETRY_COUNTER(APDU apdu, short length) {
+  private void processPIV_RESET_RETRY_COUNTER(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
     final byte CONST_LC = (byte) 0x10;
@@ -930,8 +992,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      * EXECUTION STEPS
      */
 
-    short offset = apdu.getOffsetCdata();
-    piv.resetRetryCounter(buffer[ISO7816.OFFSET_P2], buffer, offset, length);
+    piv.resetRetryCounter(buffer[ISO7816.OFFSET_P2], commandData, commandDataOffset, length);
   }
 
   /**
@@ -964,14 +1025,24 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
    * Process the PIV 'GENERATE ASYMMETRIC KEYPAIR' command
    *
    * @param apdu The incoming APDU object
+   * @param commandData buffer holding the command data after any secure-messaging unwrap
+   * @param commandDataOffset first command-data octet
+   * @param length The incoming APDU command-data length
    */
-  private void processPIV_GENERATE_ASYMMETRIC_KEYPAIR(APDU apdu, short length) {
+  private void processPIV_GENERATE_ASYMMETRIC_KEYPAIR(
+      APDU apdu, byte[] commandData, short commandDataOffset, short length) {
 
     final byte CONST_P1 = (byte) 0x00;
 
     byte[] buffer = apdu.getBuffer();
 
-    if (FipsPolicy.ENABLED && piv.isContactless()) {
+    // SP 800-73-5 Part 2 Section 3, Table 2: "The PIV Card Application shall return the status
+    // word of '6A 81' (Function not supported) when it receives a card command on the contactless
+    // interface marked "No" in the Contactless Interface column in Table 2", unless "the card
+    // command can be performed over the contactless interface in support of card management".
+    // Contactless card management is an issuer opt-in that the FIPS profile never allows. Under
+    // that opt-in GENERATE proceeds to its administrative access check.
+    if (piv.isContactless() && (FipsPolicy.ENABLED || !piv.isInterfacePermittedForAdmin())) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
@@ -987,12 +1058,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      * PRE-CONDITIONS
      */
 
-    // PRE-CONDITION 1 - Administrative access must be permitted on the current interface
-    if (!piv.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
-    // PRE-CONDITION 2 - The P1 value must be equal to the constant CONST_P1
+    // PRE-CONDITION 1 - The P1 value must be equal to the constant CONST_P1
     if (buffer[ISO7816.OFFSET_P1] != CONST_P1) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
@@ -1002,8 +1068,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      */
 
     // STEP 1 - Call the PIV GENERATE ASYMMETRIC KEY command
-    short offset = apdu.getOffsetCdata();
-    length = piv.generateAsymmetricKeyPair(buffer, offset, length);
+    length = piv.generateAsymmetricKeyPair(commandData, commandDataOffset, length);
 
     // STEP 2 - Process the first frame of the chainBuffer for this response
     if (length > 0) piv.processOutgoing(apdu);

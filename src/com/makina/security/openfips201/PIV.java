@@ -66,9 +66,7 @@ final class PIV {
   // Data Objects
   static final byte ID_DATA_DISCOVERY = (byte) 0x7E;
   private static final byte INS_PUT_DATA = (byte) 0xDB;
-  private static final byte[] ID_DATA_PAIRING_CODE_REFERENCE = {
-    (byte) 0x5F, (byte) 0xC1, (byte) 0x23
-  };
+  static final byte[] ID_DATA_PAIRING_CODE_REFERENCE = {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
 
   // PIV Secure Messaging key reference.
   static final byte ID_KEY_SECURE_MESSAGING = (byte) 0x04;
@@ -386,6 +384,21 @@ final class PIV {
     PIVSecurityProvider.zeroise(smResponse, ZERO, (short) smResponse.length);
   }
 
+  /** Discards an incomplete protected logical command; the session and its MCVs are kept. */
+  void abandonSecureMessagingCommandStream() {
+    secureMessaging.clearRejectedCommandStream();
+  }
+
+  /**
+   * Abandons any pending command or response chain and its staged object update, as a command that
+   * interrupts ISO/IEC 7816-4 chaining does.
+   */
+  void abandonChains() {
+    abortOutgoingResponse();
+    chainBuffer.abort();
+    dataStore.abortPendingUpdates();
+  }
+
   void abortOutgoingResponse() {
     if (secureMessaging.isResponseStreamActive()) {
       secureMessaging.abortResponseStream();
@@ -398,12 +411,23 @@ final class PIV {
     try {
       return unwrapSecureMessagingCommandChecked(buffer, offset, length);
     } catch (ISOException ex) {
-      if (ex.getReason() != ISO7816.SW_NO_ERROR) clearSecureMessaging();
-      throw ex;
+      short reason = ex.getReason();
+      if (reason == ISO7816.SW_NO_ERROR) throw ex;
+      // SP 800-73-5 Part 2 Section 4.2.7: an unsuccessful secure messaging exchange SHALL return
+      // '68 82', '69 82', '69 87' or '69 88' "without performing further secure messaging".
+      // Reassembly failures from the shared chain buffer are incorrect secure messaging data.
+      clearSecureMessaging();
+      ISOException.throwIt(PIVSecureMessaging.toProcessingStatus(reason));
+      return ZERO;
     } catch (javacard.security.CryptoException ex) {
       clearSecureMessaging();
       ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
       return ZERO;
+    } catch (RuntimeException ex) {
+      // SP 800-73-5 Part 2 Section 4.3 zeroizes the session keys when "an error occurs in secure
+      // messaging"; a runtime fault is such an error whatever status the JCRE reports for it.
+      clearSecureMessaging();
+      throw ex;
     }
   }
 
@@ -439,7 +463,18 @@ final class PIV {
     }
 
     Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);
-    length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
+    if (buffer[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE
+        && chainBuffer.isSecureOutgoingActive()) {
+      // SP 800-73-5 Part 2 Section 4.2.6: GET RESPONSE retrieves the next part of the pending
+      // protected response. The chain buffer holds that response, so a protected GET RESPONSE is
+      // a single-frame command unwrapped directly from the APDU buffer.
+      if (commandChaining || length > (short) (smCommand.length - 5)) {
+        ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
+      }
+      Util.arrayCopyNonAtomic(buffer, offset, smCommand, (short) 5, length);
+    } else {
+      length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
+    }
     if (length == ZERO && commandChaining) ISOException.throwIt(ISO7816.SW_NO_ERROR);
 
     length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
@@ -504,6 +539,11 @@ final class PIV {
     } catch (javacard.security.CryptoException ex) {
       clearSecureMessaging();
       ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
+    } catch (RuntimeException ex) {
+      // SP 800-73-5 Part 2 Section 4.3: any status other than '61 XX' or '90 00' is an error in
+      // secure messaging, after which the session keys SHALL be zeroized.
+      clearSecureMessaging();
+      throw ex;
     }
   }
 
@@ -515,13 +555,15 @@ final class PIV {
   }
 
   /**
-   * Called when this applet is selected, returning the APT object
+   * Called when this applet is selected. Places the APT in the outgoing response chain.
    *
-   * @param buffer The APDU buffer to write the APT to
-   * @param offset The starting offset of the CDATA section
-   * @return The length of the returned APT object
+   * <p>SP 800-73-5 Part 2 Section 3.1.1: "Upon selection, the PIV Card Application SHALL return the
+   * application property template described in Table 3." A response longer than Ne is continued
+   * with '61 XX' and GET RESPONSE (ISO/IEC 7816-4 Section 5.3.4), not truncated.
+   *
+   * @return The length of the APT object
    */
-  short select(byte[] buffer, short offset) {
+  short select() {
 
     //
     // PRE-CONDITIONS
@@ -557,7 +599,9 @@ final class PIV {
     }
 
     // STEP 2 - Return the APT
-    return buildApplicationPropertyTemplate(buffer, offset);
+    short length = buildApplicationPropertyTemplate(scratch, ZERO);
+    chainBuffer.setOutgoing(scratch, ZERO, length, false);
+    return length;
   }
 
   private short buildApplicationPropertyTemplate(byte[] buffer, short offset) {
@@ -642,6 +686,7 @@ final class PIV {
 
     // Reset all security conditions in the security provider
     cspPIV.clearAuthenticatedKey();
+    cspPIV.clearPINAlways();
     cspPIV.clearApplicationVerification();
     chainBuffer.abort();
     dataStore.abortPendingUpdates();
@@ -670,16 +715,15 @@ final class PIV {
   }
 
   boolean isVciSatisfied() {
-    short policy = dataCommands.getDiscoveryPolicy();
-    return policy >= (short) 0
-        && (((byte) (policy >> 8) & (byte) 0x08) != (byte) 0)
+    return PIVDataCommandHandler.hasPolicyBits(
+            dataCommands.getDiscoveryPolicy(), PIVDataCommandHandler.PIN_POLICY_VCI)
         && isSecureMessagingCommand()
         && secureMessaging.isVciEstablished();
   }
 
   boolean isDiscoveryPairingRequired() {
-    short policy = dataCommands.getDiscoveryPolicy();
-    return policy < (short) 0 || (((byte) (policy >> 8) & (byte) 0x04) == (byte) 0);
+    return !PIVDataCommandHandler.hasPolicyBits(
+        dataCommands.getDiscoveryPolicy(), PIVDataCommandHandler.PIN_POLICY_VCI_WITHOUT_PAIRING);
   }
 
   boolean isPairingCodeReferenceEnabled() {
@@ -688,9 +732,10 @@ final class PIV {
   }
 
   static boolean isPairingCodeReferenceEnabled(byte vciMode, short policy) {
-    if (vciMode != Config.VCI_MODE_PAIRING_CODE || policy < (short) 0) return false;
-    byte pinUsagePolicy = (byte) (policy >> 8);
-    return (pinUsagePolicy & (byte) 0x08) != (byte) 0 && (pinUsagePolicy & (byte) 0x04) == (byte) 0;
+    return vciMode == Config.VCI_MODE_PAIRING_CODE
+        && PIVDataCommandHandler.hasPolicyBits(policy, PIVDataCommandHandler.PIN_POLICY_VCI)
+        && !PIVDataCommandHandler.hasPolicyBits(
+            policy, PIVDataCommandHandler.PIN_POLICY_VCI_WITHOUT_PAIRING);
   }
 
   boolean isPairingCodeVerified() {
@@ -722,30 +767,42 @@ final class PIV {
         || !hasStructurallyValidMandatoryObject((byte) 0x06)) {
       return false;
     }
+    // SP 800-73-5 Part 1 Section 3.3.2: "PIV Card Applications that implement the VCI or for
+    // which the Global PIN or OCC satisfy the PIV ACRs for PIV data object access and command
+    // execution SHALL implement the Discovery Object." A stored Discovery Object must use a Table 1
+    // value and advertise only the PIN, Global PIN, OCC and VCI features this card provides.
+    byte vciMode = config.readValue(Config.CONFIG_VCI_MODE);
+    boolean discoveryStored = hasInitialisedDataObject(ID_DATA_DISCOVERY, (byte) 0, (byte) 0);
+    if ((discoveryStored || isVciConfigured())
+        && !PIVDataCommandHandler.isDiscoveryPolicyConsistent(
+            dataCommands.getDiscoveryPolicy(),
+            config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL),
+            vciMode)) {
+      return false;
+    }
     if (isVciConfigured()) {
-      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI;
-      // Discovery carries the advertised VCI and pairing policy.
+      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI.
       PIVKeyObject smKey = getSecureMessagingKey();
       if (!(smKey instanceof PIVKeyObjectECC)
           || ((PIVKeyObjectECC) smKey).getSmCvcLength() == (short) 0
-          || !hasInitialisedDataObject((byte) 0x7E, (byte) 0, (byte) 0)
           // SP 800-73-5 Part 1 Section 3.3.7 requires 5FC122 when SM protects
           // non-card-management operations.
           || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x22)) {
         return false;
       }
-      short policy = dataCommands.getDiscoveryPolicy();
-      if (policy < (short) 0) return false;
-      byte first = (byte) (policy >> 8);
-      boolean discoveryVci = (first & (byte) 0x08) != (byte) 0;
-      boolean discoveryPairing = (first & (byte) 0x04) == (byte) 0;
-      boolean configuredPairing =
-          config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE;
-      if (!discoveryVci || discoveryPairing != configuredPairing) return false;
-      if (config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE
-          && !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x23)) {
+      // SP 800-73-5 Part 1 Section 3.3.8 requires the Pairing Code Reference Data Container when
+      // the pairing code is used. VERIFY 98 compares against it, so its Table 44 structure is
+      // checked before the irreversible transition.
+      if (vciMode == Config.VCI_MODE_PAIRING_CODE
+          && !PIVDataCommandHandler.isValidPairingCodeContainer(
+              dataStore.find(ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) 3))) {
         return false;
       }
+    }
+    // SP 800-73-5 Part 1 Section 3.3.3: "The Key History object SHALL be present in the PIV Card
+    // Application if the PIV Card Application contains any retired key management private keys".
+    if (hasRetiredKeyManagementKey() && !hasStructurallyValidMandatoryObject((byte) 0x0C)) {
+      return false;
     }
     // #if ATTESTATION_ENABLED
     if (!attestation.isAuthorityActive()) return false;
@@ -766,6 +823,14 @@ final class PIV {
     }
     PIVDataObject object = dataStore.find(scratch, ZERO, length);
     return object != null && object.isInitialised();
+  }
+
+  /** Returns whether any retired key management reference '82' to '95' holds a private key. */
+  private boolean hasRetiredKeyManagementKey() {
+    for (byte id = (byte) 0x82; id <= (byte) 0x95; id++) {
+      if (cspPIV.hasUsableAsymmetricKey(id)) return true;
+    }
+    return false;
   }
 
   private boolean hasStructurallyValidMandatoryObject(byte suffix) {
@@ -805,9 +870,7 @@ final class PIV {
       return getAttestationAuthorityContainer();
     }
     // #endif
-    // SP 800-73-5 Part 1 Sections 3.3.2 and 5.5 require an issuer-controlled Discovery Object
-    // for VCI. The fallback response must not advertise policy that cannot satisfy the ACR.
-    return dataCommands.getData(buffer, offset, length, isVciSatisfied(), false);
+    return dataCommands.getData(buffer, offset, length, isVciSatisfied());
   }
 
   // #if ATTESTATION_ENABLED

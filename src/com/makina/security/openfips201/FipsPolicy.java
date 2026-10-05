@@ -191,6 +191,64 @@ final class FipsPolicy {
     return false;
   }
 
+  /**
+   * Returns whether {@code capacity} meets the container minimum for an interoperable object.
+   *
+   * <p>SP 800-73-5 Part 1 Appendix A Table 8, footnote 17: "The values in this column denote the
+   * guaranteed minimum capacities of the on-card storage containers in bytes." The FIPS profile
+   * guarantees them at CREATE OBJECT time. Compatibility builds and objects outside Table 8 accept
+   * any positive capacity.
+   */
+  static boolean allowsObjectCapacity(byte[] id, short offset, short length, short capacity) {
+    return !ENABLED || capacity >= minimumObjectCapacity(id, offset, length);
+  }
+
+  /** Returns the SP 800-73-5 Part 1 Table 8 minimum container capacity, or zero when none. */
+  static short minimumObjectCapacity(byte[] id, short offset, short length) {
+    if (length == (short) 1 && id[offset] == (byte) 0x7E) return (short) 19;
+    if (length == (short) 2
+        && id[offset] == (byte) 0x7F
+        && id[(short) (offset + 1)] == (byte) 0x61) {
+      return (short) 65;
+    }
+    if (length != (short) 3
+        || id[offset] != (byte) 0x5F
+        || id[(short) (offset + 1)] != (byte) 0xC1) {
+      return (short) 0;
+    }
+    byte suffix = id[(short) (offset + 2)];
+    if (suffix >= (byte) 0x0D && suffix <= (byte) 0x20) return (short) 1895;
+    switch (suffix) {
+      case (byte) 0x07:
+        return (short) 170;
+      case (byte) 0x02:
+        return (short) 2881;
+      case (byte) 0x05:
+      case (byte) 0x01:
+      case (byte) 0x0A:
+      case (byte) 0x0B:
+        return (short) 1857;
+      case (byte) 0x03:
+        return (short) 4006;
+      case (byte) 0x06:
+        return (short) 1336;
+      case (byte) 0x08:
+        return (short) 12710;
+      case (byte) 0x09:
+        return (short) 245;
+      case (byte) 0x0C:
+        return (short) 128;
+      case (byte) 0x21:
+        return (short) 7106;
+      case (byte) 0x22:
+        return (short) 2471;
+      case (byte) 0x23:
+        return (short) 12;
+      default:
+        return (short) 0;
+    }
+  }
+
   private static boolean accessMatches(
       byte contact, byte contactless, byte expectedContact, byte expectedContactless) {
     return contact == expectedContact && contactless == expectedContactless;

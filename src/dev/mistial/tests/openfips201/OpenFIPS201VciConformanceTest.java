@@ -1,5 +1,6 @@
 package dev.mistial.tests.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -258,6 +259,184 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
             tlv((byte) 0x7C, tlv((byte) 0x85, activeBasePoint())));
 
     assertSw(0x6A86, response, "Key 04 must reject generic ECDH exponentiation");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Table 16: C2 "CB_ICC = CB_H & 'F0'" and C3 "Return an error ('6A 80') if
+   * CB_ICC is not 0x00". Section 4.1.6 carries the received CB_H in OtherInfo ("0x01 || CB_H") and
+   * CB_ICC at its end. The card's cryptogram is recomputed host-side from independent ECDH, KDF and
+   * CMAC so a CB_H that does not reach the KDF fails the comparison. Step C11 response lengths use
+   * the shortest BER-TLV form (ISO/IEC 7816-4 Section 6.3).
+   */
+  @Test
+  void opacityMasksHostControlByteAndBindsItIntoTheKdf() throws Exception {
+    configureVciMode((byte) 0x02);
+    createVciKeyOverScp(ATTR_NONE);
+    byte[] cardPoint = generateVciKeyOverScpReturningPoint();
+    byte[] cvc = hex("7F210401020304");
+    loadVciCvcOverScp(cvc);
+
+    for (byte hostControlByte : new byte[] {0x00, 0x01, 0x0F}) {
+      java.security.KeyPairGenerator generator = java.security.KeyPairGenerator.getInstance("EC");
+      generator.initialize(
+          new java.security.spec.ECGenParameterSpec(isCs2Build() ? "secp256r1" : "secp384r1"));
+      java.security.KeyPair host = generator.generateKeyPair();
+      byte[] hostPoint = uncompressedPoint((java.security.interfaces.ECPublicKey) host.getPublic());
+      byte[] hostId = hex("0102030405060708");
+
+      byte[] data =
+          collectResponse(
+              transmit(
+                  0x00,
+                  0x87,
+                  activeAlgorithm() & 0xFF,
+                  KEY_REF_SECURE_MESSAGING & 0xFF,
+                  tlv(
+                      (byte) 0x7C,
+                      concat(
+                          tlv((byte) 0x81, concat(new byte[] {hostControlByte}, hostId, hostPoint)),
+                          hex("8200"))),
+                  256),
+              "OPACITY with CB_H " + hostControlByte);
+
+      int fieldLength = isCs2Build() ? 32 : 48;
+      int nonceLength = fieldLength / 2;
+      int responseLength = 1 + nonceLength + 16 + cvc.length;
+      assertArrayEquals(
+          concat(
+              new byte[] {(byte) 0x7C, (byte) (responseLength + 2)},
+              new byte[] {(byte) 0x82, (byte) responseLength}),
+          java.util.Arrays.copyOf(data, 4),
+          "OPACITY response lengths must use the shortest encoding");
+      byte[] value = tlvValue(data, (byte) 0x82);
+      assertEquals(0x00, value[0], "CB_ICC = CB_H & 'F0' = 0x00");
+      byte[] nonce = java.util.Arrays.copyOfRange(value, 1, 1 + nonceLength);
+      byte[] cryptogram = java.util.Arrays.copyOfRange(value, 1 + nonceLength, 17 + nonceLength);
+      assertArrayEquals(
+          cvc, java.util.Arrays.copyOfRange(value, 17 + nonceLength, value.length), "C_ICC");
+
+      javax.crypto.KeyAgreement agreement = javax.crypto.KeyAgreement.getInstance("ECDH");
+      agreement.init(host.getPrivate());
+      agreement.doPhase(cardPublicKey(cardPoint, host.getPublic()), true);
+      byte[] z = agreement.generateSecret();
+      byte[] cardId =
+          java.util.Arrays.copyOf(
+              java.security.MessageDigest.getInstance("SHA-256").digest(cvc), 8);
+      int keyLength = isCs2Build() ? 16 : 32;
+      byte[] otherInfo =
+          concat(
+              new byte[] {0x04},
+              fixed(activeKdfAlgorithmId(), 4),
+              new byte[] {0x08},
+              hostId,
+              new byte[] {0x01, hostControlByte, 0x10},
+              java.util.Arrays.copyOfRange(hostPoint, 1, 17),
+              new byte[] {0x08},
+              cardId,
+              new byte[] {(byte) nonceLength},
+              nonce,
+              new byte[] {0x01, 0x00});
+      byte[] confirmationKey = java.util.Arrays.copyOf(kdf(z, otherInfo, 4 * keyLength), keyLength);
+      byte[] expected =
+          aesCmac(
+              confirmationKey,
+              concat(
+                  "KC_1_V".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                  cardId,
+                  hostId,
+                  java.util.Arrays.copyOfRange(hostPoint, 1, hostPoint.length)));
+      assertArrayEquals(
+          expected, cryptogram, "AuthCryptogram_ICC over keys derived with the received CB_H");
+    }
+
+    byte[] point = activeBasePoint();
+    assertSw(
+        0x6A80,
+        transmit(
+            0x00,
+            0x87,
+            activeAlgorithm() & 0xFF,
+            KEY_REF_SECURE_MESSAGING & 0xFF,
+            tlv(
+                (byte) 0x7C,
+                concat(
+                    tlv((byte) 0x81, concat(new byte[] {0x10}, hex("0102030405060708"), point)),
+                    hex("8200")))),
+        "C3: CB_H & 'F0' other than 0x00 is rejected");
+  }
+
+  private byte[] generateVciKeyOverScpReturningPoint() {
+    return withMockedScp(
+        () -> {
+          ResponseAPDU response =
+              transmit(
+                  0x84,
+                  0x47,
+                  0x00,
+                  KEY_REF_SECURE_MESSAGING & 0xFF,
+                  tlv((byte) 0xAC, tlv((byte) 0x80, new byte[] {activeAlgorithm()})),
+                  256);
+          return tlvValue(collectResponse(response, "Generate VCI key on-card"), (byte) 0x86);
+        });
+  }
+
+  private static byte activeKdfAlgorithmId() {
+    return isCs2Build() ? (byte) 0x09 : (byte) 0x0D;
+  }
+
+  /** SP 800-56A Section 5.8.1 one-step KDF with the suite hash of SP 800-73-5 Table 18. */
+  private static byte[] kdf(byte[] z, byte[] otherInfo, int length) throws Exception {
+    java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+    for (int counter = 1; output.size() < length; counter++) {
+      java.security.MessageDigest digest =
+          java.security.MessageDigest.getInstance(isCs2Build() ? "SHA-256" : "SHA-384");
+      digest.update(new byte[] {0, 0, 0, (byte) counter});
+      digest.update(z);
+      digest.update(otherInfo);
+      output.write(digest.digest());
+    }
+    return java.util.Arrays.copyOf(output.toByteArray(), length);
+  }
+
+  private static byte[] aesCmac(byte[] key, byte[] input) {
+    org.bouncycastle.crypto.macs.CMac cmac =
+        new org.bouncycastle.crypto.macs.CMac(
+            org.bouncycastle.crypto.engines.AESEngine.newInstance());
+    cmac.init(new org.bouncycastle.crypto.params.KeyParameter(key));
+    cmac.update(input, 0, input.length);
+    byte[] mac = new byte[16];
+    cmac.doFinal(mac, 0);
+    return mac;
+  }
+
+  private static byte[] uncompressedPoint(java.security.interfaces.ECPublicKey key) {
+    int fieldLength = (key.getParams().getCurve().getField().getFieldSize() + 7) / 8;
+    return concat(
+        new byte[] {0x04},
+        unsigned(key.getW().getAffineX(), fieldLength),
+        unsigned(key.getW().getAffineY(), fieldLength));
+  }
+
+  private static byte[] unsigned(java.math.BigInteger value, int length) {
+    byte[] encoded = value.toByteArray();
+    byte[] out = new byte[length];
+    int copy = Math.min(encoded.length, length);
+    System.arraycopy(encoded, encoded.length - copy, out, length - copy, copy);
+    return out;
+  }
+
+  private static java.security.PublicKey cardPublicKey(byte[] point, java.security.PublicKey like)
+      throws Exception {
+    int fieldLength = (point.length - 1) / 2;
+    java.security.spec.ECPoint w =
+        new java.security.spec.ECPoint(
+            new java.math.BigInteger(1, java.util.Arrays.copyOfRange(point, 1, 1 + fieldLength)),
+            new java.math.BigInteger(
+                1, java.util.Arrays.copyOfRange(point, 1 + fieldLength, point.length)));
+    return java.security.KeyFactory.getInstance("EC")
+        .generatePublic(
+            new java.security.spec.ECPublicKeySpec(
+                w, ((java.security.interfaces.ECPublicKey) like).getParams()));
   }
 
   @Test

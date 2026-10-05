@@ -520,8 +520,11 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
               transmit(0x84, 0x47, 0x00, KEY_REF_ATTESTATION & 0xFF, F9_GENERATE),
               "F9 not defined");
           assertSw(ISO7816.SW_NO_ERROR, transmit(0x84, 0xDB, 0xFF, 0xFF, F9_DEFINITION), "F9");
+          // SP 800-73-5 Part 2 Section 3.3.2: '6A 86' when "the cryptographic mechanism of the
+          // reference data to be generated is different than the cryptographic mechanism of the
+          // reference data of a given key reference".
           assertSw(
-              ISO7816.SW_WRONG_DATA,
+              ISO7816.SW_INCORRECT_P1P2,
               transmit(0x84, 0x47, 0x00, KEY_REF_ATTESTATION & 0xFF, hex("AC03800114")),
               "F9 mechanism must be P-256");
         });

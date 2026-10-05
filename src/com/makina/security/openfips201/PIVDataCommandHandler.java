@@ -14,7 +14,37 @@ import javacard.framework.Util;
 /** Handles standard PIV discovery and GET/PUT DATA commands. */
 final class PIVDataCommandHandler {
   private static final short ZERO = (short) 0;
-  private static final short INVALID_DISCOVERY_POLICY = (short) -1;
+  static final short INVALID_DISCOVERY_POLICY = (short) -1;
+
+  // SP 800-73-5 Part 1 Section 3.3.2, first byte of the PIN Usage Policy
+  // "Bit 7 is set to 1 to indicate that the mandatory PIV Card Application PIN satisfies the PIV
+  // Access Control Rules (ACRs)"
+  static final byte PIN_POLICY_APPLICATION_PIN = (byte) 0x40;
+  // "Bit 6 indicates whether the optional Global PIN satisfies the PIV ACRs"
+  static final byte PIN_POLICY_GLOBAL_PIN = (byte) 0x20;
+  // "Bit 5 indicates whether the optional OCC satisfies the PIV ACRs"
+  static final byte PIN_POLICY_OCC = (byte) 0x10;
+  // "Bit 4 indicates whether the optional VCI is implemented."
+  static final byte PIN_POLICY_VCI = (byte) 0x08;
+  // "Bit 3 is set to zero if the pairing code is required to establish a VCI and is set to one if
+  // a VCI is established without a pairing code."
+  static final byte PIN_POLICY_VCI_WITHOUT_PAIRING = (byte) 0x04;
+  // "Bits 8, 2, and 1 of the first byte SHALL be set to zero."
+  private static final byte PIN_POLICY_ZERO_BITS = (byte) 0x83;
+  // Second byte: "0x10 indicates that the PIV Card Application PIN is the primary PIN" and "0x20
+  // indicates that the Global PIN is the primary PIN"
+  private static final byte PIN_PREFERENCE_APPLICATION_PIN = (byte) 0x10;
+  private static final byte PIN_PREFERENCE_GLOBAL_PIN = (byte) 0x20;
+
+  // Position of the pairing code value inside the stored 5FC123 object '53 0C 99 08 ...'
+  static final short PAIRING_CODE_OFFSET = (short) 4;
+  static final short PAIRING_CODE_LENGTH = (short) 8;
+
+  // SP 800-73-5 Part 1 Section 3.3.6, footnote 6: "A BIT Group Template with no BITs is encoded as
+  // '7F 61 03 02 01 00'."
+  private static final byte[] EMPTY_BIT_GROUP_TEMPLATE = {
+    (byte) 0x7F, (byte) 0x61, (byte) 0x03, (byte) 0x02, (byte) 0x01, (byte) 0x00
+  };
   private static final byte[] PIV_AID = {
     (byte) 0xA0,
     (byte) 0x00,
@@ -48,8 +78,7 @@ final class PIVDataCommandHandler {
     this.scratch = scratch;
   }
 
-  short getData(
-      byte[] buffer, short offset, short length, boolean vciSatisfied, boolean vciAdvertised) {
+  short getData(byte[] buffer, short offset, short length, boolean vciSatisfied) {
     if (buffer[offset++] != (byte) 0x5C) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
@@ -71,33 +100,64 @@ final class PIVDataCommandHandler {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
-    boolean discovery = isDiscoveryDataObject(buffer, offset, idLength);
-    if (!discovery && !object.isInitialised()) {
-      scratch[ZERO] = PIV.CONST_TAG_DATA;
-      scratch[(short) 1] = (byte) 0x00;
-      chainBuffer.setOutgoing(scratch, ZERO, (short) 2, false);
-      return (short) 2;
-    }
-
     short responseLength;
     byte[] data;
-    if (discovery && object.isInitialised()) {
+    if (object.isInitialised()) {
       responseLength = object.getLength();
       data = object.content;
-    } else if (discovery) {
-      responseLength = buildDiscoveryObject(scratch, ZERO, vciAdvertised);
+    } else if (isDiscoveryDataObject(buffer, offset, idLength)) {
+      responseLength = buildDiscoveryObject(scratch, ZERO);
       data = scratch;
+    } else if (idLength == (short) 2
+        && buffer[offset] == (byte) 0x7F
+        && buffer[(short) (offset + 1)] == (byte) 0x61) {
+      // SP 800-73-5 Part 2 Section 3.1.2 returns the "BER-TLV of the 0x7F61 BIT Group Template"
+      // rather than a '53' container. OCC is not implemented, so the template has no BITs.
+      responseLength = (short) EMPTY_BIT_GROUP_TEMPLATE.length;
+      data = EMPTY_BIT_GROUP_TEMPLATE;
     } else {
-      responseLength = object.getLength();
-      data = object.content;
+      // SP 800-73-5 Part 1 Section 4.1: "data objects that are created but not used SHALL be set
+      // to zero-length value." They are returned as an empty '53' container.
+      scratch[ZERO] = PIV.CONST_TAG_DATA;
+      scratch[(short) 1] = (byte) 0x00;
+      responseLength = (short) 2;
+      data = scratch;
     }
     chainBuffer.setOutgoing(data, ZERO, responseLength, false);
     return responseLength;
   }
 
+  /** Returns whether a valid {@code policy} has every bit of {@code bits} in its first byte set. */
+  static boolean hasPolicyBits(short policy, byte bits) {
+    return policy != INVALID_DISCOVERY_POLICY && (byte) ((byte) (policy >> 8) & bits) == bits;
+  }
+
   boolean isGlobalPinAdvertised() {
-    short policy = getDiscoveryPolicy();
-    return policy != INVALID_DISCOVERY_POLICY && (((byte) (policy >> 8) & (byte) 0x20) != (byte) 0);
+    return hasPolicyBits(getDiscoveryPolicy(), PIN_POLICY_GLOBAL_PIN);
+  }
+
+  /**
+   * Returns whether a stored PIN Usage Policy describes only features this applet provides.
+   *
+   * <p>SP 800-73-5 Part 1 Section 3.3.2: bit 6 "indicates whether the optional Global PIN satisfies
+   * the PIV ACRs", bit 5 "whether the optional OCC satisfies the PIV ACRs" and bit 4 "whether the
+   * optional VCI is implemented". OCC is not implemented, so bit 5 must be clear. The Global PIN
+   * bit requires the Global PIN to be enabled, and the VCI bit must match the VCI configuration.
+   * With VCI, bit 3 must state the configured pairing requirement.
+   *
+   * @param policy validated policy from {@link #getDiscoveryPolicy()}
+   * @param globalPinEnabled whether the Global PIN is enabled in the configuration
+   * @param vciMode configured {@link Config#CONFIG_VCI_MODE}
+   */
+  static boolean isDiscoveryPolicyConsistent(short policy, boolean globalPinEnabled, byte vciMode) {
+    if (policy == INVALID_DISCOVERY_POLICY) return false;
+    if (hasPolicyBits(policy, PIN_POLICY_OCC)) return false;
+    if (hasPolicyBits(policy, PIN_POLICY_GLOBAL_PIN) && !globalPinEnabled) return false;
+    boolean vciConfigured = vciMode != Config.VCI_MODE_DISABLED;
+    if (hasPolicyBits(policy, PIN_POLICY_VCI) != vciConfigured) return false;
+    return !vciConfigured
+        || hasPolicyBits(policy, PIN_POLICY_VCI_WITHOUT_PAIRING)
+            == (vciMode != Config.VCI_MODE_PAIRING_CODE);
   }
 
   /**
@@ -138,10 +198,20 @@ final class PIVDataCommandHandler {
       }
       byte first = content[policyOffset];
       byte second = content[(short) (policyOffset + 1)];
-      if ((first & (byte) 0xC3) != (byte) 0x40) return INVALID_DISCOVERY_POLICY;
-      if ((first & (byte) 0x20) == (byte) 0) {
+      // "Table 1 lists the acceptable values for the first byte of the PIN Usage Policy": 0x40,
+      // 0x48, 0x4C, 0x50, 0x58, 0x5C, 0x60, 0x68, 0x6C, 0x70, 0x78 and 0x7C. Bit 7 is set, bits 8,
+      // 2 and 1 are zero, and bit 3 (VCI without pairing) occurs only with bit 4 (VCI).
+      if ((first & PIN_POLICY_ZERO_BITS) != (byte) 0
+          || (first & PIN_POLICY_APPLICATION_PIN) == (byte) 0
+          || (byte) (first & (byte) (PIN_POLICY_VCI | PIN_POLICY_VCI_WITHOUT_PAIRING))
+              == PIN_POLICY_VCI_WITHOUT_PAIRING) {
+        return INVALID_DISCOVERY_POLICY;
+      }
+      // "If Bit 6 of the first byte of the PIN Usage Policy is set to zero, then the second byte
+      // is RFU and SHALL be set to 0x00."
+      if ((first & PIN_POLICY_GLOBAL_PIN) == (byte) 0) {
         if (second != (byte) 0x00) return INVALID_DISCOVERY_POLICY;
-      } else if (second != (byte) 0x10 && second != (byte) 0x20) {
+      } else if (second != PIN_PREFERENCE_APPLICATION_PIN && second != PIN_PREFERENCE_GLOBAL_PIN) {
         return INVALID_DISCOVERY_POLICY;
       }
       return (short) (((short) (first & 0xFF) << 8) | (short) (second & 0xFF));
@@ -214,57 +284,36 @@ final class PIVDataCommandHandler {
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
-    requireCompleteLengthHeader(buffer, offset, end);
-    short objectLength = TLVReader.getLength(buffer, offset);
+    // The tag and length fields must lie inside this frame; the value may continue in later
+    // chained frames.
+    short valueOffset = TLV.dataOffset(buffer, offset, end, false);
+    short objectLength = TLV.readLength(buffer, offset, end, false);
     if (objectLength == 0) {
+      // SP 800-73-5 Part 2 Section 3.3.1 Table 10: the data field is the tag list followed by the
+      // '53' object only. An empty object is complete in this frame, so neither trailing bytes nor
+      // an announced continuation (ISO/IEC 7816-4 Section 5.3.3: "If bit b5 is set to 1, then the
+      // command is not the last command of a chain.") belong to it.
+      if (valueOffset != end || (buffer[ISO7816.OFFSET_CLA] & ChainBuffer.CLA_CHAINING) != 0) {
+        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+      }
       object.clear();
       return;
     }
 
-    objectLength += (short) (TLVReader.getDataOffset(buffer, offset) - offset);
+    objectLength += (short) (valueOffset - offset);
     length -= (short) (offset - initialOffset);
     chainBuffer.setIncomingObject(object, objectLength);
     chainBuffer.processIncomingObject(buffer, offset, length, protection);
   }
 
-  /** Bounds the BER length header before TLVReader examines the APDU backing array. */
-  private static void requireCompleteLengthHeader(byte[] buffer, short offset, short end) {
-    short tagLength = buffer[offset] == (byte) 0x7F ? (short) 2 : (short) 1;
-    short lengthOffset = (short) (offset + tagLength);
-    if (lengthOffset < offset || lengthOffset >= end) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-    short first = (short) (buffer[lengthOffset] & 0xFF);
-    short lengthBytes;
-    if (first < (short) 0x80) {
-      lengthBytes = (short) 0;
-    } else if (first == (short) 0x81) {
-      lengthBytes = (short) 1;
-    } else if (first == (short) 0x82) {
-      lengthBytes = (short) 2;
-    } else {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      return;
-    }
-    if ((short) (lengthOffset + lengthBytes) >= end) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-  }
-
-  private short buildDiscoveryObject(byte[] buffer, short offset, boolean vciAdvertised) {
+  private short buildDiscoveryObject(byte[] buffer, short offset) {
     short length = (short) Config.TEMPLATE_DISCOVERY.length;
     offset = Util.arrayCopyNonAtomic(Config.TEMPLATE_DISCOVERY, ZERO, buffer, offset, length);
     offset -= (short) 2;
+    // A synthesized Discovery Object advertises neither VCI nor the Global PIN: SP 800-73-5 Part 1
+    // Sections 3.3.2 and 5.5 make the issuer-stored Discovery Object the source of both policies.
     buffer[offset++] =
-        (byte)
-            ((config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL) ? (byte) (1 << 6) : (byte) 0)
-                | (vciAdvertised ? (byte) (1 << 3) : (byte) 0)
-                | (vciAdvertised
-                        && config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_ENABLED
-                    ? (byte) (1 << 2)
-                    : (byte) 0));
-    // A synthesized Discovery Object cannot authorize Global PIN use. The issuer must store the
-    // exact policy bytes before key reference 00 becomes available.
+        config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL) ? PIN_POLICY_APPLICATION_PIN : (byte) 0;
     buffer[offset] = (byte) 0x00;
     return length;
   }
@@ -291,86 +340,113 @@ final class PIVDataCommandHandler {
     // 53 <data>. PIVDataObject stores that complete 53 data object, so validate its value rather
     // than treating the outer container as the first Part 1 data element.
     if (content[offset] != PIV.CONST_TAG_DATA) return false;
-    short containerEnd = tlvEnd(content, offset, limit);
-    if (containerEnd != limit) return false;
-    offset = TLVReader.getDataOffset(content, offset);
-    limit = containerEnd;
+    if (TLV.endOrInvalid(content, offset, limit, false) != limit) return false;
+    offset = TLV.valueOffsetOrInvalid(content, offset, limit, false);
     if (offset >= limit) return false;
     if (suffix == (byte) 0x05 || suffix == (byte) 0x01) {
-      if (content[offset] != (byte) 0x70) return false;
-      offset = tlvEnd(content, offset, limit);
-      if (offset < (short) 0 || offset >= limit || content[offset] != (byte) 0x71) return false;
-      if (tlvValueLength(content, offset, limit) != (short) 1) return false;
-      offset = tlvEnd(content, offset, limit);
-      if (offset < (short) 0 || offset >= limit || content[offset] != (byte) 0xFE) return false;
-      return tlvValueLength(content, offset, limit) == (short) 0
-          && tlvEnd(content, offset, limit) == limit;
+      offset = element(content, offset, limit, (byte) 0x70, (short) -1);
+      offset = element(content, offset, limit, (byte) 0x71, (short) 1);
+      return element(content, offset, limit, (byte) 0xFE, (short) 0) == limit;
     }
     if (suffix == (byte) 0x06) {
-      if (content[offset] != (byte) 0xBA) return false;
-      short mappingLength = tlvValueLength(content, offset, limit);
+      short mappingLength = valueLength(content, offset, limit, (byte) 0xBA);
       if (mappingLength <= (short) 0 || (short) (mappingLength % (short) 3) != (short) 0) {
         return false;
       }
-      offset = tlvEnd(content, offset, limit);
-      if (offset < (short) 0
-          || offset >= limit
-          || content[offset] != (byte) 0xBB
-          || tlvValueLength(content, offset, limit) <= (short) 0) return false;
-      offset = tlvEnd(content, offset, limit);
-      if (offset == limit) return true;
-      return offset >= (short) 0
-          && offset < limit
-          && content[offset] == (byte) 0xFE
-          && tlvValueLength(content, offset, limit) == (short) 0
-          && tlvEnd(content, offset, limit) == limit;
+      offset = element(content, offset, limit, (byte) 0xBA, (short) -1);
+      if (valueLength(content, offset, limit, (byte) 0xBB) <= (short) 0) return false;
+      offset = element(content, offset, limit, (byte) 0xBB, (short) -1);
+      return offset == limit || element(content, offset, limit, (byte) 0xFE, (short) 0) == limit;
+    }
+    if (suffix == (byte) 0x0C) {
+      // SP 800-73-5 Part 1 Table 20: keysWithOnCardCerts 'C1' and keysWithOffCardCerts 'C2' (one
+      // byte each), the conditional offCardCertURL 'F3' and the Error Detection Code 'FE'.
+      // Footnote 25: "The offCardCertURL data element shall be present if keysWithOffCardCerts is
+      // greater than zero and shall be absent if both keysWithOnCardCerts and keysWithOffCardCerts
+      // are zero."
+      short onCard = valueOffsetOf(content, offset, limit, (byte) 0xC1, (short) 1);
+      offset = element(content, offset, limit, (byte) 0xC1, (short) 1);
+      short offCard = valueOffsetOf(content, offset, limit, (byte) 0xC2, (short) 1);
+      offset = element(content, offset, limit, (byte) 0xC2, (short) 1);
+      if (onCard < (short) 0 || offCard < (short) 0) return false;
+      boolean url = offset >= (short) 0 && offset < limit && content[offset] == (byte) 0xF3;
+      if (url) {
+        if (valueLength(content, offset, limit, (byte) 0xF3) <= (short) 0) return false;
+        offset = element(content, offset, limit, (byte) 0xF3, (short) -1);
+      }
+      if (content[offCard] != (byte) 0 && !url) return false;
+      if (content[onCard] == (byte) 0 && content[offCard] == (byte) 0 && url) return false;
+      return element(content, offset, limit, (byte) 0xFE, (short) 0) == limit;
     }
     while (offset < limit) {
-      offset = tlvEnd(content, offset, limit);
-      if (offset < (short) 0) return false;
+      offset = TLV.endOrInvalid(content, offset, limit, false);
+      if (offset == TLV.INVALID) return false;
     }
-    return offset == limit;
+    return true;
   }
 
-  private static short tlvValueLength(byte[] data, short offset, short limit) {
-    short cursor = (short) (offset + (short) 1);
-    if (cursor >= limit) return (short) -1;
-    if ((data[offset] & (byte) 0x1F) == (byte) 0x1F) {
-      do {
-        if (cursor >= limit) return (short) -1;
-      } while ((data[cursor++] & (byte) 0x80) != (byte) 0);
+  /**
+   * Returns whether {@code object} holds a well-formed Pairing Code Reference Data Container.
+   *
+   * <p>SP 800-73-5 Part 1 Table 44: Pairing Code '99', "Fixed Text (ASCII)", 8 bytes, followed by
+   * the Error Detection Code 'FE' with no value. The stored PUT DATA object is therefore exactly
+   * {@code 53 0C 99 08 <8 ASCII digits> FE 00}. SP 800-73-5 Part 1 Section 5.1.3: "the pairing code
+   * SHALL consist of eight decimal digits".
+   */
+  static boolean isValidPairingCodeContainer(PIVDataObject object) {
+    if (object == null
+        || !object.isInitialised()
+        || object.getLength() != (short) 14
+        || object.content[ZERO] != PIV.CONST_TAG_DATA
+        || object.content[(short) 1] != (byte) 0x0C) {
+      return false;
     }
-    if (cursor >= limit) return (short) -1;
-    short first = (short) (data[cursor++] & 0xFF);
-    if (first < (short) 0x80) return first;
-    short count = (short) (first & (short) 0x7F);
-    if (count == (short) 0 || count > (short) 2 || (short) (cursor + count) > limit) {
-      return (short) -1;
-    }
-    short length = (short) 0;
-    while (count-- > (short) 0) length = (short) ((length << 8) | (data[cursor++] & 0xFF));
-    return length;
+    byte[] content = object.content;
+    short offset = element(content, (short) 2, (short) 14, (byte) 0x99, PAIRING_CODE_LENGTH);
+    if (element(content, offset, (short) 14, (byte) 0xFE, (short) 0) != (short) 14) return false;
+    return isDecimalDigits(content, PAIRING_CODE_OFFSET, PAIRING_CODE_LENGTH);
   }
 
-  private static short tlvEnd(byte[] data, short offset, short limit) {
-    short cursor = (short) (offset + (short) 1);
-    if (cursor >= limit) return (short) -1;
-    if ((data[offset] & (byte) 0x1F) == (byte) 0x1F) {
-      do {
-        if (cursor >= limit) return (short) -1;
-      } while ((data[cursor++] & (byte) 0x80) != (byte) 0);
+  /** Returns whether every byte of the range is an ASCII decimal digit. */
+  static boolean isDecimalDigits(byte[] buffer, short offset, short length) {
+    for (short index = ZERO; index < length; index++) {
+      byte value = buffer[(short) (offset + index)];
+      if (value < (byte) 0x30 || value > (byte) 0x39) return false;
     }
-    if (cursor >= limit) return (short) -1;
-    short first = (short) (data[cursor++] & 0xFF);
-    short length = first;
-    if (first >= (short) 0x80) {
-      short count = (short) (first & (short) 0x7F);
-      if (count == (short) 0 || count > (short) 2 || (short) (cursor + count) > limit) {
-        return (short) -1;
-      }
-      length = (short) 0;
-      while (count-- > (short) 0) length = (short) ((length << 8) | (data[cursor++] & 0xFF));
+    return true;
+  }
+
+  /**
+   * Returns the end of the single-byte-tag element at {@code offset}, or {@link TLV#INVALID} when
+   * {@code offset} is already invalid, the tag differs, the element is malformed, or its value
+   * length differs from {@code expectedLength} (negative means any length).
+   */
+  private static short element(
+      byte[] data, short offset, short limit, byte tag, short expectedLength) {
+    short length = valueLength(data, offset, limit, tag);
+    if (length < (short) 0 || (expectedLength >= (short) 0 && length != expectedLength)) {
+      return TLV.INVALID;
     }
-    return length <= (short) (limit - cursor) ? (short) (cursor + length) : (short) -1;
+    return TLV.endOrInvalid(data, offset, limit, false);
+  }
+
+  /**
+   * Returns the value offset of an element accepted by {@link #element}, or {@link TLV#INVALID}.
+   */
+  private static short valueOffsetOf(
+      byte[] data, short offset, short limit, byte tag, short expectedLength) {
+    if (element(data, offset, limit, tag, expectedLength) == TLV.INVALID) return TLV.INVALID;
+    return TLV.valueOffsetOrInvalid(data, offset, limit, false);
+  }
+
+  /** Returns the value length of a complete element with {@code tag}, or {@link TLV#INVALID}. */
+  private static short valueLength(byte[] data, short offset, short limit, byte tag) {
+    if (offset < (short) 0
+        || offset >= limit
+        || data[offset] != tag
+        || TLV.endOrInvalid(data, offset, limit, false) == TLV.INVALID) {
+      return TLV.INVALID;
+    }
+    return TLV.valueLengthOrInvalid(data, offset, limit, false);
   }
 }

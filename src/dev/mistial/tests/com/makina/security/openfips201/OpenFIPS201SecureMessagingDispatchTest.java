@@ -515,8 +515,10 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     ResponseAPDU verifyStatus = transmit(new CommandAPDU(0x00, 0x20, 0x00, 0x80));
     assertEquals(0x63C6, verifyStatus.getSW(), "The intervening command must execute normally");
+    // An idle GET RESPONSE has no data field to be incorrect; it reports 6985 as the protected
+    // GET RESPONSE path does.
     assertSw(
-        ISO7816.SW_WRONG_DATA,
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
         transmit(new CommandAPDU(0x00, 0xC0, 0x00, 0x00, 0)),
         "GET RESPONSE must not resume the abandoned response");
   }
@@ -1223,20 +1225,20 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * Verifies that plaintext APDUs sent while VCI is established are rejected and destroy the
-   * session.
+   * Verifies that a plaintext APDU sent after key establishment is processed under the plaintext
+   * access rules and leaves the session intact.
    *
-   * <p>NIST SP 800-73-5 Part 1 Section 5.5 defines VCI as communication over secure messaging; Part
-   * 2 Section 4.3 requires session key destruction after SM errors.
+   * <p>SP 800-73-5 Part 2 Section 4.2: after key establishment "subsequent communication with the
+   * card CAN be performed using secure messaging", and SM-AUTH (Appendix A.6.1) continues in
+   * plaintext. Section 4.3 lists the only session-key destruction triggers; a plaintext command is
+   * none of them. VCI is satisfied only by a protected command.
    */
   @Test
-  void plaintextApduDuringActiveVciSecureMessagingIsRejectedAndClearsSession() throws Exception {
-    // OpenFIPS201 rejects plaintext PIV commands after VCI establishment except for the plaintext
-    // OPACITY re-establishment command allowed by SP 800-73-5 Part 2 Section 4.1.8.
+  void plaintextApduDuringSecureMessagingUsesPlaintextRulesAndKeepsSession() throws Exception {
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
-        "SELECT before plaintext APDU rejection");
+        "SELECT before plaintext APDU");
 
     Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
     Object piv = field(realApplet, "piv").get(realApplet);
@@ -1253,13 +1255,56 @@ class OpenFIPS201SecureMessagingDispatchTest {
     ResponseAPDU response = transmit(new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, hex("5C017E"), 0));
 
     assertSw(
-        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
+        ISO7816.SW_FILE_NOT_FOUND,
         response,
-        "Plain APDU while VCI secure messaging is active");
+        "Plain GET DATA is processed under plaintext rules (no Discovery Object loaded)");
     assertEquals(
-        false,
+        true,
         method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
-        "Plain APDU while VCI is active must destroy the secure messaging session");
+        "A plaintext APDU must not destroy the secure messaging session");
+
+    byte[] mcv = new byte[16];
+    ResponseAPDU protectedResponse =
+        transmit(
+            new CommandAPDU(
+                chainedMacOnlySecureCommand(
+                    mcv,
+                    PIVSecureMessaging.CLA_SECURE_MESSAGING,
+                    (byte) 0xFE,
+                    (byte) 0x00,
+                    (byte) 0x00,
+                    mcv)));
+    assertSw(0x9000, protectedResponse, "The session continues after the plaintext APDU");
+    assertEncapsulatedStatus(
+        ISO7816.SW_INS_NOT_SUPPORTED, protectedResponse, "Protected command after plaintext APDU");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 3.1.1: for a SELECT naming "an invalid AID not supported by the ICC,
+   * then the PIV Card Application SHALL remain the currently selected application, and all PIV Card
+   * Application security status indicators SHALL remain unchanged."
+   */
+  @Test
+  void selectOfUnknownAidDuringSecureMessagingReturns6A82AndKeepsStatus() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    Applet realApplet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(realApplet, "piv").get(realApplet);
+    Object sm = field(piv, "secureMessaging").get(piv);
+    try (AutoCloseable ignored = enterEngineContext()) {
+      establishSyntheticSession(sm);
+      method(sm.getClass(), "markPairingVerified").invoke(sm);
+    }
+
+    assertSw(
+        ISO7816.SW_FILE_NOT_FOUND,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, hex("A0000000999901"), 0)),
+        "SELECT of an AID not on the ICC");
+    assertEquals(true, method(sm.getClass(), "isEstablished").invoke(sm), "SM status unchanged");
+    assertEquals(
+        true, method(sm.getClass(), "isVciEstablished").invoke(sm), "Pairing status unchanged");
   }
 
   @Test
@@ -1297,11 +1342,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   /**
-   * SP 800-73-5 Part 2 Section 4.1 permits only OPACITY Case 1A to re-establish a plaintext
-   * session. A generic ECDH tag 85 command must not inherit that exception.
+   * SP 800-73-5 Part 2 Section 4.1 permits only OPACITY Case 1A to re-establish a session. A
+   * generic ECDH tag 85 command on key 04 is rejected under the plaintext rules and, not being a
+   * new establishment request (Section 4.3), leaves the current session in place.
    */
   @Test
-  void plaintextEcdhOnSecureMessagingKeyDoesNotBypassActiveSession() throws Exception {
+  void plaintextEcdhOnSecureMessagingKeyDoesNotReplaceActiveSession() throws Exception {
     assertSw(
         0x9000,
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
@@ -1330,14 +1376,13 @@ class OpenFIPS201SecureMessagingDispatchTest {
                 tlv((byte) 0x7C, tlv((byte) 0x85, publicPoint)),
                 0));
 
-    assertSw(
-        ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED,
-        response,
-        "Generic ECDH must not bypass an active secure-messaging session");
+    assertTrue(
+        response.getSW() != 0x9000 && (response.getSW() & 0xFF00) != 0x6100,
+        "Generic ECDH on key 04 must be rejected, was " + Integer.toHexString(response.getSW()));
     assertEquals(
-        false,
+        true,
         method(secureMessagingClass, "isEstablished").invoke(secureMessaging),
-        "Rejected plaintext ECDH must destroy the active session");
+        "Rejected plaintext ECDH is not an establishment request and keeps the session");
   }
 
   /**
@@ -1831,6 +1876,393 @@ class OpenFIPS201SecureMessagingDispatchTest {
         "Plain GET RESPONSE after an SM response should continue through PIV outgoing dispatch");
   }
 
+  /**
+   * An extended Ne larger than the response work buffer yields one full buffer and '61 00' instead
+   * of overrunning it (SP 800-73-5 Part 2 Section 4.2.6 response chaining).
+   */
+  @Test
+  void extendedLeLargerThanResponseBufferIsClampedToTheBuffer() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      establishSyntheticSession(sm);
+      byte[] outgoing = new byte[700];
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+      ByteArrayOutputStream sent = new ByteArrayOutputStream();
+      APDU apdu = capturingStreamingApdu(OpenFIPS201.INS_PIV_GET_DATA, (short) 32767, sent);
+
+      InvocationTargetException chunk =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  method(piv.getClass(), "processOutgoingSecure", APDU.class, short.class)
+                      .invoke(piv, apdu, ISO7816.SW_NO_ERROR));
+      assertTrue(
+          chunk.getCause() instanceof ISOException, "unexpected " + chunk.getCause().toString());
+      assertEquals(
+          ISO7816.SW_BYTES_REMAINING_00, ((ISOException) chunk.getCause()).getReason(), "SW");
+      assertEquals(PIV.LENGTH_SM_RESPONSE, sent.size(), "one full response buffer");
+      assertEquals(true, method(sm.getClass(), "isEstablished").invoke(sm));
+    }
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 4.3 zeroizes the session keys when "an error occurs in secure
+   * messaging"; footnote 25 makes any status other than '61 XX' or '90 00' such an error, including
+   * a runtime fault while building the protected response.
+   */
+  @Test
+  void runtimeFaultWhileWrappingResponseDestroysSession() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      establishSyntheticSession(sm);
+      seedWorkBuffers(piv);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+      Class<?> cryptoClass = piv.getClass().getClassLoader().loadClass(PIVCrypto.class.getName());
+      Method update =
+          method(cryptoClass, "doAesResponseCmacUpdate", byte[].class, short.class, short.class);
+      try (org.mockito.MockedStatic<?> crypto =
+          Mockito.mockStatic(cryptoClass, Mockito.CALLS_REAL_METHODS)) {
+        crypto
+            .when(
+                () ->
+                    update.invoke(
+                        null, Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
+            .thenThrow(new ArrayIndexOutOfBoundsException("injected"));
+        InvocationTargetException failure =
+            assertThrows(
+                InvocationTargetException.class,
+                () ->
+                    method(piv.getClass(), "processOutgoingSecure", APDU.class, short.class)
+                        .invoke(
+                            piv, streamingApdu(OpenFIPS201.INS_PIV_GET_DATA), ISO7816.SW_NO_ERROR));
+        assertTrue(failure.getCause() instanceof ArrayIndexOutOfBoundsException);
+      }
+      assertSessionDestroyed(piv, sm);
+    }
+  }
+
+  /**
+   * A protected GET RESPONSE retrieves the next part of a pending protected data response (SP
+   * 800-73-5 Part 2 Section 4.2.6) instead of failing in command reassembly.
+   */
+  @Test
+  void protectedGetResponseDrainsPendingSecureDataResponse() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      Object chainBuffer = field(piv, "chainBuffer").get(piv);
+      establishSyntheticSession(sm);
+
+      byte[] mcv = new byte[16];
+      byte[] getData =
+          chainedMacOnlySecureCommand(
+              mcv,
+              PIVSecureMessaging.CLA_SECURE_MESSAGING,
+              OpenFIPS201.INS_PIV_GET_DATA,
+              (byte) 0x3F,
+              (byte) 0xFF,
+              mcv);
+      method(
+              sm.getClass(),
+              "unwrapCommand",
+              byte[].class,
+              short.class,
+              short.class,
+              byte[].class,
+              short.class)
+          .invoke(sm, getData, (short) 5, (short) 10, new byte[512], (short) 0);
+      byte[] outgoing = new byte[300];
+      java.util.Arrays.fill(outgoing, SYNTHETIC_PLAINTEXT_BYTE);
+      method(
+              chainBuffer.getClass(),
+              "setOutgoing",
+              byte[].class,
+              short.class,
+              short.class,
+              boolean.class)
+          .invoke(chainBuffer, outgoing, (short) 0, (short) outgoing.length, false);
+      ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
+      ByteArrayOutputStream sent = new ByteArrayOutputStream();
+      InvocationTargetException first =
+          assertThrows(
+              InvocationTargetException.class,
+              () ->
+                  method(piv.getClass(), "processOutgoingSecure", APDU.class, short.class)
+                      .invoke(
+                          piv,
+                          capturingStreamingApdu(OpenFIPS201.INS_PIV_GET_DATA, (short) 256, sent),
+                          ISO7816.SW_NO_ERROR));
+      assertEquals(
+          (short) 0x6100,
+          (short) (((ISOException) first.getCause()).getReason() & (short) 0xFF00),
+          "first chunk leaves the protected response pending");
+
+      ResponseAPDU second =
+          transmit(
+              new CommandAPDU(
+                  chainedMacOnlySecureCommand(
+                      mcv,
+                      PIVSecureMessaging.CLA_SECURE_MESSAGING,
+                      OpenFIPS201.INS_GP_GET_RESPONSE,
+                      (byte) 0x00,
+                      (byte) 0x00,
+                      mcv)));
+      assertSw(0x9000, second, "protected GET RESPONSE completes the pending response");
+      byte[] tail = second.getData();
+      assertEquals(323 - 256, tail.length, "remaining wrapped response octets");
+      assertArrayEquals(
+          hex("990290008E08"),
+          java.util.Arrays.copyOfRange(tail, tail.length - 14, tail.length - 8),
+          "status template and R-MAC close the response");
+      assertEquals(true, method(sm.getClass(), "isEstablished").invoke(sm));
+    }
+  }
+
+  /**
+   * A command sent with the PIV secure messaging class that is rejected before unwrap still fails
+   * with a status other than '61 XX' or '90 00', which is an error in secure messaging (SP 800-73-5
+   * Part 2 Section 4.3, footnote 25); card and host both zeroize the session keys.
+   */
+  @Test
+  void secureMessagingClassOnGlobalPlatformInstructionDestroysSession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(applet, "piv").get(applet);
+    Object sm = field(piv, "secureMessaging").get(piv);
+    for (byte ins : new byte[] {(byte) 0x50, (byte) 0x82}) {
+      try (AutoCloseable ignored = enterEngineContext()) {
+        establishSyntheticSession(sm);
+      }
+      assertSw(
+          ISO7816.SW_CLA_NOT_SUPPORTED,
+          transmit(
+              new CommandAPDU(
+                  macOnlySecureCommand(
+                      PIVSecureMessaging.CLA_SECURE_MESSAGING, ins, (byte) 0, (byte) 0))),
+          "GP instruction with the PIV SM class");
+      assertEquals(false, method(sm.getClass(), "isEstablished").invoke(sm), "session destroyed");
+    }
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 4.2.7: a protected command that cannot be reassembled is reported
+   * with an SM processing status, here '69 88', "without performing further secure messaging".
+   */
+  @Test
+  void protectedChainLargerThanTheCommandBufferReturnsSmStatus() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(applet, "piv").get(applet);
+    Object sm = field(piv, "secureMessaging").get(piv);
+    try (AutoCloseable ignored = enterEngineContext()) {
+      establishSyntheticSession(sm);
+    }
+    byte[] complete = new byte[5 + 750];
+    complete[ISO7816.OFFSET_INS] = OpenFIPS201.INS_PIV_GET_DATA;
+    complete[ISO7816.OFFSET_P1] = (byte) 0x3F;
+    complete[ISO7816.OFFSET_P2] = (byte) 0xFF;
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(commandFragment(complete, 5, 250, false))),
+        "first protected frame");
+    assertSw(
+        PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT,
+        transmit(new CommandAPDU(commandFragment(complete, 255, 250, false))),
+        "overflowing protected frame");
+    assertEquals(false, method(sm.getClass(), "isEstablished").invoke(sm), "session destroyed");
+  }
+
+  /**
+   * Every malformed protected data object in a single protected APDU returns its SP 800-73-5 Part 2
+   * Section 4.2.7 status ('69 87' for a missing C-MAC, otherwise '69 88') and destroys the session
+   * (Section 4.3).
+   */
+  @Test
+  void malformedSmObjectsAreRejectedAndDestroySession() throws Exception {
+    String block = "00112233445566778899AABBCCDDEEFF";
+    String mac = "8E080102030405060708";
+    String[][] rows = {
+      {"duplicate 87", "871101" + block + "871101" + block + mac, "6988"},
+      {"87 shorter than 17", "871001" + block.substring(2) + mac, "6988"},
+      {"cryptogram not a block multiple", "871201" + block + "00" + mac, "6988"},
+      {"87 without padding indicator", "871102" + block + mac, "6988"},
+      {"97 value not 00", "970101" + mac, "6988"},
+      {"97 length not 1", "97020000" + mac, "6988"},
+      {"duplicate 8E", mac + mac, "6988"},
+      {"8E not 8 octets", "8E0401020304", "6988"},
+      {"8E not last", mac + "970100", "6988"},
+      {"unknown tag", "85020000" + mac, "6988"},
+      {"87 after 97", "970100" + "871101" + block + mac, "6988"},
+      {"missing 8E", "970100", "6987"},
+      {"no objects", "", "6987"},
+    };
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      for (String[] row : rows) {
+        establishSyntheticSession(sm);
+        seedWorkBuffers(piv);
+        byte[] body = hex(row[1]);
+        byte[] command = new byte[5 + body.length];
+        command[ISO7816.OFFSET_CLA] = PIVSecureMessaging.CLA_SECURE_MESSAGING;
+        command[ISO7816.OFFSET_INS] = OpenFIPS201.INS_PIV_GET_DATA;
+        command[ISO7816.OFFSET_P1] = (byte) 0x3F;
+        command[ISO7816.OFFSET_P2] = (byte) 0xFF;
+        System.arraycopy(body, 0, command, 5, body.length);
+        ISOException failure =
+            assertThrows(
+                ISOException.class, () -> unwrapProtected(piv, command, (short) body.length));
+        assertEquals(
+            (short) Integer.parseInt(row[2], 16), failure.getReason(), row[0] + ": status word");
+        assertSessionDestroyed(piv, sm);
+      }
+    }
+  }
+
+  /**
+   * The bounded parser for a rejected contactless PUT DATA chain applies the same Section 4.2.7
+   * rules to every protected data object after the cryptogram, and to the decrypted padding.
+   */
+  @Test
+  void malformedSmObjectsInRejectedCommandStreamDestroySession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(applet, "piv").get(applet);
+    Object sm = field(piv, "secureMessaging").get(piv);
+
+    byte[] valid = authenticatedEncryptedDataCommand(new byte[600]);
+    int macOffset = valid.length - 10;
+    byte[] withoutMac = java.util.Arrays.copyOf(valid, macOffset);
+    byte[] unknownTag = valid.clone();
+    unknownTag[macOffset] = (byte) 0x85;
+    byte[] trailing = java.util.Arrays.copyOf(valid, valid.length + 1);
+    byte[] badLe = new byte[valid.length + 3];
+    System.arraycopy(valid, 0, badLe, 0, macOffset);
+    System.arraycopy(hex("970101"), 0, badLe, macOffset, 3);
+    System.arraycopy(valid, macOffset, badLe, macOffset + 3, 10);
+    byte[] badPadding = authenticatedPaddedDataCommand(new byte[608]);
+    Object[][] rows = {
+      {"missing 8E", withoutMac, 0x6987},
+      {"unknown tag after cryptogram", unknownTag, 0x6988},
+      {"data after 8E", trailing, 0x6988},
+      {"97 value not 00", badLe, 0x6988},
+      {"no padding delimiter", badPadding, 0x6988},
+    };
+    for (Object[] row : rows) {
+      byte[] command = (byte[]) row[1];
+      try (AutoCloseable ignored = enterEngineContext()) {
+        establishSyntheticSession(sm);
+        method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
+      }
+      int bodyLength = command.length - 5;
+      assertSw(
+          0x9000,
+          transmit(new CommandAPDU(commandFragment(command, 5, 220, false))),
+          row[0] + ": first frame");
+      assertSw(
+          0x9000,
+          transmit(new CommandAPDU(commandFragment(command, 225, 220, false))),
+          row[0] + ": second frame");
+      assertSw(
+          (Integer) row[2],
+          transmit(new CommandAPDU(commandFragment(command, 445, bodyLength - 440, true))),
+          row[0] + ": final frame");
+      assertEquals(
+          false, method(sm.getClass(), "isEstablished").invoke(sm), row[0] + ": session destroyed");
+    }
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 3.1.1 leaves "all security status indicators" unchanged on PIV
+   * reselection, and JCRE 3.0.5 Section 5.1 clears CLEAR_ON_DESELECT objects even when the SELECT
+   * "Reselects the same applet". The session, the 9B authentication and PIN-Always therefore live
+   * in CLEAR_ON_RESET memory.
+   */
+  @Test
+  void securityStatusIndicatorsSurviveReselectionMemoryClearing() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+      Object piv = field(applet, "piv").get(applet);
+      Object sm = field(piv, "secureMessaging").get(piv);
+      Object csp = field(piv, "cspPIV").get(piv);
+      for (String name :
+          new String[] {"state", "commandMcv", "responseMcv", "encCounter", "responseState"}) {
+        assertEquals(
+            javacard.framework.JCSystem.CLEAR_ON_RESET,
+            javacard.framework.JCSystem.isTransient(field(sm, name).get(sm)),
+            name);
+      }
+      assertEquals(
+          javacard.framework.JCSystem.CLEAR_ON_RESET,
+          javacard.framework.JCSystem.isTransient(field(csp, "transientState").get(csp)),
+          "security status flags");
+      for (String keyName : new String[] {"skCfrm", "skMac", "skEnc", "skRmac"}) {
+        assertEquals(
+            javacard.security.KeyBuilder.TYPE_AES_TRANSIENT_RESET,
+            ((AESKey) field(sm, keyName).get(sm)).getType(),
+            keyName);
+      }
+    }
+  }
+
+  /** A genuine deselect sets every PIV security status indicator to FALSE (Section 3.1.1). */
+  @Test
+  void genuineDeselectClearsSessionAuthenticationAndPinAlways() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(applet, "piv").get(applet);
+    Object sm = field(piv, "secureMessaging").get(piv);
+    Object csp = field(piv, "cspPIV").get(piv);
+    try (AutoCloseable ignored = enterEngineContext()) {
+      establishSyntheticSession(sm);
+      method(csp.getClass(), "setAuthenticatedKey", byte.class).invoke(csp, (byte) 0x9B);
+      method(csp.getClass(), "markPINAlways").invoke(csp);
+      method(piv.getClass(), "deselect").invoke(piv);
+      assertEquals(false, method(sm.getClass(), "isEstablished").invoke(sm), "SM status");
+      for (String keyName : new String[] {"skCfrm", "skMac", "skEnc", "skRmac"}) {
+        assertTrue(!((AESKey) field(sm, keyName).get(sm)).isInitialized(), keyName);
+      }
+      byte[] flags = (byte[]) field(csp, "transientState").get(csp);
+      assertEquals(
+          0, flags[staticField(csp.getClass(), "STATE_PIN_ALWAYS").getShort(null)], "PIN-Always");
+      assertEquals(
+          0,
+          flags[staticField(csp.getClass(), "STATE_AUTH_KEY").getShort(null)],
+          "authenticated key");
+    }
+  }
+
   private ResponseAPDU transmit(CommandAPDU command) {
     return new ResponseAPDU(session.transceive(command.getBytes()));
   }
@@ -1849,7 +2281,11 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   private static APDU capturingStreamingApdu(byte ins, ByteArrayOutputStream sent) {
-    APDU apdu = streamingApdu(ins);
+    return capturingStreamingApdu(ins, (short) 256, sent);
+  }
+
+  private static APDU capturingStreamingApdu(byte ins, short le, ByteArrayOutputStream sent) {
+    APDU apdu = streamingApdu(ins, le);
     doAnswer(
             invocation -> {
               byte[] source = invocation.getArgument(0);

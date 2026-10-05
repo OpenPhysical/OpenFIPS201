@@ -14,7 +14,9 @@ class ConfigDefaultsTest {
 
   @Test
   void applicationPropertyTemplateHasConsistentOuterLength() {
-    assertEquals(FipsPolicy.ENABLED ? 140 : 149, Config.TEMPLATE_APT.length);
+    // The standard APT no longer advertises RSA-1024 ('80 01 06'), which no standard key
+    // reference accepts.
+    assertEquals(FipsPolicy.ENABLED ? 140 : 146, Config.TEMPLATE_APT.length);
     assertEquals(0x61, Config.TEMPLATE_APT[0] & 0xFF);
     assertEquals(0x81, Config.TEMPLATE_APT[1] & 0xFF);
     assertEquals(Config.TEMPLATE_APT.length - 3, Config.TEMPLATE_APT[2] & 0xFF);
@@ -208,7 +210,7 @@ class ConfigDefaultsTest {
           .thenReturn(new Object[1]);
       mocked
           .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
-          .thenReturn(new short[4]);
+          .thenAnswer(call -> new short[(short) call.getArgument(0)]);
       TLVReader reader = TLVReader.getInstance();
       reader.init(encoded, (short) 0, (short) encoded.length);
       config.update(reader);

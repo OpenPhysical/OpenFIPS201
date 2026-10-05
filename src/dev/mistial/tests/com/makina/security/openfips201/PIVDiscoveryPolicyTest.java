@@ -3,10 +3,12 @@ package com.makina.security.openfips201;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
 import javacard.framework.ISOException;
 import org.junit.jupiter.api.Test;
 
@@ -128,14 +130,15 @@ class PIVDiscoveryPolicyTest {
     when(store.findSingleByte(PIV.ID_DATA_DISCOVERY)).thenReturn(discovery);
     when(discovery.isInitialised()).thenReturn(true);
 
-    int[] localOnlyPolicies = {0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x58, 0x5C};
+    // SP 800-73-5 Part 1 Table 1 lists exactly these first-byte values.
+    int[] localOnlyPolicies = {0x40, 0x48, 0x4C, 0x50, 0x58, 0x5C};
     for (int first : localOnlyPolicies) {
       setPolicy(discovery, first, 0x00);
       assertEquals((first << 8), handler.getDiscoveryPolicy());
       assertFalse(handler.isGlobalPinAdvertised());
     }
 
-    int[] globalPolicies = {0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x78, 0x7C};
+    int[] globalPolicies = {0x60, 0x68, 0x6C, 0x70, 0x78, 0x7C};
     for (int first : globalPolicies) {
       for (int preference : new int[] {0x10, 0x20}) {
         setPolicy(discovery, first, preference);
@@ -148,6 +151,95 @@ class PIVDiscoveryPolicyTest {
     assertEquals(-1, handler.getDiscoveryPolicy(), "Local-only policy cannot prefer Global PIN");
     setPolicy(discovery, 0x60, 0x00);
     assertEquals(-1, handler.getDiscoveryPolicy(), "Global PIN policy must state its preference");
+  }
+
+  @Test
+  void rejectsPinUsagePolicyValuesOutsideTable1() {
+    PIVDataStore store = mock(PIVDataStore.class);
+    PIVDataObject discovery = mock(PIVDataObject.class);
+    PIVDataCommandHandler handler =
+        new PIVDataCommandHandler(
+            mock(Config.class),
+            mock(PIVSecurityProvider.class),
+            store,
+            mock(ChainBuffer.class),
+            new byte[32]);
+    when(store.findSingleByte(PIV.ID_DATA_DISCOVERY)).thenReturn(discovery);
+    when(discovery.isInitialised()).thenReturn(true);
+
+    // SP 800-73-5 Part 1 Section 3.3.2: bit 3 (VCI without pairing) only accompanies bit 4 (VCI);
+    // bit 7 is mandatory and bits 8, 2 and 1 are zero.
+    for (int first : new int[] {0x44, 0x54, 0x00, 0x08, 0x20, 0x41, 0x42, 0xC0}) {
+      setPolicy(discovery, first, 0x00);
+      assertEquals(-1, handler.getDiscoveryPolicy(), String.format("first byte %02X", first));
+    }
+    for (int first : new int[] {0x64, 0x74}) {
+      setPolicy(discovery, first, 0x10);
+      assertEquals(-1, handler.getDiscoveryPolicy(), String.format("first byte %02X", first));
+    }
+  }
+
+  @Test
+  void discoveryPolicyMustMatchImplementedFeatures() {
+    byte disabled = Config.VCI_MODE_DISABLED;
+    byte enabled = Config.VCI_MODE_ENABLED;
+    byte pairing = Config.VCI_MODE_PAIRING_CODE;
+
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) -1, true, disabled));
+    assertTrue(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4000, false, disabled));
+    assertTrue(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4000, true, disabled));
+    // OCC is not implemented, so bit 5 can never be advertised.
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x5000, true, disabled));
+    // The Global PIN bit requires an enabled Global PIN.
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x6010, false, disabled));
+    assertTrue(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x6010, true, disabled));
+    // The VCI bit must match the VCI configuration, and bit 3 the pairing requirement.
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4800, true, disabled));
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4000, true, pairing));
+    assertTrue(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4800, true, pairing));
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4C00, true, pairing));
+    assertTrue(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4C00, true, enabled));
+    assertFalse(PIVDataCommandHandler.isDiscoveryPolicyConsistent((short) 0x4800, true, enabled));
+  }
+
+  @Test
+  void personalizationRejectsSignedNegativeLengthsWithoutLooping() {
+    // A two-byte length of 0x8000 or more is negative as a Java Card short. It must be rejected
+    // rather than move the structure walk backwards.
+    assertTimeoutPreemptively(
+        Duration.ofSeconds(2),
+        () -> {
+          assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("53043082FFFC")));
+          assertFalse(mandatoryObjectIsValid((byte) 0x07, hex("530430828000")));
+          assertFalse(mandatoryObjectIsValid((byte) 0x05, hex("5306708280000000")));
+        });
+  }
+
+  @Test
+  void keyHistoryObjectStructureFollowsTable20() {
+    assertTrue(mandatoryObjectIsValid((byte) 0x0C, hex("5308C10100C20100FE00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x0C, hex("5308C10102C20100FE00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x0C, hex("530BC10100C20101F30141FE00")));
+    assertTrue(mandatoryObjectIsValid((byte) 0x0C, hex("530BC10101C20100F30141FE00")));
+    // Footnote 25: the URL is required when keysWithOffCardCerts is non-zero ...
+    assertFalse(mandatoryObjectIsValid((byte) 0x0C, hex("5308C10100C20101FE00")));
+    // ... and absent when both counts are zero.
+    assertFalse(mandatoryObjectIsValid((byte) 0x0C, hex("530BC10100C20100F30141FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x0C, hex("5306C10100C20100")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x0C, hex("5308C20100C10100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x0C, hex("5309C1020000C20100FE00")));
+    assertFalse(mandatoryObjectIsValid((byte) 0x0C, hex("530AC10100C20101F300FE00")));
+  }
+
+  @Test
+  void pairingCodeContainerFollowsTable44() {
+    assertTrue(pairingCodeIsValid(hex("530C99083132333435363738FE00")));
+    assertFalse(pairingCodeIsValid(hex("530C990831323334353637FFFE00")), "digits only");
+    assertFalse(pairingCodeIsValid(hex("530C98083132333435363738FE00")), "tag 99");
+    assertFalse(pairingCodeIsValid(hex("530C99083132333435363738FE01")), "empty EDC");
+    assertFalse(pairingCodeIsValid(hex("530A9908313233343536373800")), "length");
+    assertFalse(pairingCodeIsValid(hex("530D9909313233343536373839FE00")), "eight digits");
+    assertFalse(PIVDataCommandHandler.isValidPairingCodeContainer(null));
   }
 
   @Test
@@ -212,6 +304,14 @@ class PIVDiscoveryPolicyTest {
     discovery.content[discovery.content.length - 2] = (byte) first;
     discovery.content[discovery.content.length - 1] = (byte) second;
     when(discovery.getLength()).thenReturn((short) discovery.content.length);
+  }
+
+  private static boolean pairingCodeIsValid(byte[] content) {
+    PIVDataObject object = mock(PIVDataObject.class);
+    object.content = content;
+    when(object.isInitialised()).thenReturn(true);
+    when(object.getLength()).thenReturn((short) content.length);
+    return PIVDataCommandHandler.isValidPairingCodeContainer(object);
   }
 
   private static boolean mandatoryObjectIsValid(byte suffix, byte[] content) {

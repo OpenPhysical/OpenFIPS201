@@ -210,6 +210,18 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   }
 
   /**
+   * SP 800-78-5 Section 3.1: "RSA keys must be generated using a public exponent of 65537."
+   *
+   * @return True if the buffer holds exactly the big-endian encoding '01 00 01'
+   */
+  static boolean isPivPublicExponent(byte[] buffer, short offset, short length) {
+    return length == CONST_LENGTH_EXPONENT
+        && buffer[offset] == EXPONENT_FIRST_BYTE
+        && buffer[(short) (offset + 1)] == (byte) 0x00
+        && buffer[(short) (offset + 2)] == EXPONENT_FIRST_BYTE;
+  }
+
+  /**
    * Writes the public exponent of RSA the key pair to the buffer
    *
    * @param buffer The destination buffer to write to
@@ -217,11 +229,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
    * @param length The length of the exponent to write
    */
   void setPublicExponent(byte[] buffer, short offset, short length) {
-    // SP 800-78-5 Section 3.1 requires every PIV RSA key to use public exponent 65537.
-    if (length != CONST_LENGTH_EXPONENT
-        || buffer[offset] != EXPONENT_FIRST_BYTE
-        || buffer[(short) (offset + 1)] != (byte) 0x00
-        || buffer[(short) (offset + 2)] != EXPONENT_FIRST_BYTE) {
+    if (!isPivPublicExponent(buffer, offset, length)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     if (publicKey == null) allocatePublic();
@@ -237,6 +245,10 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
    */
   void setModulus(byte[] buffer, short offset, short length) {
     if (length != getKeyLengthBytes()) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    // SP 800-78-5 Section 3.1 Table 1 allows "RSA (2048 or 3072 bits)": the modulus must use the
+    // slot's full bit length, so its most significant bit is set. A shorter modulus left-padded
+    // with zero bytes is refused here instead of failing later inside the provider.
+    if ((buffer[offset] & (byte) 0x80) == 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
 
     if (privateKey == null) allocatePrivate();
     privateKey.setModulus(buffer, offset, length);
@@ -331,10 +343,11 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       return writer.finish();
     } catch (CardRuntimeException ex) {
       // At this point we are in a nondeterministic state so we will
-      // clear both the public and private keys if they exist
+      // clear both the public and private keys if they exist. The original exception is rethrown
+      // so an ISOException (such as the 6A84 consistency failure) keeps its status word: JCRE
+      // 3.0.5 Section 3.3 returns ISO7816.SW_UNKNOWN for "any other exception".
       clear();
-      CardRuntimeException.throwIt(ex.getReason());
-      return (short) 0; // Keep compiler happy
+      throw ex;
     }
   }
 

@@ -64,11 +64,6 @@ final class PIVCrypto {
   static final short LENGTH_BLOCK_AES = (short) 16;
   static final short LENGTH_BLOCK_TDEA = (short) 8;
 
-  static final short LENGTH_PUBLIC_EC_256 = (short) 65;
-  static final short LENGTH_PUBLIC_EC_384 = (short) 97;
-
-  static final byte CONST_EC_POINT_UNCOMPRESSED = (byte) 4;
-
   //
   // Crypto Providers
   //
@@ -580,14 +575,21 @@ final class PIVCrypto {
     return buildTransientAesKey(KeyBuilder.LENGTH_AES_128);
   }
 
-  static AESKey buildTransientAes256Key() {
-    return buildTransientAesKey(KeyBuilder.LENGTH_AES_256);
-  }
-
   /** Builds a clear-on-deselect AES key of the given bit length (128 or 256). */
   static AESKey buildTransientAesKey(short keyLengthBits) {
     return (AESKey)
         KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, keyLengthBits, false);
+  }
+
+  /**
+   * Builds a clear-on-reset AES key for PIV secure-messaging session keys.
+   *
+   * <p>SP 800-73-5 Part 2 Section 3.1.1 keeps all security status indicators unchanged when the PIV
+   * Card Application is reselected, and JCRE 3.0.5 Section 5.1 clears CLEAR_ON_DESELECT memory on
+   * reselection. The owner clears these keys explicitly on a genuine deselect.
+   */
+  static AESKey buildSessionAesKey(short keyLengthBits) {
+    return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_RESET, keyLengthBits, false);
   }
 
   /**
@@ -666,16 +668,10 @@ final class PIVCrypto {
       ECPointValidator validator,
       ECParams params) {
 
-    // Uncompressed ECC public keys are marshaled as the concatenation of:
-    // CONST_POINT_UNCOMPRESSED | X | Y
     // Reject malformed points before invoking providers whose length handling varies by platform.
-    if (((theKey.getSize() == KeyBuilder.LENGTH_EC_FP_256) && (inLength != LENGTH_PUBLIC_EC_256))
-        || ((theKey.getSize() == KeyBuilder.LENGTH_EC_FP_384)
-            && (inLength != LENGTH_PUBLIC_EC_384))) {
-      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-      return (short) 0; // Keep compiler happy
-    }
-
+    // The canonical validator checks the 04 || X || Y encoding, its length for the key's curve,
+    // the coordinate range and the curve equation. SP 800-73-5 Part 2 Table 16 C4: "Return
+    // '6A 80' if public-key validation fails."
     if (!validator.isValid(inBuffer, inOffset, inLength, params)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }

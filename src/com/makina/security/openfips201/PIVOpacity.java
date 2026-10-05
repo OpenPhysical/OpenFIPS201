@@ -123,7 +123,8 @@ final class PIVOpacity {
           nonceLength,
           idHOffset,
           pointOffset,
-          idSiccOffset);
+          idSiccOffset,
+          (byte) 0x00);
       return PIVSecurityProvider.arrayEqualsConstantTime(
           output, ZERO, KDA_EXPECTED, ZERO, (short) KDA_EXPECTED.length);
     } finally {
@@ -138,6 +139,13 @@ final class PIVOpacity {
     }
   }
 
+  /**
+   * Derives SK_CFRM || SK_MAC || SK_ENC || SK_RMAC into {@code output} (SP 800-73-5 Part 2 Section
+   * 4.1.6).
+   *
+   * @param hostControlByte CB_H as received from the client application; OtherInfo carries it
+   *     verbatim ("0x01 || CB_H") while CB_ICC is always 0x00 (Table 16 steps C2 and C3)
+   */
   void deriveSessionKeys(
       short hashLength,
       short sessionKeyLength,
@@ -148,7 +156,8 @@ final class PIVOpacity {
       short nonceLength,
       short hostIdOffset,
       short hostPointOffset,
-      short cardIdOffset) {
+      short cardIdOffset,
+      byte hostControlByte) {
     short outputLength = (short) (sessionKeyLength * 4);
     short written = ZERO;
     try {
@@ -164,7 +173,8 @@ final class PIVOpacity {
                 nonceLength,
                 hostIdOffset,
                 hostPointOffset,
-                cardIdOffset);
+                cardIdOffset,
+                hostControlByte);
         PIVCrypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
         short copyLength = hashLength;
         if ((short) (written + copyLength) > outputLength) {
@@ -208,7 +218,8 @@ final class PIVOpacity {
       short nonceLength,
       short hostIdOffset,
       short hostPointOffset,
-      short cardIdOffset) {
+      short cardIdOffset,
+      byte hostControlByte) {
     short offset = base;
     output[offset++] = (byte) 0;
     output[offset++] = (byte) 0;
@@ -223,7 +234,7 @@ final class PIVOpacity {
     output[offset++] = (byte) 0x08;
     offset = Util.arrayCopyNonAtomic(workspace, hostIdOffset, output, offset, (short) 8);
     output[offset++] = (byte) 0x01;
-    output[offset++] = (byte) 0x00;
+    output[offset++] = hostControlByte;
     output[offset++] = (byte) 0x10;
     offset =
         Util.arrayCopyNonAtomic(

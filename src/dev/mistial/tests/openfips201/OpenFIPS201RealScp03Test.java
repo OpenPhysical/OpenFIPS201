@@ -129,6 +129,40 @@ class OpenFIPS201RealScp03Test extends OpenFIPS201TestSupport {
             + " Discovery Object as not found");
   }
 
+  /**
+   * GP SCP03 v1.1.2 Section 5.5 sets R_MAC "after successful processing of an EXTERNAL AUTHENTICATE
+   * command with P1 indicating R-MAC (P1='1x' or '3x')". OpenFIPS201 never wraps responses, so it
+   * refuses that security level instead of returning unprotected responses under it.
+   */
+  @Test
+  void responseProtectionSecurityLevelsAreRefused() throws Exception {
+    for (EnumSet<GPSession.APDUMode> mode :
+        java.util.Arrays.asList(
+            EnumSet.of(GPSession.APDUMode.MAC, GPSession.APDUMode.ENC, GPSession.APDUMode.RMAC),
+            EnumSet.of(
+                GPSession.APDUMode.MAC,
+                GPSession.APDUMode.ENC,
+                GPSession.APDUMode.RMAC,
+                GPSession.APDUMode.RENC))) {
+      GPSession gp =
+          GPSession.connect(session, new pro.javacard.capfile.AID(OPENFIPS201_AID_BYTES));
+      PlaintextKeys keys = PlaintextKeys.fromMasterKey(TEST_SCP03_KEY);
+      keys.setVersion(0);
+      Exception refused =
+          org.junit.jupiter.api.Assertions.assertThrows(
+              Exception.class,
+              () ->
+                  gp.openSecureChannel(
+                      keys,
+                      new GPSecureChannelVersion(GPSecureChannelVersion.SCP.SCP03, 0),
+                      null,
+                      mode));
+      org.junit.jupiter.api.Assertions.assertTrue(
+          String.valueOf(refused.getMessage()).contains("6982"),
+          mode + " must be refused with 6982, was: " + refused);
+    }
+  }
+
   private GPSession openIsdSecureChannel(apdu4j.core.BIBO bibo) throws Exception {
     GPSession gp = GPSession.connect(bibo, new pro.javacard.capfile.AID(ISD_AID_BYTES));
     PlaintextKeys keys = PlaintextKeys.fromMasterKey(TEST_SCP03_KEY);

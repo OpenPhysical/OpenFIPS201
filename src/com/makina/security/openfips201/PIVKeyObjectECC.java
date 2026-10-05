@@ -29,6 +29,8 @@ package com.makina.security.openfips201;
 import javacard.framework.CardRuntimeException;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
+import javacard.framework.Util;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
 import javacard.security.KeyBuilder;
@@ -36,8 +38,6 @@ import javacard.security.KeyPair;
 
 /** Provides functionality for ECC PIV key objects */
 final class PIVKeyObjectECC extends PIVKeyObjectPKI {
-  private static final byte CONST_POINT_UNCOMPRESSED = (byte) 0x04;
-
   // The ECC public key element tag
   static final byte ELEMENT_ECC_POINT = (byte) 0x86;
 
@@ -57,7 +57,12 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
   private KeyPair keyPair = null;
+  // The published CVC and an equal-sized staging buffer. Util.arrayCopyNonAtomic "does not use
+  // the transaction facility during the copy operation even if a transaction is in progress" (JC
+  // 3.0.5 API), so a replacement is copied into the staging buffer and published by a
+  // transactional swap of the references and length.
   private byte[] smCvc = null;
+  private byte[] smCvcStaging = null;
   private short smCvcLength = (short) 0;
 
   private final ECParams params;
@@ -79,15 +84,14 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
-    // Uncompressed ECC public keys are marshaled as the concatenation of:
-    // CONST_POINT_UNCOMPRESSED | X | Y
-    // where the length of the X and Y coordinates is the byte length of the key.
-    // TODO: We can use 2 consts and decide which to compare against based on the mechanism!
-    marshaledPubKeyLen = (short) (getKeyLengthBytes() * 2 + 1);
+    // Uncompressed ECC public keys are marshaled as 04 || X || Y, where each coordinate is the
+    // byte length of the key.
+    marshaledPubKeyLen = ECPointValidator.encodedLength(getKeyLengthBytes());
     allocatePrivate();
     allocatePublic();
     if (isSecureMessagingMechanism()) {
       smCvc = new byte[LENGTH_SM_CVC_MAX];
+      smCvcStaging = new byte[LENGTH_SM_CVC_MAX];
     }
   }
 
@@ -146,7 +150,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         }
 
         // Only uncompressed points are supported
-        if (buffer[offset] != CONST_POINT_UNCOMPRESSED) {
+        if (buffer[offset] != ECPointValidator.POINT_UNCOMPRESSED) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return; // Keep static analyser happy
         }
@@ -176,8 +180,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
           return;
         }
-        javacard.framework.Util.arrayCopyNonAtomic(buffer, offset, smCvc, (short) 0, length);
-        smCvcLength = length;
+        publishSmCvc(buffer, offset, length);
         break;
 
         // Clear all key parts
@@ -189,6 +192,25 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         break;
     }
+  }
+
+  /**
+   * Replaces the secure-messaging CVC so that a power loss leaves either the complete previous or
+   * the complete new certificate published.
+   *
+   * <p>The bytes go non-atomically into the unpublished staging buffer; the reference and length
+   * swap is then a persistent update inside the caller's transaction, or inside a transaction
+   * started here when none is in progress.
+   */
+  private void publishSmCvc(byte[] buffer, short offset, short length) {
+    byte[] staged = smCvcStaging;
+    Util.arrayCopyNonAtomic(buffer, offset, staged, (short) 0, length);
+    boolean ownTransaction = JCSystem.getTransactionDepth() == (byte) 0;
+    if (ownTransaction) JCSystem.beginTransaction();
+    smCvcStaging = smCvc;
+    smCvc = staged;
+    smCvcLength = length;
+    if (ownTransaction) JCSystem.commitTransaction();
   }
 
   /** Clears and reallocates a private key. */
@@ -253,9 +275,11 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       length = writer.finish();
     } catch (CardRuntimeException cre) {
       // At this point we are in a nondeterministic state so we will
-      // clear both the public and private keys if they exist
+      // clear both the public and private keys if they exist. The original exception is rethrown
+      // so an ISOException (such as the 6A84 consistency failure) keeps its status word: JCRE
+      // 3.0.5 Section 3.3 returns ISO7816.SW_UNKNOWN for "any other exception".
       clear();
-      CardRuntimeException.throwIt(cre.getReason());
+      throw cre;
     }
 
     return length;
@@ -336,6 +360,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     setPrivateParams();
     if (smCvc != null) {
       PIVSecurityProvider.zeroise(smCvc, (short) 0, (short) smCvc.length);
+      PIVSecurityProvider.zeroise(smCvcStaging, (short) 0, (short) smCvcStaging.length);
     }
     smCvcLength = (short) 0;
     clearOrigin();

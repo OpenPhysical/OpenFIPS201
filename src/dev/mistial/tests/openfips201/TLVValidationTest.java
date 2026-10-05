@@ -118,7 +118,7 @@ class TLVValidationTest {
           .thenReturn(new Object[1]);
       mocked
           .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
-          .thenReturn(new short[4]);
+          .thenAnswer(call -> new short[(short) call.getArgument(0)]);
       TLVReader reader = TLVReader.getInstance();
       reader.init(encoded, (short) 0, (short) encoded.length);
       return reader;

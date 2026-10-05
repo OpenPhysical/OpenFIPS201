@@ -71,6 +71,31 @@ class PIVKeyObjectRSATest {
     }
   }
 
+  /** SP 800-78-5 Section 3.1 Table 1: an RSA-2048 key has a full 2048-bit modulus. */
+  @Test
+  void shortModulusIsRejected() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      PIVKeyObjectRSA key =
+          PIVKeyObjectRSA.create(
+              (byte) 0x9D,
+              PIVObject.ACCESS_MODE_PIN,
+              (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN),
+              (byte) 0x9B,
+              PIV.ID_ALG_RSA_2048,
+              PIVKeyObject.ROLE_KEY_ESTABLISH,
+              PIVKeyObject.ATTR_IMPORTABLE);
+      byte[] modulus = new byte[256];
+      modulus[1] = (byte) 0xFF;
+      modulus[255] = (byte) 0x03;
+
+      ISOException thrown =
+          assertThrows(
+              ISOException.class,
+              () -> key.updateElement((byte) 0x81, modulus, (short) 0, (short) 256));
+      assertEquals(ISO7816.SW_WRONG_DATA, thrown.getReason());
+    }
+  }
+
   private AutoCloseable enterEngineContext() throws Exception {
     Method asCurrent = engine.getClass().getMethod("asCurrent");
     return (AutoCloseable) asCurrent.invoke(engine);

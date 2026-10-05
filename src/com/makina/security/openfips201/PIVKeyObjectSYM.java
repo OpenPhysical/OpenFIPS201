@@ -41,6 +41,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
   static final byte ELEMENT_KEY = (byte) 0x80;
   // Clear any key material from this object (same wire tag as the common ELEMENT_CLEAR)
   static final byte ELEMENT_KEY_CLEAR = ELEMENT_CLEAR;
+  // Length of one DES key within a 3TDEA key bundle
+  private static final short LENGTH_DES_KEY = (short) 8;
   private SecretKey key;
 
   private PIVKeyObjectSYM(
@@ -83,6 +85,12 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
     try {
       switch (element) {
         case ELEMENT_KEY:
+          // SP 800-78-5 Section 3.1 Table 1 note 3: "3TDEA is Triple DES using Keying Option 1
+          // from [SP800-67], which requires that all three keys be unique (i.e., Key 1 != Key 2,
+          // Key 2 != Key 3, and Key 3 != Key 1)." DES ignores the parity bit of each byte.
+          if (isTdea() && !hasDistinctTdeaKeys(buffer, offset)) {
+            ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          }
           SecretKey replacement = allocateKey();
           try {
             if (replacement.getType() == KeyBuilder.TYPE_DES) {
@@ -112,6 +120,31 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
     } finally {
       PIVSecurityProvider.zeroise(buffer, offset, keyLengthBytes);
     }
+  }
+
+  private boolean isTdea() {
+    return getMechanism() == PIV.ID_ALG_DEFAULT || getMechanism() == PIV.ID_ALG_TDEA_3KEY;
+  }
+
+  /**
+   * Returns whether the three 8-byte DES keys of a 3TDEA key bundle are pairwise distinct, ignoring
+   * the parity bit (bit 0) of every byte.
+   */
+  private static boolean hasDistinctTdeaKeys(byte[] buffer, short offset) {
+    short key2 = (short) (offset + LENGTH_DES_KEY);
+    short key3 = (short) (key2 + LENGTH_DES_KEY);
+    return !desKeysEqual(buffer, offset, key2)
+        && !desKeysEqual(buffer, key2, key3)
+        && !desKeysEqual(buffer, key3, offset);
+  }
+
+  private static boolean desKeysEqual(byte[] buffer, short first, short second) {
+    byte difference = 0;
+    for (short i = 0; i < LENGTH_DES_KEY; i++) {
+      difference |=
+          (byte) ((buffer[(short) (first + i)] ^ buffer[(short) (second + i)]) & (byte) 0xFE);
+    }
+    return difference == 0;
   }
 
   private SecretKey allocateKey() throws ISOException {

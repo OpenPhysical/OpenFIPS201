@@ -81,7 +81,8 @@ class PIVOpacitySelfTestBehaviorTest {
               (short) 16,
               (short) 0,
               pointOffset,
-              cardIdOffset);
+              cardIdOffset,
+              (byte) 0x00);
     }
 
     boolean derivedKeyPresent = false;

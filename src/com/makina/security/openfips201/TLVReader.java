@@ -45,7 +45,11 @@ final class TLVReader {
   private static final short CONTEXT_POSITION = (short) 1;
   // The offset given when the data was set, allowing for a reset
   private static final short CONTEXT_POSITION_RESET = (short) 2;
-  private static final short LENGTH_CONTEXT = (short) 4;
+  // Exclusive ends of the open constructed objects during validation, innermost last
+  private static final short CONTEXT_OPEN_ENDS = (short) 4;
+  // Maximum number of nested non-empty constructed objects accepted by validation
+  private static final short MAX_NESTING = (short) 8;
+  private static final short LENGTH_CONTEXT = (short) (CONTEXT_OPEN_ENDS + MAX_NESTING);
 
   //
   // CONSTANTS
@@ -124,59 +128,41 @@ final class TLVReader {
     }
   }
 
+  /**
+   * Checks that the input is a concatenation of well-formed BER-TLV objects and that the value of
+   * every non-empty constructed object is itself such a concatenation, ending exactly at its
+   * parent's end.
+   *
+   * <p>The walk is iterative: the ends of the open constructed objects are kept in {@link
+   * #context}, so input received before any authentication cannot grow the Java Card stack. At most
+   * {@link #MAX_NESTING} non-empty constructed objects may be open at once.
+   */
   private boolean validate() {
     byte[] data = (byte[]) dataPtr[0];
-    short start = context[CONTEXT_POSITION_RESET];
-    short end = (short) (start + context[CONTEXT_LENGTH]);
-    return validateRange(data, start, end, (byte) 0);
-  }
+    short position = context[CONTEXT_POSITION_RESET];
+    short end = (short) (position + context[CONTEXT_LENGTH]);
+    short depth = (short) 0;
 
-  private static boolean validateRange(byte[] data, short start, short end, byte depth) {
-    if (depth > (byte) 8) return false;
-
-    short position = start;
-    while (position < end) {
-      short tagStart = position;
-      byte firstTag = data[position++];
-      if ((firstTag & TLV.MASK_TAG_MULTI_BYTE) == TLV.MASK_TAG_MULTI_BYTE) {
-        byte tagBytes = 0;
-        byte value;
-        do {
-          if (position >= end || tagBytes == (byte) 2) return false;
-          value = data[position++];
-          if (tagBytes == 0 && (value & 0x7F) == 0) return false;
-          tagBytes++;
-        } while ((value & TLV.MASK_HIGH_TAG_MOREDATA) == TLV.MASK_HIGH_TAG_MOREDATA);
+    while (true) {
+      short parentEnd = depth == (short) 0 ? end : context[(short) (CONTEXT_OPEN_ENDS + depth - 1)];
+      if (position == parentEnd) {
+        if (depth == (short) 0) return true;
+        depth--;
+        continue;
       }
 
-      if (position >= end) return false;
-      short valueLength;
-      short lengthByte = (short) (data[position++] & 0xFF);
-      if ((lengthByte & 0x80) == 0) {
-        valueLength = lengthByte;
-      } else {
-        short lengthBytes = (short) (lengthByte & 0x7F);
-        if (lengthBytes == 0 || lengthBytes > 2 || position > (short) (end - lengthBytes)) {
-          return false;
-        }
-        if (lengthBytes == 1) {
-          valueLength = (short) (data[position++] & 0xFF);
-        } else {
-          valueLength = Util.getShort(data, position);
-          position += 2;
-        }
+      short objectEnd = TLV.endOrInvalid(data, position, parentEnd, false);
+      if (objectEnd == TLV.INVALID) return false;
+      short valueOffset = TLV.valueOffsetOrInvalid(data, position, parentEnd, false);
+      if ((data[position] & TLV.MASK_CONSTRUCTED) == 0 || valueOffset == objectEnd) {
+        position = objectEnd;
+        continue;
       }
-
-      if (valueLength < 0 || position > (short) (end - valueLength)) return false;
-      short valueEnd = (short) (position + valueLength);
-      if ((data[tagStart] & (byte) 0x20) != 0
-          && valueLength != 0
-          && !validateRange(data, position, valueEnd, (byte) (depth + 1))) {
-        return false;
-      }
-      position = valueEnd;
+      if (depth == MAX_NESTING) return false;
+      context[(short) (CONTEXT_OPEN_ENDS + depth)] = objectEnd;
+      depth++;
+      position = valueOffset;
     }
-    return position == end;
   }
 
   /***
