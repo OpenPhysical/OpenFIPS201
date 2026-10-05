@@ -26,6 +26,9 @@
 
 package com.makina.security.openfips201;
 
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
+
 abstract class PIVKeyObjectPKI extends PIVKeyObject {
 
   protected static final short CONST_TAG_RESPONSE = (short) 0x7F49;
@@ -41,6 +44,21 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
       byte role,
       byte attributes) {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+  }
+
+  /**
+   * Rejects a role and attribute combination that no asymmetric key definition supports: any of the
+   * symmetric challenge-response attributes, or both the signing and key-establishment roles.
+   *
+   * @throws ISOException {@link ISO7816#SW_WRONG_DATA} if the combination is not supported
+   */
+  static void validateRoleAttributes(byte role, byte attributes) {
+    byte symmetricAttributes =
+        (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
+    if ((attributes & symmetricAttributes) != (byte) 0
+        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
   }
 
   /**

@@ -33,11 +33,9 @@ import javacard.security.AESKey;
 import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
-import javacard.security.Key;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
-import javacard.security.RSAPrivateCrtKey;
 import javacard.security.RSAPrivateKey;
 import javacard.security.RSAPublicKey;
 import javacard.security.RandomData;
@@ -539,20 +537,6 @@ final class PIVCrypto {
     return cspAES.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static short doAesCbcEncrypt(
-      SecretKey key,
-      byte[] iv,
-      short ivOffset,
-      short ivLength,
-      byte[] inBuffer,
-      short inOffset,
-      short inLength,
-      byte[] outBuffer,
-      short outOffset) {
-    cspAESCBC.init(key, Cipher.MODE_ENCRYPT, iv, ivOffset, ivLength);
-    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
-  }
-
   static short doAesCbcDecrypt(
       SecretKey key,
       byte[] iv,
@@ -624,28 +608,11 @@ final class PIVCrypto {
   }
 
   /**
-   * Signs a pre-formatted block of data using an RSA CRT private key operation.
+   * Signs a pre-formatted block of data using a raw RSA private key operation.
    *
-   * @param theKey The key to perform the operation with
-   * @param inBuffer contains the precomputed hash
-   * @param inOffset the location of the first byte of the hash
-   * @param inLength the length og the computed hash
-   * @param outBuffer the buffer to contain the signature
-   * @param outOffset the location of the first byte of the signature
-   * @return the length of the signature
-   */
-  static short doSign(
-      RSAPrivateCrtKey theKey,
-      byte[] inBuffer,
-      short inOffset,
-      short inLength,
-      byte[] outBuffer,
-      short outOffset) {
-    return doRsaPrivateOperation(theKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
-  }
-
-  /**
-   * Signs a pre-formatted block of data using an RSA private key operation.
+   * <p>PIV supplies the complete encoded message representative, so Java Card signature primitives
+   * would hash or pad data that is already formatted. Raw private-key RSA is the required
+   * operation.
    *
    * @param theKey The key to perform the operation with
    * @param inBuffer contains the precomputed hash
@@ -662,19 +629,7 @@ final class PIVCrypto {
       short inLength,
       byte[] outBuffer,
       short outOffset) {
-    return doRsaPrivateOperation(theKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
-  }
-
-  /**
-   * Applies raw RSA with either supported private-key representation.
-   *
-   * <p>PIV supplies the complete encoded message representative, so Java Card signature primitives
-   * would hash or pad data that is already formatted. Raw private-key RSA is the required operation
-   * for both CRT and modulus/exponent key objects.
-   */
-  private static short doRsaPrivateOperation(
-      Key key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
-    cspRSA.init(key, Cipher.MODE_ENCRYPT);
+    cspRSA.init(theKey, Cipher.MODE_ENCRYPT);
     return cspRSA.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 

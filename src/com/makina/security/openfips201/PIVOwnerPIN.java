@@ -120,8 +120,4 @@ final class PIVOwnerPIN implements PIVPIN {
       mySoftTryLimit = limit;
     }
   }
-
-  public boolean supportsSetTryLimit() {
-    return true;
-  }
 }

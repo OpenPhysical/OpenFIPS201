@@ -332,8 +332,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
   }
 
   private static void establishSyntheticSession(Object sm) throws Exception {
-    method(sm.getClass(), "setSessionKeys", byte[].class, short.class)
-        .invoke(sm, zeroSessionKeys(), (short) 0);
+    loadSessionKeys(sm, zeroSessionKeys());
     method(sm.getClass(), "markEstablished", boolean.class).invoke(sm, false);
   }
 
@@ -397,8 +396,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object piv = field(realApplet, "piv").get(realApplet);
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       byte[] sessionKeys = distinctSessionKeys();
-      method(secureMessaging.getClass(), "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
 
       String[] fields = {"skCfrm", "skMac", "skEnc", "skRmac"};
       short keyLength = activeSessionKeyBytes();
@@ -421,8 +419,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object chainBuffer = field(piv, "chainBuffer").get(piv);
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] outgoing = new byte[256];
@@ -527,10 +524,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
   void objectChainRejectsProtectionContextChangeAndRollsBack() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
       ChainBuffer chain = new ChainBuffer();
-      PIVDataObject destination = new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
-      destination.allocate((short) 4);
       byte[] original = new byte[] {0x11, 0x22, 0x33, 0x44};
-      System.arraycopy(original, 0, destination.content, 0, original.length);
+      PIVDataObject destination = publishedObject(original);
       chain.setIncomingObject(destination, (short) 4);
 
       byte[] first = hex("10DB3FFF02AABB");
@@ -553,7 +548,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
       assertArrayEquals(
           original, destination.content, "A protection mismatch must roll back staged data");
 
-      destination.allocate((short) 8);
+      destination.beginUpdate((short) 8);
+      destination.commitUpdate();
       assertEquals(8, destination.getLength(), "A rolled-back object remains safely reallocatable");
     }
   }
@@ -562,10 +558,8 @@ class OpenFIPS201SecureMessagingDispatchTest {
   void unrelatedCommandSoftAbortsProtectedObjectChain() throws Exception {
     try (AutoCloseable ignored = enterEngineContext()) {
       ChainBuffer chain = new ChainBuffer();
-      PIVDataObject destination = new PIVDataObject((byte) 0x01, (byte) 0, (byte) 0, (byte) 0x9B);
-      destination.allocate((short) 4);
       byte[] original = new byte[] {0x11, 0x22, 0x33, 0x44};
-      System.arraycopy(original, 0, destination.content, 0, original.length);
+      PIVDataObject destination = publishedObject(original);
       chain.setIncomingObject(destination, (short) 4);
 
       byte[] first = hex("10DB3FFF02AABB");
@@ -591,8 +585,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object chainBuffer = field(piv, "chainBuffer").get(piv);
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
 
-      method(secureMessaging.getClass(), "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessaging.getClass(), "markEstablished", boolean.class)
           .invoke(secureMessaging, false);
 
@@ -642,8 +635,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command =
@@ -718,8 +710,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Class<?> secureMessagingClass = secureMessaging.getClass();
       Object chainBuffer = field(piv, "chainBuffer").get(piv);
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command = new byte[15];
@@ -772,8 +763,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command = largeAuthenticatedEncryptedDataCommand();
@@ -813,8 +803,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] expectedPlaintext = hex("00112233445566778899AABBCCDDEEFF10");
@@ -902,8 +891,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] complete =
@@ -973,8 +961,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Class<?> secureMessagingClass = secureMessaging.getClass();
 
     try (AutoCloseable ignored = enterEngineContext()) {
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
       method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
     }
@@ -1050,8 +1037,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
               (short) 300);
       method(securityProvider.getClass(), "setAuthenticatedKey", byte.class)
           .invoke(securityProvider, (byte) 0x9B);
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
     }
 
@@ -1110,8 +1096,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Object secureMessaging = field(piv, "secureMessaging").get(piv);
     Class<?> secureMessagingClass = secureMessaging.getClass();
     try (AutoCloseable ignored = enterEngineContext()) {
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
       method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
     }
@@ -1146,8 +1131,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Object secureMessaging = field(piv, "secureMessaging").get(piv);
     Class<?> secureMessagingClass = secureMessaging.getClass();
     try (AutoCloseable ignored = enterEngineContext()) {
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
       method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
     }
@@ -1191,8 +1175,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command =
@@ -1247,8 +1230,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     try (AutoCloseable ignored = enterEngineContext()) {
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
     }
 
@@ -1321,8 +1303,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
     try (AutoCloseable ignored = enterEngineContext()) {
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
     }
 
@@ -1359,8 +1340,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Class<?> secureMessagingClass = secureMessaging.getClass();
 
     try (AutoCloseable ignored = enterEngineContext()) {
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, zeroSessionKeys(), (short) 0);
+      loadSessionKeys(secureMessaging, zeroSessionKeys());
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
     }
 
@@ -1411,8 +1391,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object secureMessaging = field(piv, "secureMessaging").get(piv);
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       // First protected command: INS 'FE' is unsupported, so command processing raises an
@@ -1481,8 +1460,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Class<?> secureMessagingClass = secureMessaging.getClass();
       Object chainBuffer = field(piv, "chainBuffer").get(piv);
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command =
@@ -1539,8 +1517,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Class<?> pivClass = piv.getClass();
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] command =
@@ -1608,8 +1585,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Class<?> pivClass = piv.getClass();
       Class<?> secureMessagingClass = secureMessaging.getClass();
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
       ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
 
@@ -1671,8 +1647,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Class<?> secureMessagingClass = secureMessaging.getClass();
       Object chainBuffer = field(piv, "chainBuffer").get(piv);
       byte[] sessionKeys = zeroSessionKeys();
-      method(secureMessagingClass, "setSessionKeys", byte[].class, short.class)
-          .invoke(secureMessaging, sessionKeys, (short) 0);
+      loadSessionKeys(secureMessaging, sessionKeys);
       method(secureMessagingClass, "markEstablished", boolean.class).invoke(secureMessaging, false);
 
       byte[] firstMcv = new byte[16];
@@ -2759,6 +2734,23 @@ class OpenFIPS201SecureMessagingDispatchTest {
       }
     }
     throw new IllegalStateException("Unable to unwrap simulator applet proxy");
+  }
+
+  /** Returns a dynamically sized data object whose published content is {@code content}. */
+  private static PIVDataObject publishedObject(byte[] content) {
+    PIVDataObject object =
+        new PIVDataObject(
+            new byte[] {0x01}, (short) 0, (short) 1, (byte) 0, (byte) 0, (byte) 0x9B, (short) 0);
+    byte[] staged = object.beginUpdate((short) content.length);
+    System.arraycopy(content, 0, staged, 0, content.length);
+    object.commitUpdate();
+    return object;
+  }
+
+  /** Loads the suite's four session keys through the production three-argument entry point. */
+  private static void loadSessionKeys(Object secureMessaging, byte[] keys) throws Exception {
+    method(secureMessaging.getClass(), "setSessionKeys", byte[].class, short.class, short.class)
+        .invoke(secureMessaging, keys, (short) 0, PIVOpacity.SESSION_KEY_LENGTH);
   }
 
   private static Method method(Class<?> target, String name, Class<?>... parameterTypes)

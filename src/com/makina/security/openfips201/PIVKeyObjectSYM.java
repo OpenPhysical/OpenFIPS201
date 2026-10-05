@@ -201,12 +201,12 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
     switch (getMechanism()) {
       case PIV.ID_ALG_DEFAULT:
       case PIV.ID_ALG_TDEA_3KEY:
-        return (short) 8;
+        return PIVCrypto.LENGTH_BLOCK_TDEA;
 
       case PIV.ID_ALG_AES_128:
       case PIV.ID_ALG_AES_192:
       case PIV.ID_ALG_AES_256:
-        return (short) 16;
+        return PIVCrypto.LENGTH_BLOCK_AES;
 
       default:
         ISOException.throwIt(ISO7816.SW_DATA_INVALID);

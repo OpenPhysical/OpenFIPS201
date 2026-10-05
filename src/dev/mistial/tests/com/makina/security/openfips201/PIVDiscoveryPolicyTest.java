@@ -10,19 +10,23 @@ import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 
 class PIVDiscoveryPolicyTest {
 
   @Test
-  void dataObjectAllocationInitializesAndClearsReusableStorage() {
-    PIVDataObject object =
-        new PIVDataObject(
-            (byte) 0x01, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS, (byte) 0x9B);
+  void dataObjectReplacementPublishesErasedStorage() {
+    PIVDataObject object = fixedCapacityObject((short) 8);
 
-    object.allocate((short) 8);
-    object.content[0] = (byte) 0x7F;
-    object.allocate((short) 4);
+    try (MockedStatic<JCSystem> ignored = Mockito.mockStatic(JCSystem.class)) {
+      object.beginUpdate((short) 8)[0] = (byte) 0x7F;
+      object.commitUpdate();
+      object.beginUpdate((short) 4);
+      object.commitUpdate();
+    }
 
     assertTrue(object.isInitialised());
     assertEquals(4, object.getLength());
@@ -30,14 +34,11 @@ class PIVDiscoveryPolicyTest {
   }
 
   @Test
-  void dataObjectAllocationRejectsNonPositiveLengths() {
-    PIVDataObject object =
-        new PIVDataObject(
-            (byte) 0x01, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS, (byte) 0x9B);
+  void dataObjectReplacementRejectsNonPositiveLengths() {
+    PIVDataObject object = fixedCapacityObject((short) 8);
 
-    assertThrows(ISOException.class, () -> object.allocate((short) 0));
-    assertThrows(ISOException.class, () -> object.allocate((short) -1));
     assertThrows(ISOException.class, () -> object.beginUpdate((short) 0));
+    assertThrows(ISOException.class, () -> object.beginUpdate((short) -1));
   }
 
   @Test
@@ -49,7 +50,8 @@ class PIVDiscoveryPolicyTest {
             (short) 3,
             PIVObject.ACCESS_MODE_ALWAYS,
             PIVObject.ACCESS_MODE_ALWAYS,
-            (byte) 0);
+            (byte) 0,
+            (short) 0);
 
     assertEquals(PIVObject.DEFAULT_ADMIN_KEY, object.getAdminKey());
   }
@@ -322,5 +324,16 @@ class PIVDiscoveryPolicyTest {
     when(object.isInitialised()).thenReturn(true);
     when(object.getLength()).thenReturn((short) content.length);
     return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
+  }
+
+  private static PIVDataObject fixedCapacityObject(short capacity) {
+    return new PIVDataObject(
+        new byte[] {0x01},
+        (short) 0,
+        (short) 1,
+        PIVObject.ACCESS_MODE_ALWAYS,
+        PIVObject.ACCESS_MODE_ALWAYS,
+        (byte) 0x9B,
+        capacity);
   }
 }

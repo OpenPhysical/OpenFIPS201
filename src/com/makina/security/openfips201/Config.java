@@ -316,24 +316,23 @@ final class Config {
   static final byte CONFIG_PUK_LENGTH = (byte) 14;
   static final byte CONFIG_PUK_RETRIES_CONTACT = (byte) 15;
   static final byte CONFIG_PUK_RETRIES_CONTACTLESS = (byte) 16;
-  static final byte CONFIG_PUK_RESTRICT_UPDATE = (byte) 17;
+  // 17 is reserved for the PUK restrict-update option, which update() rejects as unsupported.
 
   // VCI Policy
 
   static final byte CONFIG_VCI_MODE = (byte) 18;
-  static final byte CONFIG_OCC_MODE = (byte) 19;
+  // 19 is reserved for the OCC mode, whose policy update() rejects as unsupported.
 
   // Options
   static final byte OPTION_RESTRICT_CONTACTLESS_GLOBAL = (byte) 20;
   static final byte OPTION_RESTRICT_CONTACTLESS_ADMIN = (byte) 21;
-  static final byte OPTION_RESTRICT_ENUMERATION = (byte) 22;
+  // 22 is reserved for the restrict-enumeration option, which update() rejects as unsupported.
   // 23 is reserved for the former restrict-single-key option. The one-key-per-reference rule is
   // now an invariant in PIVSecurityProvider, not configurable policy.
   static final byte OPTION_IGNORE_CONTACTLESS_ACL = (byte) 24;
   // 25 is reserved for the former configurable empty-object response. SP 800-73 requires the
   // zero-length data container unconditionally.
-  static final byte OPTION_READ_EMPTY_DATA_OBJECT_RESERVED = (byte) 25;
-  static final byte OPTION_USE_RSA_CRT = (byte) 26;
+  // 26 is reserved for the RSA CRT option, which update() rejects as unsupported.
 
   //
   // Defaults and Limits
@@ -345,7 +344,6 @@ final class Config {
   static final byte LIMIT_PIN_MAX_RETRIES = (byte) 10;
   static final byte LIMIT_PIN_HISTORY = (byte) 12;
 
-  static final byte LIMIT_PUK_MIN_LENGTH = (byte) 6;
   static final byte LIMIT_PUK_MAX_LENGTH = (byte) 16;
   // SP 800-73-5 caps PUK retry counters at 10.
   static final byte LIMIT_PUK_MAX_RETRIES = (byte) 10;
@@ -362,15 +360,6 @@ final class Config {
   private static final byte DEFAULT_PUK_RETRIES_CONTACTLESS = (byte) 9;
 
   //
-  // Enumeration - PIN Mode
-  //
-  static final byte PIN_MODE_DISABLED = (byte) 0;
-  static final byte PIN_MODE_LOCAL_ONLY = (byte) 1;
-  static final byte PIN_MODE_GLOBAL_ONLY = (byte) 2;
-  static final byte PIN_MODE_LOCAL_PREFERRED = (byte) 3;
-  static final byte PIN_MODE_GLOBAL_PREFERRED = (byte) 4;
-
-  //
   // Enumeration - PIN Character Set
   //
   static final byte PIN_CHARSET_NUMERIC = (byte) 0;
@@ -384,11 +373,6 @@ final class Config {
   static final byte VCI_MODE_DISABLED = (byte) 0;
   static final byte VCI_MODE_ENABLED = (byte) 1;
   static final byte VCI_MODE_PAIRING_CODE = (byte) 2;
-
-  //
-  // Enumeration - OCC Mode
-  //
-  static final byte OCC_MODE_DISABLED = (byte) 0;
 
   //
   // ASN.1 TAGS - Constructed (Container)
@@ -423,7 +407,6 @@ final class Config {
   private static final byte TAG_PUK_RESTRICT_UPDATE = (byte) 0x85;
 
   private static final byte TAG_VCI_MODE = (byte) 0x80;
-  private static final byte TAG_OCC_MODE = (byte) 0x80;
 
   private static final byte TAG_RESTRICT_CONTACTLESS_GLOBAL = (byte) 0x80;
   private static final byte TAG_RESTRICT_CONTACTLESS_ADMIN = (byte) 0x81;

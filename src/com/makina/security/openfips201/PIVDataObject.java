@@ -29,7 +29,6 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.Util;
 
 /** Provides functionality for PIV data objects */
 final class PIVDataObject extends PIVObject {
@@ -47,21 +46,6 @@ final class PIVDataObject extends PIVObject {
   // Indicates the number of bytes currently allocated.  In the case where an object is
   // reallocated with a smaller size this will be less than content.length
   private short bytesAllocated;
-
-  PIVDataObject(byte id, byte modeContact, byte modeContactless, byte adminKey) {
-    super(id, modeContact, modeContactless, adminKey, (byte) 0);
-    fixedCapacity = false;
-  }
-
-  PIVDataObject(
-      byte[] idBuffer,
-      short idOffset,
-      short idLength,
-      byte modeContact,
-      byte modeContactless,
-      byte adminKey) {
-    this(idBuffer, idOffset, idLength, modeContact, modeContactless, adminKey, (short) 0);
-  }
 
   PIVDataObject(
       byte[] idBuffer,
@@ -84,32 +68,6 @@ final class PIVDataObject extends PIVObject {
    */
   short getLength() {
     return bytesAllocated;
-  }
-
-  void allocate(short length) throws ISOException {
-
-    if (length <= (short) 0) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-
-    if (fixedCapacity) {
-      if (length > (short) content.length) ISOException.throwIt(ISO7816.SW_FILE_FULL);
-      PIVSecurityProvider.zeroise(content, (short) 0, (short) content.length);
-      PIVSecurityProvider.zeroise(pendingContent, (short) 0, (short) pendingContent.length);
-    } else if (content == null) {
-      content = new byte[length];
-    } else if (length > (short) content.length) {
-      // Try to reclaim the resources and re-allocate. If this fails then this card does not
-      // support objection deletion and so we can't write an object greater than the initial size
-      if (!JCSystem.isObjectDeletionSupported()) ISOException.throwIt(ISO7816.SW_FILE_FULL);
-
-      clear();
-      content = new byte[length];
-    } else {
-      // Just clear the content object
-      Util.arrayFillNonAtomic(content, (short) 0, (short) content.length, (byte) 0x00);
-    }
-    bytesAllocated = length;
   }
 
   /**

@@ -137,34 +137,19 @@ final class DERWriter {
     short contentOffset = (short) (lengthOffset + 3);
     short contentLength = (short) (state[STATE_OFFSET] - contentOffset);
     if (contentLength < (short) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    short encodedLengthBytes;
 
     // JavaCard gives us fixed byte arrays, not a growable DER stream. begin() reserves a 3-byte
     // length and end() compacts the content left when DER permits a shorter length encoding.
-    if (contentLength < (short) 0x80) {
-      encodedLengthBytes = (short) 0x01;
+    short encodedLengthBytes = TLV.encodedLengthSize(contentLength);
+    if (encodedLengthBytes < TLV.LENGTH_3BYTE) {
       Util.arrayCopyNonAtomic(
           buffer,
           contentOffset,
           buffer,
           (short) (lengthOffset + encodedLengthBytes),
           contentLength);
-      buffer[lengthOffset] = (byte) contentLength;
-    } else if (contentLength < (short) 0x0100) {
-      encodedLengthBytes = (short) 0x02;
-      Util.arrayCopyNonAtomic(
-          buffer,
-          contentOffset,
-          buffer,
-          (short) (lengthOffset + encodedLengthBytes),
-          contentLength);
-      buffer[lengthOffset] = (byte) 0x81;
-      buffer[(short) (lengthOffset + 1)] = (byte) contentLength;
-    } else {
-      encodedLengthBytes = (short) 0x03;
-      buffer[lengthOffset] = (byte) 0x82;
-      Util.setShort(buffer, (short) (lengthOffset + 1), contentLength);
     }
+    TLV.writeLength(buffer, lengthOffset, contentLength);
 
     state[STATE_OFFSET] = (short) (lengthOffset + encodedLengthBytes + contentLength);
   }

@@ -46,7 +46,6 @@ class PIVCVMPINTest {
       pin.reset();
       pin.update(value, (short) 0, (byte) value.length);
       assertEquals(0, pin.getTryLimit());
-      assertFalse(pin.supportsSetTryLimit());
       assertThrows(PINException.class, () -> pin.setTryLimit((byte) 3));
 
       Mockito.verify(cvm).resetState();

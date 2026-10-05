@@ -35,7 +35,5 @@ interface PIVPIN extends PIN {
 
   void setTryLimit(byte limit);
 
-  boolean supportsSetTryLimit();
-
   void update(byte[] pin, short offset, byte length) throws PINException;
 }

@@ -24,7 +24,6 @@ final class PIVAuthenticationCommandHandler {
   private final PIVAuthenticationContext authenticationContext;
   private final ECPointValidator ecPointValidator;
   private final byte[] scratch;
-  private final byte[] smCommand;
   private final byte[] smResponse;
   private final PIVOpacity opacity;
   // #if ATTESTATION_ENABLED
@@ -40,7 +39,6 @@ final class PIVAuthenticationCommandHandler {
       PIVAuthenticationContext authenticationContext,
       ECPointValidator ecPointValidator,
       byte[] scratch,
-      byte[] smCommand,
       byte[] smResponse,
       PIVOpacity opacity
           // #if ATTESTATION_ENABLED
@@ -55,7 +53,6 @@ final class PIVAuthenticationCommandHandler {
     this.authenticationContext = authenticationContext;
     this.ecPointValidator = ecPointValidator;
     this.scratch = scratch;
-    this.smCommand = smCommand;
     this.smResponse = smResponse;
     this.opacity = opacity;
     // #if ATTESTATION_ENABLED
@@ -539,17 +536,12 @@ final class PIVAuthenticationCommandHandler {
     PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
 
     // C1: ID_sICC = T_8(SHA-256(C_ICC)) — always SHA-256, both suites
+    // The challenge was copied to smResponse above, so scratch holds the transient CVC copy, which
+    // fits for both suites (LENGTH_SCRATCH exceeds the CS7 CVC limit).
     short cvcLen = key.getSmCvcLength();
-    // #if VCI_CS2
     key.getSmCvc(scratch, ZERO);
     PIVCrypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
-    // #else
-    // CS7 permits SM CVCs larger than the 284-byte scratch buffer. Use the APDU work buffer for
-    // this transient copy and clear it immediately after hashing.
-    key.getSmCvc(smCommand, ZERO);
-    PIVCrypto.doSha256(smCommand, ZERO, cvcLen, smResponse, offIdSicc);
-    PIVSecurityProvider.zeroise(smCommand, ZERO, cvcLen);
-    // #endif
+    PIVSecurityProvider.zeroise(scratch, ZERO, cvcLen);
 
     // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
     opacity.deriveSuiteSessionKeys(hostControlByte);
@@ -1401,10 +1393,7 @@ final class PIVAuthenticationCommandHandler {
    * attestable target.
    */
   private static boolean isAttestableSlot(byte slot) {
-    if (slot == (byte) 0x9A || slot == (byte) 0x9C || slot == (byte) 0x9D || slot == (byte) 0x9E) {
-      return true;
-    }
-    return slot >= (byte) 0x82 && slot <= (byte) 0x95;
+    return PIV.isStandardAsymmetricKey(slot) || PIV.isRetiredKeyManagementKey(slot);
   }
   // #endif
 }

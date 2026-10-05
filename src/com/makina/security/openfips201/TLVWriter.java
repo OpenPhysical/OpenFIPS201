@@ -92,23 +92,6 @@ final class TLVWriter {
    * @param buffer The byte array to write to
    * @param offset The starting offset
    * @param maxLength the indicative maximum length of the expected content.
-   * @param tagClass The parent tag class
-   * @param tag The parent tag value
-   */
-  void init(byte[] buffer, short offset, short maxLength, byte tagClass, byte tag)
-      throws ISOException {
-    tag |= tagClass;
-    init(buffer, offset, maxLength, tag);
-  }
-
-  /**
-   * Initialises the object with a data buffer, starting offset and content length It is important
-   * that the supplied buffer has enough length for the content and also the parent Tag and Length
-   * octets (2-6 bytes).
-   *
-   * @param buffer The byte array to write to
-   * @param offset The starting offset
-   * @param maxLength the indicative maximum length of the expected content.
    * @param tag The parent tag value
    */
   void init(byte[] buffer, short offset, short maxLength, short tag) throws ISOException {
@@ -122,7 +105,7 @@ final class TLVWriter {
     }
 
     // Validate the complete parent header before changing either the buffer or writer context.
-    short headerLength = (short) (tagLength(tag) + lengthLength(maxLength));
+    short headerLength = (short) (tagLength(tag) + TLV.encodedLengthSize(maxLength));
     if (headerLength > (short) (buffer.length - offset)) {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
@@ -217,15 +200,6 @@ final class TLVWriter {
   }
 
   /**
-   * Returns whether a TLV object is currently being written
-   *
-   * @return Whether this instance is initialised
-   */
-  boolean isInitialized() {
-    return (dataPtr[0] != null);
-  }
-
-  /**
    * Progresses the write pointer forward when you have written to the buffer in some other way.
    *
    * @param length The number of elements to progress forward.
@@ -258,105 +232,6 @@ final class TLVWriter {
   }
 
   /**
-   * Adds an object with a byte value to the TLV object
-   *
-   * @param tag The tag to write
-   * @param value The value to write
-   */
-  void write(short tag, byte value) throws ISOException {
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    byte[] data = (byte[]) dataPtr[0];
-
-    ensureCapacity((short) ((tag >= 0 && tag <= 255) ? 3 : 4));
-
-    // Set the TAG
-    writeTag(tag);
-
-    // Set the LENGTH
-    data[context[CONTEXT_OFFSET]++] = (byte) 1;
-
-    // Set the VALUE
-    data[context[CONTEXT_OFFSET]++] = value;
-  }
-
-  /**
-   * Adds an object with a byte value to the TLV object
-   *
-   * @param tagClass The tag class to assign to this tag
-   * @param tag The tag to write
-   * @param value The value to write
-   */
-  void write(byte tagClass, byte tag, byte value) throws ISOException {
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    byte[] data = (byte[]) dataPtr[0];
-
-    ensureCapacity((short) 3);
-
-    // Combine the tag/class and set the tag value
-    tag |= tagClass;
-    writeTag(tag);
-
-    // Set the LENGTH
-    data[context[CONTEXT_OFFSET]++] = (byte) 1;
-
-    // Set the VALUE
-    data[context[CONTEXT_OFFSET]++] = value;
-  }
-
-  /**
-   * Adds an object with a short value to the TLV object
-   *
-   * @param tag The tag to write
-   * @param value The value to write
-   */
-  void write(short tag, short value) throws ISOException {
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    byte[] data = (byte[]) dataPtr[0];
-
-    ensureCapacity((short) ((tag >= 0 && tag <= 255) ? 4 : 5));
-
-    // Set the TAG
-    writeTag(tag);
-
-    // Set the LENGTH
-    data[context[CONTEXT_OFFSET]++] = (byte) 2;
-
-    // Set the VALUE
-    Util.setShort(data, context[CONTEXT_OFFSET], value);
-
-    context[CONTEXT_OFFSET] += (short) 2;
-  }
-
-  /**
-   * Adds an object with a byte array value to the TLV object
-   *
-   * @param tag The tag to write
-   * @param buffer The byte array to read from
-   * @param offset The starting offset for the input array
-   * @param length The number of bytes to read from the input array
-   */
-  void write(short tag, byte[] buffer, short offset, short length) throws ISOException {
-
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    byte[] data = (byte[]) dataPtr[0];
-
-    ensureInput(buffer, offset, length);
-    ensureCapacity((short) (tagLength(tag) + lengthLength(length) + length));
-
-    // Set the TAG
-    writeTag(tag);
-
-    // Set the LENGTH
-    writeLength(length);
-
-    // Set the VALUE
-    Util.arrayCopy(buffer, offset, data, context[CONTEXT_OFFSET], length);
-
-    // Increment the position / length
-    context[CONTEXT_OFFSET] += length;
-  }
-
-  /**
    * Adds an object with a byte array value to the TLV object
    *
    * @param tag The tag to write
@@ -370,7 +245,7 @@ final class TLVWriter {
     byte[] data = (byte[]) dataPtr[0];
 
     ensureInput(buffer, offset, length);
-    ensureCapacity((short) (1 + lengthLength(length) + length));
+    ensureCapacity((short) (1 + TLV.encodedLengthSize(length) + length));
 
     // Set the TAG
     writeTag(tag);
@@ -383,27 +258,6 @@ final class TLVWriter {
 
     // Increment the position / length
     context[CONTEXT_OFFSET] += length;
-  }
-
-  /**
-   * Adds an object with no value to the TLV object
-   *
-   * @param tag The tag to write
-   */
-  void writeNull(short tag) throws ISOException {
-
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    byte[] data = (byte[]) dataPtr[0];
-
-    ensureCapacity((short) (tagLength(tag) + 1));
-
-    // Set the TAG
-    writeTag(tag);
-
-    // Set the LENGTH
-    data[context[CONTEXT_OFFSET]++] = (byte) 0;
-
-    // There is no VALUE element
   }
 
   /**
@@ -446,7 +300,7 @@ final class TLVWriter {
   short writeLength(short length) {
 
     if (length < 0) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-    ensureCapacity(lengthLength(length));
+    ensureCapacity(TLV.encodedLengthSize(length));
 
     byte[] data = (byte[]) dataPtr[0];
     short written = TLV.writeLength(data, context[CONTEXT_OFFSET], length);
@@ -498,14 +352,7 @@ final class TLVWriter {
   }
 
   static short encodedLength(short tag, short length) {
-    short headerLength = (short) (tagLength(tag) + lengthLength(length));
+    short headerLength = (short) (tagLength(tag) + TLV.encodedLengthSize(length));
     return (short) (headerLength + length);
-  }
-
-  private static short lengthLength(short length) {
-    if (length < 0) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-    if (length <= 127) return (short) 1;
-    if (length <= 255) return (short) 2;
-    return (short) 3;
   }
 }

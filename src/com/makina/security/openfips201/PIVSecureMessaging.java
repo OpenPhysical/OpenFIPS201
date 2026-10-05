@@ -268,11 +268,6 @@ final class PIVSecureMessaging {
     skRmac.setKey(buffer, offset);
   }
 
-  /** Loads 16-byte (CS2) session keys. */
-  void setSessionKeys(byte[] buffer, short offset) {
-    setSessionKeys(buffer, offset, LENGTH_SESSION_KEY);
-  }
-
   short computeConfirmationMac(
       byte[] buffer, short offset, short length, byte[] out, short outOffset) {
     return PIVCrypto.doAesCmac(skCfrm, buffer, offset, length, out, outOffset);

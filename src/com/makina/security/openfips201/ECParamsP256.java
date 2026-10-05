@@ -127,9 +127,4 @@ final class ECParamsP256 extends ECParams {
   protected byte[] getN() {
     return n;
   }
-
-  @Override
-  protected short getH() {
-    return H;
-  }
 }

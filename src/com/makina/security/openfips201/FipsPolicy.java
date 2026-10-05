@@ -51,7 +51,7 @@ final class FipsPolicy {
     // #if VCI_CS2
     if (ENABLED
         && mechanism == PIV.ID_ALG_ECC_P384
-        && (id == (byte) 0x9C || id == (byte) 0x9D || isRetiredKeyManagement(id))) {
+        && (id == (byte) 0x9C || id == (byte) 0x9D || PIV.isRetiredKeyManagementKey(id))) {
       return false;
     }
     // #endif
@@ -72,13 +72,13 @@ final class FipsPolicy {
           && (attributes & PIVKeyObject.ATTR_IMPORTABLE) == 0;
     }
 
-    if (id == (byte) 0x9B) {
+    if (id == PIVObject.DEFAULT_ADMIN_KEY) {
       return isAllowedManagementMechanism(mechanism)
           && role == PIVKeyObject.ROLE_AUTHENTICATE
           && (attributes & PIVKeyObject.ATTR_PERMIT_INTERNAL) == 0;
     }
 
-    if (isRetiredKeyManagement(id)) {
+    if (PIV.isRetiredKeyManagementKey(id)) {
       // SP 800-78-5 Table 10 retains RSA-1024 identifier 06 only for retired
       // key-management references. The FIPS profile deliberately omits RSA-1024 compatibility.
       return (isCardholderAsymmetric(mechanism) || (!ENABLED && mechanism == PIV.ID_ALG_RSA_1024))
@@ -116,7 +116,7 @@ final class FipsPolicy {
       return accessMatches(
           contact, contactless, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS);
     }
-    if (id == (byte) 0x9B) {
+    if (id == PIVObject.DEFAULT_ADMIN_KEY) {
       return accessMatches(
           contact, contactless, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_NEVER);
     }
@@ -127,7 +127,7 @@ final class FipsPolicy {
           PIVObject.ACCESS_MODE_PIN_ALWAYS,
           (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN_ALWAYS));
     }
-    if (id == (byte) 0x9A || id == (byte) 0x9D || isRetiredKeyManagement(id)) {
+    if (id == (byte) 0x9A || id == (byte) 0x9D || PIV.isRetiredKeyManagementKey(id)) {
       return accessMatches(
           contact,
           contactless,
@@ -270,9 +270,5 @@ final class FipsPolicy {
         || mechanism == PIV.ID_ALG_RSA_3072
         || mechanism == PIV.ID_ALG_ECC_P256
         || mechanism == PIV.ID_ALG_ECC_P384;
-  }
-
-  private static boolean isRetiredKeyManagement(byte id) {
-    return id >= (byte) 0x82 && id <= (byte) 0x95;
   }
 }

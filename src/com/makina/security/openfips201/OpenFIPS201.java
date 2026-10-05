@@ -69,7 +69,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   static final byte INS_ADMIN_UPDATE_KEY = (byte) 0x25;
   static final byte INS_PIV_RESET_RETRY_COUNTER = (byte) 0x2C;
   static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
-  private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
+  static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
   private static final byte INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR = (byte) 0x47;
   // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key,
   // returns the F9 certificate (P1=F9 P2=00), or proves F9 possession (P1=F9 P2=01).
@@ -1101,11 +1101,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   private static boolean isGenerateKeyReference(byte keyReference) {
-    return keyReference == PIV.ID_KEY_SECURE_MESSAGING
-        || keyReference == (byte) 0x9A
-        || keyReference == (byte) 0x9C
-        || keyReference == (byte) 0x9D
-        || keyReference == (byte) 0x9E;
+    return keyReference == PIV.ID_KEY_SECURE_MESSAGING || PIV.isStandardAsymmetricKey(keyReference);
   }
 
   // #if ATTESTATION_ENABLED

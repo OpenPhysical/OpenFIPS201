@@ -151,9 +151,4 @@ final class ECParamsP384 extends ECParams {
   protected byte[] getN() {
     return n;
   }
-
-  @Override
-  protected short getH() {
-    return H;
-  }
 }

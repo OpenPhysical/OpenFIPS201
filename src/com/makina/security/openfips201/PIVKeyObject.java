@@ -60,14 +60,7 @@ abstract class PIVKeyObject extends PIVObject {
   // ECC: ECDSA
   static final byte ROLE_SIGN = (byte) 0x04;
 
-  // RESERVED - This key can be used for digital signature verification
-  static final byte ROLE_VERIFY = (byte) 0x08;
-
-  // RESERVED - This key can be used for encryption operations
-  static final byte ROLE_ENCRYPT = (byte) 0x10;
-
-  // RESERVED - This key can be used for decryption operations
-  static final byte ROLE_DECRYPT = (byte) 0x20;
+  // RESERVED - 0x08 (signature verification), 0x10 (encryption) and 0x20 (decryption)
 
   //
   // Key Attributes

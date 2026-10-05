@@ -1063,16 +1063,6 @@ final class PIVAttestation {
     writer.end();
   }
 
-  /** Validates one complete DER Name; see {@link DERValidator#validateDerName}. */
-  static void validateDerName(byte[] buffer, short offset, short length) {
-    DERValidator.validateDerName(buffer, offset, length);
-  }
-
-  /** Validates one complete DER Validity; see {@link DERValidator#validateDerValidity}. */
-  static void validateDerValidity(byte[] buffer, short offset, short length) {
-    DERValidator.validateDerValidity(buffer, offset, length);
-  }
-
   // Leaf certificate profile, mirrored from docs/ATTESTATION.md:
   // - issuer and validity are the stored F9 certificate subject and validity
   // - subject is CN=PIV Attestation <slot>

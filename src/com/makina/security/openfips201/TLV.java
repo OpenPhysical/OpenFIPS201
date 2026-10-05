@@ -35,12 +35,6 @@ final class TLV {
     // Prevent instantiation
   }
 
-  // Tag Class
-  static final byte CLASS_UNIVERSAL = (byte) 0x00;
-  static final byte CLASS_APPLICATION = (byte) 0x40;
-  static final byte CLASS_CONTEXT = (byte) 0x80;
-  static final byte CLASS_PRIVATE = (byte) 0xC0;
-
   // Length Constants
   static final short LENGTH_1BYTE = (short) 1;
   static final short LENGTH_2BYTE = (short) 2;
@@ -52,7 +46,6 @@ final class TLV {
 
   // Masks
   static final byte MASK_CONSTRUCTED = (byte) 0x20;
-  static final byte MASK_LOW_TAG_NUMBER = (byte) 0x1F;
   static final byte MASK_HIGH_TAG_NUMBER = (byte) 0x7F;
   static final byte MASK_TAG_MULTI_BYTE = (byte) 0x1F;
   static final byte MASK_HIGH_TAG_MOREDATA = (byte) 0x80;
@@ -68,15 +61,8 @@ final class TLV {
   static final byte ASN1_INTEGER = (byte) 0x02;
   static final byte ASN1_BIT_STRING = (byte) 0x03;
   static final byte ASN1_OCTET_STRING = (byte) 0x04;
-  static final byte ASN1_NULL = (byte) 0x05;
   static final byte ASN1_OBJECT = (byte) 0x06;
-  static final byte ASN1_ENUMERATED = (byte) 0x0A;
-  static final byte ASN1_SEQUENCE = (byte) 0x10; //  "Sequence" and "Sequence of"
-  static final byte ASN1_SET = (byte) 0x11; //  "Set" and "Set of"
   static final byte ASN1_PRINT_STRING = (byte) 0x13;
-  static final byte ASN1_T61_STRING = (byte) 0x14;
-  static final byte ASN1_IA5_STRING = (byte) 0x16;
-  static final byte ASN1_UTC_TIME = (byte) 0x17;
 
   // Type Values
   static final byte TRUE = (byte) 0xFF;

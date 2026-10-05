@@ -85,12 +85,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte mechanism,
       byte role,
       byte attributes) {
-    byte symmetricAttributes =
-        (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
-    if ((attributes & symmetricAttributes) != (byte) 0
-        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
+    validateRoleAttributes(role, attributes);
     return new PIVKeyObjectRSA(
         id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
   }
@@ -283,11 +278,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte[] outBuffer,
       short outOffset,
       ECPointValidator validator) {
-
-    if (inLength != getBlockLength()) {
-      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-    }
-
+    // PIVCrypto.doKeyTransport rejects a block whose length differs from the modulus length.
     return PIVCrypto.doKeyTransport(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
@@ -448,7 +439,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
     short end = writer.getOffset();
     short bitStringContentLength = (short) (end - rsaPublicKeyStart + 1);
-    short lengthBytes = encodedLengthSize(bitStringContentLength);
+    short lengthBytes = TLV.encodedLengthSize(bitStringContentLength);
     short oldContentOffset = (short) (bitStringLengthOffset + 1);
     short newContentOffset = (short) (bitStringLengthOffset + lengthBytes);
     if (newContentOffset != oldContentOffset) {
@@ -466,12 +457,6 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     writer.setOffset(end);
     writer.end();
     return (short) (writer.getOffset() - outOffset);
-  }
-
-  private static short encodedLengthSize(short length) {
-    if (length < (short) 0x80) return (short) 0x01;
-    if (length < (short) 0x0100) return (short) 0x02;
-    return (short) 0x03;
   }
 
   private static final byte[] OID_RSA_ENCRYPTION = {

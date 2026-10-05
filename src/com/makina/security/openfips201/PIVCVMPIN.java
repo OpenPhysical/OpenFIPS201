@@ -92,10 +92,4 @@ final class PIVCVMPIN implements PIVPIN {
     // Do nothing
     PINException.throwIt(PINException.ILLEGAL_VALUE);
   }
-
-  public boolean supportsSetTryLimit() {
-    // GPRegistryEntry reg = GPSystem.getRegistryEntry(null);
-    // return reg.isPrivileged(GPRegistryEntry.PRIVILEGE_CVM_MANAGEMENT);
-    return false;
-  }
 }

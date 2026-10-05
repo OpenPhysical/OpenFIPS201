@@ -65,13 +65,16 @@ final class PIV {
 
   // Data Objects
   static final byte ID_DATA_DISCOVERY = (byte) 0x7E;
-  private static final byte INS_PUT_DATA = (byte) 0xDB;
   static final byte[] ID_DATA_PAIRING_CODE_REFERENCE = {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
 
   // PIV Secure Messaging key reference.
   static final byte ID_KEY_SECURE_MESSAGING = (byte) 0x04;
   // Optional attestation authority key reference.
   static final byte ID_KEY_ATTESTATION = (byte) 0xF9;
+  // SP 800-73-5 Part 1 Table 5 assigns key references '82' through '95' to the "Retired Key
+  // Management Key".
+  static final byte ID_KEY_RETIRED_FIRST = (byte) 0x82;
+  static final byte ID_KEY_RETIRED_LAST = (byte) 0x95;
 
   // Keys
   static final byte ID_ALG_DEFAULT = (byte) 0x00; // This maps to TDEA_3KEY
@@ -102,8 +105,6 @@ final class PIV {
   static final byte ID_CVM_GLOBAL_PIN = (byte) 0x00;
   static final byte ID_CVM_LOCAL_PIN = (byte) 0x80;
   static final byte ID_CVM_PUK = (byte) 0x81;
-  static final byte ID_CVM_OCC_PRI = (byte) 0x96;
-  static final byte ID_CVM_OCC_SEC = (byte) 0x97;
   static final byte ID_CVM_PAIRING_CODE = (byte) 0x98;
 
   // General Authenticate Tags
@@ -126,8 +127,6 @@ final class PIV {
    */
   static final short SW_REFERENCE_NOT_FOUND = (short) 0x6A88;
 
-  static final short SW_PUT_DATA_COMMAND_MISSING = (short) 0x6E10;
-  static final short SW_PUT_DATA_COMMAND_INVALID_LENGTH = (short) 0x6E11;
   static final short SW_PUT_DATA_OP_MISSING = (short) 0x6E12;
   static final short SW_PUT_DATA_OP_INVALID_LENGTH = (short) 0x6E13;
   static final short SW_PUT_DATA_OP_INVALID_VALUE = (short) 0x6E14;
@@ -135,10 +134,8 @@ final class PIV {
   static final short SW_PUT_DATA_ID_INVALID_LENGTH = (short) 0x6E16;
   static final short SW_PUT_DATA_MODE_CONTACT_MISSING = (short) 0x6E17;
   static final short SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH = (short) 0x6E18;
-  static final short SW_PUT_DATA_MODE_CONTACT_INVALID_VALUE = (short) 0x6E19;
   static final short SW_PUT_DATA_MODE_CONTACTLESS_MISSING = (short) 0x6E1A;
   static final short SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH = (short) 0x6E1B;
-  static final short SW_PUT_DATA_MODE_CONTACTLESS_INVALID_VALUE = (short) 0x6E1C;
   static final short SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH = (short) 0x6E1D;
   static final short SW_PUT_DATA_KEY_MECHANISM_MISSING = (short) 0x6E1E;
   static final short SW_PUT_DATA_KEY_MECHANISM_INVALID_LENGTH = (short) 0x6E1F;
@@ -146,8 +143,6 @@ final class PIV {
   static final short SW_PUT_DATA_KEY_ROLE_INVALID_LENGTH = (short) 0x6E21;
   static final short SW_PUT_DATA_KEY_ATTR_MISSING = (short) 0x6E22;
   static final short SW_PUT_DATA_KEY_ATTR_INVALID_LENGTH = (short) 0x6E23;
-  static final short SW_PUT_DATA_CONFIG_MISSING = (short) 0x6E24;
-  static final short SW_PUT_DATA_CONFIG_WRONG_LENGTH = (short) 0x6E25;
   static final short SW_PUT_DATA_CONFIG_INVALID_VALUE = (short) 0x6E26;
   static final short SW_PUT_DATA_OBJECT_EXISTS = (short) 0x6E27;
 
@@ -264,7 +259,6 @@ final class PIV {
             authenticationContext,
             ecPointValidator,
             scratch,
-            smCommand,
             smResponse,
             opacity
             // #if ATTESTATION_ENABLED
@@ -280,8 +274,7 @@ final class PIV {
             dataStore,
             chainBuffer,
             secureMessaging,
-            scratch,
-            smCommand
+            scratch
             // #if ATTESTATION_ENABLED
             ,
             attestation
@@ -448,7 +441,7 @@ final class PIV {
         secureMessaging.isRejectedCommandStreamActive()
             || (mustRejectContactlessPutData()
                 && commandChaining
-                && buffer[ISO7816.OFFSET_INS] == INS_PUT_DATA);
+                && buffer[ISO7816.OFFSET_INS] == OpenFIPS201.INS_PIV_PUT_DATA);
     if (streamRejectedPutData) {
       // Section 4.2.4 says the card "reconstructs and processes the entire command." Authenticate
       // and decrypt every frame before Table 2 supplies protected status 6A81. The bounded parser
@@ -794,10 +787,9 @@ final class PIV {
       return false;
     }
     if (isVciConfigured()) {
-      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI.
-      PIVKeyObject smKey = getSecureMessagingKey();
-      if (!(smKey instanceof PIVKeyObjectECC)
-          || ((PIVKeyObjectECC) smKey).getSmCvcLength() == (short) 0
+      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI. An initialised SM key
+      // holds both (PIVKeyObjectECC.hasPrivateMaterial requires the CVC for CS2 and CS7).
+      if (getSecureMessagingKey() == null
           // SP 800-73-5 Part 1 Section 3.3.7 requires 5FC122 when SM protects
           // non-card-management operations.
           || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x22)) {
@@ -840,10 +832,24 @@ final class PIV {
 
   /** Returns whether any retired key management reference '82' to '95' holds a private key. */
   private boolean hasRetiredKeyManagementKey() {
-    for (byte id = (byte) 0x82; id <= (byte) 0x95; id++) {
+    for (byte id = ID_KEY_RETIRED_FIRST; id <= ID_KEY_RETIRED_LAST; id++) {
       if (cspPIV.hasUsableAsymmetricKey(id)) return true;
     }
     return false;
+  }
+
+  /**
+   * Returns whether {@code id} is one of the SP 800-73-5 Part 1 Table 5 cardholder asymmetric key
+   * references: '9A' PIV Authentication, '9C' Digital Signature, '9D' Key Management or '9E' Card
+   * Authentication.
+   */
+  static boolean isStandardAsymmetricKey(byte id) {
+    return id == (byte) 0x9A || id == (byte) 0x9C || id == (byte) 0x9D || id == (byte) 0x9E;
+  }
+
+  /** Returns whether {@code id} is a Table 5 retired key management reference '82' to '95'. */
+  static boolean isRetiredKeyManagementKey(byte id) {
+    return id >= ID_KEY_RETIRED_FIRST && id <= ID_KEY_RETIRED_LAST;
   }
 
   private boolean hasStructurallyValidMandatoryObject(byte suffix) {

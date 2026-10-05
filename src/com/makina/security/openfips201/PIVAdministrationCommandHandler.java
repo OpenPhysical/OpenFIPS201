@@ -25,7 +25,6 @@ final class PIVAdministrationCommandHandler {
   private final ChainBuffer chainBuffer;
   private final PIVSecureMessaging secureMessaging;
   private final byte[] scratch;
-  private final byte[] smCommand;
   // #if ATTESTATION_ENABLED
   private final PIVAttestation attestation;
   // #endif
@@ -37,8 +36,7 @@ final class PIVAdministrationCommandHandler {
       PIVDataStore dataStore,
       ChainBuffer chainBuffer,
       PIVSecureMessaging secureMessaging,
-      byte[] scratch,
-      byte[] smCommand
+      byte[] scratch
           // #if ATTESTATION_ENABLED
           ,
       PIVAttestation attestation
@@ -51,7 +49,6 @@ final class PIVAdministrationCommandHandler {
     this.chainBuffer = chainBuffer;
     this.secureMessaging = secureMessaging;
     this.scratch = scratch;
-    this.smCommand = smCommand;
     // #if ATTESTATION_ENABLED
     this.attestation = attestation;
     // #endif
@@ -61,6 +58,25 @@ final class PIVAdministrationCommandHandler {
     if (GPSystem.getCardContentState() != GPSystem.APPLICATION_SELECTABLE) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
+  }
+
+  /**
+   * Checks the required 'ID' element at the reader position and returns its value length. The
+   * reader is left on the element so the caller can read the identifier before advancing.
+   *
+   * @param maxLength the longest identifier the operation accepts
+   * @throws ISOException {@link PIV#SW_PUT_DATA_ID_MISSING} if the element is absent, or {@link
+   *     PIV#SW_PUT_DATA_ID_INVALID_LENGTH} if its length is not between 1 and {@code maxLength}
+   */
+  private static short readIdLength(TLVReader reader, short maxLength) {
+    if (!reader.match(CONST_TAG_ID)) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_ID_MISSING);
+    }
+    short length = reader.getLength();
+    if (length < (short) 1 || length > maxLength) {
+      ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
+    }
+    return length;
   }
 
   /** Reads the required contact and contactless access modes and advances past both tags. */
@@ -135,19 +151,8 @@ final class PIVAdministrationCommandHandler {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The 'ID' tag MUST be present
-    if (!reader.match(CONST_TAG_ID)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 2 - The 'ID' tag MUST have length between 1 and 3
-    short objectIdLength = reader.getLength();
-    if (objectIdLength < (short) 1 || objectIdLength > (short) 3) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
-      return;
-    }
-
+    // PRE-CONDITIONS 1 and 2 - The 'ID' tag MUST be present with length between 1 and 3
+    short objectIdLength = readIdLength(reader, (short) 3);
     short idOffset = reader.getDataOffset();
     reader.moveNext();
 
@@ -204,19 +209,8 @@ final class PIVAdministrationCommandHandler {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The 'ID' tag MUST be present
-    if (!reader.match(CONST_TAG_ID)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 2 - The 'ID' tag MUST have length between 1 and 3
-    short objectIdLength = reader.getLength();
-    if (objectIdLength < (short) 1 || objectIdLength > (short) 3) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
-      return;
-    }
-
+    // PRE-CONDITIONS 1 and 2 - The 'ID' tag MUST be present with length between 1 and 3
+    short objectIdLength = readIdLength(reader, (short) 3);
     short idOffset = reader.getDataOffset();
     reader.moveNext();
 
@@ -240,17 +234,8 @@ final class PIVAdministrationCommandHandler {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The 'ID' tag MUST be present
-    if (!reader.match(CONST_TAG_ID)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 2 - The 'ID' tag MUST have length 1 only
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
-      return;
-    }
+    // PRE-CONDITIONS 1 and 2 - The 'ID' tag MUST be present with length 1 only
+    readIdLength(reader, (short) 1);
     byte id = reader.toByte();
     reader.moveNext();
 
@@ -359,17 +344,8 @@ final class PIVAdministrationCommandHandler {
     // PRE-CONDITIONS
     //
 
-    // PRE-CONDITION 1 - The 'ID' tag MUST be present
-    if (!reader.match(CONST_TAG_ID)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 2 - The 'ID' tag MUST have length 1 only
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
-      return;
-    }
+    // PRE-CONDITIONS 1 and 2 - The 'ID' tag MUST be present with length 1 only
+    readIdLength(reader, (short) 1);
     byte id = reader.toByte();
     reader.moveNext();
 
@@ -454,109 +430,97 @@ final class PIVAdministrationCommandHandler {
     // PRE-PROCESSING
     //
 
-    // If the top-level tag indicates this is a BULK request, we move into it and then we are left
-    // with an array of objects. If it doesn't, we are already at the start of the only request.
-    boolean isBulk;
+    // A BULK request is refused: object allocation and key deletion cannot be rolled back reliably
+    // as one Java Card transaction, so a batch could leave a partially applied administration set.
+    // Each command therefore carries exactly one operation.
     if (reader.match(CONST_TAG_BULK_REQUEST)) {
-      // Object allocation and key deletion cannot be rolled back reliably as one Java Card
-      // transaction. Reject batches instead of leaving a partially applied administration set.
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
-      return;
-    } else {
-      isBulk = false;
     }
 
     final byte CONST_OP_COMPATIBILITY_DATA = (byte) 0x01;
     final byte CONST_OP_COMPATIBILITY_KEY = (byte) 0x02;
 
-    // Loop through all the requests
-    do {
-      // Get the operation value
-      byte operation = reader.getTag();
-      short operationLength = reader.getLength();
-      short operationEnd = (short) (reader.getDataOffset() + operationLength);
-      if (!isBulk && operationEnd != length) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    // Get the operation value
+    byte operation = reader.getTag();
+    short operationLength = reader.getLength();
+    short operationEnd = (short) (reader.getDataOffset() + operationLength);
+    if (operationEnd != length) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
+    // PRE-CONDITION 1 - The tag must be constructed
+    if (!reader.isConstructed()) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
+    // Move into the constructed tag
+    reader.moveInto();
+
+    //
+    // The compatibility format supports existing issuance systems. It creates data objects and
+    // keys only, and it uses the default applet settings.
+    boolean compatibilityFormat = false;
+    if (operation == CONST_TAG_COMPATIBILITY) {
+      // PRE-CONDITION 2A - The compatibility operation tag must be present.
+      if (!reader.match(CONST_TAG_COMPATIBILITY_OPERATION)) {
+        ISOException.throwIt(PIV.SW_PUT_DATA_OP_MISSING);
+      }
+      // PRE-CONDITION 2B - The 'OPERATION' tag MUST have length 1
+      if (reader.getLength() != (short) 1) {
+        ISOException.throwIt(PIV.SW_PUT_DATA_OP_INVALID_LENGTH);
       }
 
-      // PRE-CONDITION 1 - The tag must be constructed
-      if (!reader.isConstructed()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        return;
-      }
+      // Update the operation and move on
+      compatibilityFormat = true;
+      operation = reader.toByte();
+      reader.moveNext();
+    }
 
-      // Move into the constructed tag
-      reader.moveInto();
+    switch (operation) {
 
-      //
-      // The compatibility format supports existing issuance systems. It creates data objects and
-      // keys only, and it uses the default applet settings.
-      boolean compatibilityFormat = false;
-      if (operation == CONST_TAG_COMPATIBILITY) {
-        // PRE-CONDITION 2A - The compatibility operation tag must be present.
-        if (!reader.match(CONST_TAG_COMPATIBILITY_OPERATION)) {
-          ISOException.throwIt(PIV.SW_PUT_DATA_OP_MISSING);
+        // Create a data object record
+      case CONST_OP_COMPATIBILITY_DATA:
+      case CONST_TAG_CREATE_OBJECT:
+        requireStructureMutable();
+        processCreateObjectRequest(reader, compatibilityFormat);
+        break;
+
+      case CONST_TAG_DELETE_OBJECT:
+        requireStructureMutable();
+        processDeleteObjectRequest(reader);
+        break;
+
+        // Create a key object record
+      case CONST_OP_COMPATIBILITY_KEY:
+      case CONST_TAG_CREATE_KEY:
+        requireStructureMutable();
+        processCreateKeyRequest(reader, compatibilityFormat);
+        break;
+
+      case CONST_TAG_DELETE_KEY:
+        requireStructureMutable();
+        processDeleteKeyRequest(reader);
+        break;
+
+        // Update one or more configuration parameters
+      case CONST_TAG_UPDATE_CONFIG:
+        requireStructureMutable();
+        JCSystem.beginTransaction();
+        try {
+          config.update(reader);
+          JCSystem.commitTransaction();
+        } finally {
+          if (JCSystem.getTransactionDepth() != (byte) 0) JCSystem.abortTransaction();
         }
-        // PRE-CONDITION 2B - The 'OPERATION' tag MUST have length 1
-        if (reader.getLength() != (short) 1) {
-          ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
-        }
+        break;
 
-        // Update the operation and move on
-        compatibilityFormat = true;
-        operation = reader.toByte();
-        reader.moveNext();
-      }
+      case CONST_TAG_PERSONALIZE_APPLET:
+        processPersonalizeAppletRequest(operationLength);
+        break;
 
-      switch (operation) {
-
-          // Create a data object record
-        case CONST_OP_COMPATIBILITY_DATA:
-        case CONST_TAG_CREATE_OBJECT:
-          requireStructureMutable();
-          processCreateObjectRequest(reader, compatibilityFormat);
-          break;
-
-        case CONST_TAG_DELETE_OBJECT:
-          requireStructureMutable();
-          processDeleteObjectRequest(reader);
-          break;
-
-          // Create a key object record
-        case CONST_OP_COMPATIBILITY_KEY:
-        case CONST_TAG_CREATE_KEY:
-          requireStructureMutable();
-          processCreateKeyRequest(reader, compatibilityFormat);
-          break;
-
-        case CONST_TAG_DELETE_KEY:
-          requireStructureMutable();
-          processDeleteKeyRequest(reader);
-          break;
-
-          // Update one or more configuration parameters
-        case CONST_TAG_UPDATE_CONFIG:
-          requireStructureMutable();
-          JCSystem.beginTransaction();
-          try {
-            config.update(reader);
-            JCSystem.commitTransaction();
-          } finally {
-            if (JCSystem.getTransactionDepth() != (byte) 0) JCSystem.abortTransaction();
-          }
-          break;
-
-        case CONST_TAG_PERSONALIZE_APPLET:
-          processPersonalizeAppletRequest(operationLength);
-          break;
-
-        default:
-          ISOException.throwIt(SW_PUT_DATA_OP_INVALID_VALUE);
-          return;
-      }
-
-      // If this is a bulk operation,
-    } while (isBulk && !reader.isEOF());
+      default:
+        ISOException.throwIt(SW_PUT_DATA_OP_INVALID_VALUE);
+    }
   }
 
   /**
@@ -605,18 +569,11 @@ final class PIVAdministrationCommandHandler {
     // COMMAND CHAIN HANDLING
     //
 
-    byte[] commandBuffer = scratch;
-    // #if VCI_CS7
-    // CS7 SM CVCs may be larger than LENGTH_SCRATCH. Keep the advertised CS7 CVC limit
-    // provisionable by reassembling that admin update into the larger OPACITY command buffer.
-    if (id == ID_KEY_SECURE_MESSAGING) {
-      commandBuffer = smCommand;
-    }
-    // #endif
-
     // Pass the APDU to the chainBuffer instance first. It will return zero if there is store more
-    // to of the chain to process, otherwise it will return the length of the large CDATA buffer
-    length = chainBuffer.processIncomingAPDU(buffer, offset, length, commandBuffer, ZERO);
+    // to of the chain to process, otherwise it will return the length of the large CDATA buffer.
+    // The scratch buffer holds every key update, including the largest: a CS7 SM CVC of up to 384
+    // octets with its sequence, element and algorithm headers.
+    length = chainBuffer.processIncomingAPDU(buffer, offset, length, scratch, ZERO);
 
     // If the length is zero, just return so the caller can keep sending
     if (length == 0) return;
@@ -624,14 +581,12 @@ final class PIVAdministrationCommandHandler {
     // Proprietary UPDATE KEY uses P1=01 and carries the PIV algorithm reference in tag 80 before
     // the existing single-element key-update sequence.
     if (mechanism == (byte) 0x01 && id != ID_CVM_LOCAL_PIN && id != ID_CVM_PUK) {
-      if (length < (short) 5
-          || commandBuffer[ZERO] != (byte) 0x80
-          || commandBuffer[(short) 1] != (byte) 0x01) {
+      if (length < (short) 5 || scratch[ZERO] != (byte) 0x80 || scratch[(short) 1] != (byte) 0x01) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
-      mechanism = commandBuffer[(short) 2];
+      mechanism = scratch[(short) 2];
       length -= (short) 3;
-      Util.arrayCopyNonAtomic(commandBuffer, (short) 3, commandBuffer, ZERO, length);
+      Util.arrayCopyNonAtomic(scratch, (short) 3, scratch, ZERO, length);
     }
 
     // If we got this far, the scratch buffer now contains the incoming DATA. Keep in mind that the
@@ -651,17 +606,17 @@ final class PIVAdministrationCommandHandler {
         // We deliberately ignore the value of CONFIG_PIN_ENABLE_LOCAL here as there may be a good
         // reason for setting a pre-defined PIN value with the anticipation of enabling it later
 
-        if (!owner.verifyPinFormat(commandBuffer, ZERO, length)) {
+        if (!owner.verifyPinFormat(scratch, ZERO, length)) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
 
-        if (!owner.verifyPinRules(commandBuffer, ZERO, length)) {
+        if (!owner.verifyPinRules(scratch, ZERO, length)) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
 
         // Update the PIN
         // NOTE: We ignore the history check here since this is an administrative update
-        cspPIV.updatePIN(ID_CVM_LOCAL_PIN, commandBuffer, ZERO, (byte) length, ZERO);
+        cspPIV.updatePIN(ID_CVM_LOCAL_PIN, scratch, ZERO, (byte) length, ZERO);
         return; // Done
       }
 
@@ -683,7 +638,7 @@ final class PIVAdministrationCommandHandler {
         if (length != config.readValue(Config.CONFIG_PUK_LENGTH)) {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
-        cspPIV.updatePIN(ID_CVM_PUK, commandBuffer, ZERO, (byte) length, ZERO);
+        cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, (byte) length, ZERO);
 
         return; // Done
       }
@@ -727,7 +682,7 @@ final class PIVAdministrationCommandHandler {
 
       // Set up our TLV reader
       TLVReader reader = TLVReader.getInstance();
-      reader.init(commandBuffer, ZERO, length);
+      reader.init(scratch, ZERO, length);
 
       // PRE-CONDITION 3 - The parent tag MUST be of type SEQUENCE
       if (!reader.match(CONST_TAG_SEQUENCE)) {
@@ -769,7 +724,7 @@ final class PIVAdministrationCommandHandler {
           return; // Keep static analyser happy
         }
         processAttestationAuthorityElement(
-            (PIVKeyObjectECC) key, elementTag, commandBuffer, elementOffset, elementLength);
+            (PIVKeyObjectECC) key, elementTag, scratch, elementOffset, elementLength);
         cspPIV.clearAuthenticatedKey();
         return;
       }
@@ -812,7 +767,7 @@ final class PIVAdministrationCommandHandler {
         // clears the key after any transaction has closed, so the cleared state is what persists.
         short failure = ZERO;
         try {
-          key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
+          key.updateElement(elementTag, scratch, elementOffset, elementLength);
           if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
             if (importedKey.isLastImportedPart(elementTag)
                 && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
@@ -840,7 +795,7 @@ final class PIVAdministrationCommandHandler {
           ISOException.throwIt(failure);
         }
       } else {
-        key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
+        key.updateElement(elementTag, scratch, elementOffset, elementLength);
       }
       if (elementTag != PIVKeyObjectECC.ELEMENT_SM_CVC) {
         key.markImported();
@@ -849,9 +804,6 @@ final class PIVAdministrationCommandHandler {
       // STEP 4 - Clear any prior key-authenticated session after a key value change.
       cspPIV.clearAuthenticatedKey();
     } finally {
-      if (commandBuffer == smCommand) {
-        PIVSecurityProvider.zeroise(smCommand, ZERO, (short) smCommand.length);
-      }
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
     }
   }

@@ -51,8 +51,8 @@ class ChainBufferObjectTest {
               new javacard.framework.TransactionException(
                   javacard.framework.TransactionException.BUFFER_FULL));
       ChainBuffer chain = new ChainBuffer();
-      byte[] unpublished = new byte[4];
-      chain.setIncomingObject(unpublished, (short) 0, (short) 4, false);
+      PIVDataObject object = dataObject();
+      chain.setIncomingObject(object, (short) 4);
       byte[] command = {(byte) 0, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 4, 1, 2, 3, 4};
       assertEquals(
           0x9000,
@@ -63,20 +63,20 @@ class ChainBufferObjectTest {
                               command, (short) 5, (short) 4, ChainBuffer.PROTECTION_SCP))
                   .getReason()
               & 0xFFFF);
-      assertArrayEquals(new byte[] {1, 2, 3, 4}, unpublished);
+      assertArrayEquals(new byte[] {1, 2, 3, 4}, object.content);
     }
   }
 
   @Test
-  void atomicObjectChainCommitsOnlyAfterItsFinalFrame() {
+  void objectChainPublishesOnlyAfterItsFinalFrame() {
     // SP 800-73-5 Part 2, Section 3.1.1 requires chained command data to be
     // accumulated as one command; incomplete state must not become visible.
     try (MockedStatic<JCSystem> mocked = Mockito.mockStatic(JCSystem.class)) {
       mockTransientStorage(mocked);
 
       ChainBuffer chain = new ChainBuffer();
-      byte[] destination = new byte[4];
-      chain.setIncomingObject(destination, (short) 0, (short) 4, true);
+      PIVDataObject object = dataObject();
+      chain.setIncomingObject(object, (short) 4);
 
       byte[] first = {(byte) 0x10, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x11, 0x22};
       ISOException firstStatus =
@@ -86,7 +86,8 @@ class ChainBufferObjectTest {
                   chain.processIncomingObject(
                       first, (short) 5, (short) 2, ChainBuffer.PROTECTION_SCP));
       assertEquals(0x9000, firstStatus.getReason() & 0xFFFF);
-      assertArrayEquals(new byte[] {0x11, 0x22, 0x00, 0x00}, destination);
+      assertFalse(object.isInitialised(), "A partial chain must not publish the object");
+      mocked.verify(JCSystem::commitTransaction, Mockito.never());
 
       byte[] last = {0x00, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x33, 0x44};
       ISOException finalStatus =
@@ -96,7 +97,8 @@ class ChainBufferObjectTest {
                   chain.processIncomingObject(
                       last, (short) 5, (short) 2, ChainBuffer.PROTECTION_SCP));
       assertEquals(0x9000, finalStatus.getReason() & 0xFFFF);
-      assertArrayEquals(new byte[] {0x11, 0x22, 0x33, 0x44}, destination);
+      assertArrayEquals(new byte[] {0x11, 0x22, 0x33, 0x44}, object.content);
+      assertEquals(4, object.getLength());
       mocked.verify(JCSystem::beginTransaction);
       mocked.verify(JCSystem::commitTransaction);
     }
@@ -110,7 +112,7 @@ class ChainBufferObjectTest {
       mockTransientStorage(mocked);
 
       ChainBuffer chain = new ChainBuffer();
-      chain.setIncomingObject(new byte[4], (short) 0, (short) 4, false);
+      chain.setIncomingObject(dataObject(), (short) 4);
       byte[] first = {(byte) 0x10, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x11, 0x22};
       assertEquals(
           0x9000,
@@ -142,8 +144,8 @@ class ChainBufferObjectTest {
     try (MockedStatic<JCSystem> mocked = Mockito.mockStatic(JCSystem.class)) {
       mockTransientStorage(mocked);
       ChainBuffer chain = new ChainBuffer();
-      byte[] destination = new byte[4];
-      chain.setIncomingObject(destination, (short) 0, (short) 4, false);
+      PIVDataObject object = dataObject();
+      chain.setIncomingObject(object, (short) 4);
 
       byte[] first = {(byte) 0x10, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x11, 0x22};
       assertEquals(0x9000, objectStatus(chain, first, (short) 2));
@@ -151,7 +153,7 @@ class ChainBufferObjectTest {
       assertEquals(0x9000, objectStatus(chain, empty, (short) 0));
       byte[] last = {0x00, (byte) 0xDB, (byte) 0xFF, (byte) 0xFF, 0x02, 0x33, 0x44};
       assertEquals(0x9000, objectStatus(chain, last, (short) 2));
-      assertArrayEquals(new byte[] {0x11, 0x22, 0x33, 0x44}, destination);
+      assertArrayEquals(new byte[] {0x11, 0x22, 0x33, 0x44}, object.content);
     }
   }
 
@@ -248,6 +250,18 @@ class ChainBufferObjectTest {
                 () -> chain.processIncomingAPDU(command, (short) 5, length, out, (short) 0))
             .getReason()
         & 0xFFFF;
+  }
+
+  /** Returns a data object whose fixed capacity equals the four-byte test payload. */
+  private static PIVDataObject dataObject() {
+    return new PIVDataObject(
+        new byte[] {0x01},
+        (short) 0,
+        (short) 1,
+        PIVObject.ACCESS_MODE_ALWAYS,
+        PIVObject.ACCESS_MODE_ALWAYS,
+        (byte) 0x9B,
+        (short) 4);
   }
 
   private static void mockTransientStorage(MockedStatic<JCSystem> system) {

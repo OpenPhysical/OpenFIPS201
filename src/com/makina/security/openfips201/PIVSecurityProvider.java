@@ -254,12 +254,17 @@ final class PIVSecurityProvider {
     transientState[STATE_IS_SECURE_CHANNEL] = value ? FLAG_TRUE : FLAG_FALSE;
   }
 
-  PIVKeyObject selectKey(byte id, byte mechanism) {
+  /**
+   * Maps the default algorithm reference to the mechanism it denotes. SP 800-78-5 Table 9 assigns
+   * "'00'" to "3 Key Triple DES – ECB (deprecated)", the same algorithm as {@link
+   * PIV#ID_ALG_TDEA_3KEY}.
+   */
+  static byte normalizeMechanism(byte mechanism) {
+    return mechanism == PIV.ID_ALG_DEFAULT ? PIV.ID_ALG_TDEA_3KEY : mechanism;
+  }
 
-    // First, map the default mechanism code to TDEA 3KEY
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+  PIVKeyObject selectKey(byte id, byte mechanism) {
+    mechanism = normalizeMechanism(mechanism);
 
     PIVKeyObject key = selectKey(id);
     if (key != null && key.match(id, mechanism)) return key;
@@ -285,7 +290,7 @@ final class PIVSecurityProvider {
   }
 
   boolean hasUsableManagementKey() {
-    PIVKeyObject key = selectKey((byte) 0x9B);
+    PIVKeyObject key = selectKey(PIVObject.DEFAULT_ADMIN_KEY);
     return key != null && key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE) && key.isInitialised();
   }
 
@@ -309,10 +314,7 @@ final class PIVSecurityProvider {
       byte role,
       byte attributes) {
 
-    // First, map the default mechanism code to TDEA 3KEY
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+    mechanism = normalizeMechanism(mechanism);
 
     if (!FipsPolicy.allowsKeyDefinition(
         id, modeContact, modeContactless, mechanism, role, attributes)) {
@@ -363,9 +365,7 @@ final class PIVSecurityProvider {
     // The attestation authority is immutable for the life of the applet instance; only deleting
     // the instance removes it.
     if (id == PIV.ID_KEY_ATTESTATION) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+    mechanism = normalizeMechanism(mechanism);
 
     PIVKeyObject previous = null;
     PIVKeyObject key = firstKey;
@@ -393,36 +393,6 @@ final class PIVSecurityProvider {
 
     key.clear();
     key.runGc();
-  }
-
-  boolean deleteKey(byte id) {
-
-    PIVKeyObject previous = null;
-    PIVKeyObject key = firstKey;
-
-    while (key != null) {
-      PIVKeyObject next = (PIVKeyObject) key.getNext();
-      if (key.match(id)) {
-        if (transientState[STATE_AUTH_KEY] == id) {
-          clearAuthenticatedKey();
-        }
-        JCSystem.beginTransaction();
-        if (previous == null) {
-          firstKey = next;
-        } else {
-          previous.setNext(next);
-        }
-        key.setNext(null);
-        JCSystem.commitTransaction();
-        key.clear();
-        key.runGc();
-        return true;
-      }
-      previous = key;
-      key = next;
-    }
-
-    return false;
   }
 
   void clearKeyMaterialExcept(byte retainedId) {

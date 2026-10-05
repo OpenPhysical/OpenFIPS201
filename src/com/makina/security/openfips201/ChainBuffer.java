@@ -71,20 +71,18 @@ final class ChainBuffer {
   // Indicates whether the buffer should be wiped on completion of the chain
   private static final short CONTEXT_CLEAR_ON_COMPLETE = (short) 5;
 
-  // Indicates whether the chain is operating inside a transaction
-  private static final short CONTEXT_TRANSACTION = (short) 6;
-  private static final short CONTEXT_SECURE_OUTGOING = (short) 7;
+  private static final short CONTEXT_SECURE_OUTGOING = (short) 6;
 
   // The APDU header used for tracking incoming data: CLA (with the chaining bit cleared) and INS
   // as one short, then P1 and P2 as one short. ISO/IEC 7816-4 Section 5.3.3: "All CLA bytes of the
   // commands shall be the same, except for bit b5" and "All INS P1 P2 bytes of the commands shall
   // be the same."
-  private static final short CONTEXT_APDU_CLA_INS = (short) 8;
-  private static final short CONTEXT_APDU_P1P2 = (short) 9;
-  private static final short CONTEXT_PROTECTION = (short) 10;
+  private static final short CONTEXT_APDU_CLA_INS = (short) 7;
+  private static final short CONTEXT_APDU_P1P2 = (short) 8;
+  private static final short CONTEXT_PROTECTION = (short) 9;
 
   // Total length of the context transient object
-  private static final short LENGTH_CONTEXT = (short) 11;
+  private static final short LENGTH_CONTEXT = (short) 10;
 
   static final byte PROTECTION_PLAIN = (byte) 0;
   static final byte PROTECTION_PIV_SM = (byte) 1;
@@ -111,44 +109,22 @@ final class ChainBuffer {
     reset();
   }
 
-  /** Resets the ChainBuffer, aborting any outstanding transaction */
-  private void resetAbort() {
-
-    if (ownerPtr[0] != null) {
-      ((PIVDataObject) ownerPtr[0]).abortUpdate();
-      ownerPtr[0] = null;
-    }
-
-    // Have we been asked to conduct this in a transaction?
-    if ((short) 0 != context[CONTEXT_TRANSACTION]) {
-      JCSystem.abortTransaction();
-    }
-
-    // Perform a normal reset
-    reset();
-  }
-
   /**
-   * Discards an incomplete command chain and aborts its outstanding transaction.
+   * Discards an incomplete command chain and its staged object update.
    *
    * <p>ISO/IEC 7816-4 command chaining treats an interrupted chain as incomplete. The applet also
    * aborts any staged object update so the incomplete logical command is not published.
    */
   void abort() {
-    resetAbort();
+    reset();
   }
 
-  /** Resets the ChainBuffer, committing any outstanding transaction */
+  /** Resets the ChainBuffer, publishing any staged object update */
   private void resetCommit() {
 
     if (ownerPtr[0] != null) {
       ((PIVDataObject) ownerPtr[0]).commitUpdate();
       ownerPtr[0] = null;
-    }
-
-    // Have we been asked to conduct this in a transaction?
-    if ((short) 0 != context[CONTEXT_TRANSACTION]) {
-      JCSystem.commitTransaction();
     }
 
     // Perform a normal reset
@@ -182,13 +158,12 @@ final class ChainBuffer {
     context[CONTEXT_APDU_CLA_INS] = (short) 0;
     context[CONTEXT_APDU_P1P2] = (short) 0;
     context[CONTEXT_PROTECTION] = (short) PROTECTION_PLAIN;
-    context[CONTEXT_TRANSACTION] = (short) 0;
   }
 
   /** Abandons an incomplete command-data chain when a different command arrives. */
   void checkIncomingAPDU(byte[] apdu) {
     if (context[CONTEXT_STATE] != STATE_INCOMING_APDU) return;
-    if (!isSameChainedCommand(apdu)) resetAbort();
+    if (!isSameChainedCommand(apdu)) reset();
   }
 
   /** Records the CLA (chaining bit cleared), INS, P1 and P2 of the first command of a chain. */
@@ -248,30 +223,13 @@ final class ChainBuffer {
   }
 
   /**
-   * Configures the ChainBuffer class to process a stream of incoming data directly to an object
+   * Configures the ChainBuffer class to stream incoming data into the unpublished staging buffer of
+   * a data object. The final fragment publishes it ({@link PIVDataObject#commitUpdate()}); an
+   * aborted chain discards it ({@link PIVDataObject#abortUpdate()}).
    *
-   * @param destination The buffer to write data to
-   * @param offset The starting offset of the data to write to
+   * @param destination The data object to replace
    * @param length The length to expect to be written
-   * @param atomic If true, this operation will be conducted inside a transaction
    */
-  void setIncomingObject(byte[] destination, short offset, short length, boolean atomic) {
-
-    reset();
-
-    dataPtr[0] = destination;
-
-    context[CONTEXT_STATE] = STATE_INCOMING_OBJECT;
-    context[CONTEXT_OFFSET] = offset;
-    context[CONTEXT_REMAINING] = length;
-    context[CONTEXT_LENGTH] = length;
-
-    if (atomic) {
-      JCSystem.beginTransaction();
-      context[CONTEXT_TRANSACTION] = (short) 1;
-    }
-  }
-
   void setIncomingObject(PIVDataObject destination, short length) {
     reset();
     byte[] staged = destination.beginUpdate(length);
@@ -303,11 +261,11 @@ final class ChainBuffer {
     // STATE VALIDATION
     //
 
-    // Make sure that we are not in the middle of some other outstanding transaction
+    // Make sure that we are not in the middle of some other outstanding operation
     if (context[CONTEXT_STATE] != STATE_NONE && context[CONTEXT_STATE] != STATE_INCOMING_APDU) {
-      // We have been called in the middle of another operation! call resetAbort in case there is
-      // some outstanding transaction
-      resetAbort();
+      // We have been called in the middle of another operation. Reset, which discards any staged
+      // object update.
+      reset();
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
@@ -400,7 +358,7 @@ final class ChainBuffer {
     if (!firstFrame && !isSameChainedCommand(buffer)) {
 
       // Abort the data object write
-      resetAbort();
+      reset();
 
       // Ignore this and let the applet handle as a new APDU
       return;
@@ -409,7 +367,7 @@ final class ChainBuffer {
     // A same-command protection change is a downgrade attempt. Check this after distinguishing an
     // unrelated ISO/IEC 7816-4 command, which first discards the incomplete logical command.
     if (!firstFrame && context[CONTEXT_PROTECTION] != (short) protection) {
-      resetAbort();
+      reset();
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -427,7 +385,7 @@ final class ChainBuffer {
       if (length == 0) ISOException.throwIt(ISO7816.SW_NO_ERROR);
 
       if (length >= context[CONTEXT_REMAINING]) {
-        resetAbort();
+        reset();
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       }
 
@@ -444,13 +402,13 @@ final class ChainBuffer {
       //
 
       if (length == 0) {
-        resetAbort();
+        reset();
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       }
 
       // Must be exactly the # of bytes remaining
       if (length != context[CONTEXT_REMAINING]) {
-        resetAbort();
+        reset();
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       }
 
@@ -464,13 +422,9 @@ final class ChainBuffer {
   }
 
   private void copyIncomingObjectFragment(byte[] source, short offset, short length) {
-    if (context[CONTEXT_TRANSACTION] != (short) 0) {
-      Util.arrayCopy(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-    } else {
-      // PIVDataObject receives into unpublished staging. Only its reference swap needs a
-      // transaction; atomically copying a large final fragment can exhaust the commit buffer.
-      Util.arrayCopyNonAtomic(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-    }
+    // PIVDataObject receives into unpublished staging. Only its reference swap needs a
+    // transaction; atomically copying a large final fragment can exhaust the commit buffer.
+    Util.arrayCopyNonAtomic(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
   }
 
   /**
@@ -554,7 +508,7 @@ final class ChainBuffer {
         context[CONTEXT_SECURE_OUTGOING] = (short) 1;
       }
     } else if (context[CONTEXT_STATE] != STATE_NONE) {
-      resetAbort();
+      reset();
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     } else {
       if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) {

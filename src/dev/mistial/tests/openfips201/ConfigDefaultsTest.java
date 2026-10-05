@@ -1,5 +1,6 @@
 package com.makina.security.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -20,6 +21,55 @@ class ConfigDefaultsTest {
     assertEquals(0x61, Config.TEMPLATE_APT[0] & 0xFF);
     assertEquals(0x81, Config.TEMPLATE_APT[1] & 0xFF);
     assertEquals(Config.TEMPLATE_APT.length - 3, Config.TEMPLATE_APT[2] & 0xFF);
+  }
+
+  @Test
+  void algorithmTemplateAdvertisesExactlyTheProfileMechanisms() {
+    // SP 800-73-5 Part 2 Section 3.1.1: "Tag 0xAC encodes the cryptographic algorithms supported by
+    // the PIV Card Application." The hand-written template must agree with FipsPolicy, the single
+    // source of the profile's mechanism set. RSA-1024 is held back (retired references only), and
+    // the secure messaging suite is inserted at SELECT only once key 04 is ready.
+    byte[] apt = Config.TEMPLATE_APT;
+    int offset = 3;
+    int ac = -1;
+    while (offset < apt.length) {
+      int tagLength = (apt[offset] & 0x1F) == 0x1F ? 2 : 1;
+      assertTrue((apt[offset + tagLength] & 0x80) == 0, "APT elements use short-form lengths");
+      if ((apt[offset] & 0xFF) == 0xAC) ac = offset;
+      offset += tagLength + 1 + (apt[offset + tagLength] & 0xFF);
+    }
+    assertEquals(apt.length, offset, "The APT elements fill the template exactly");
+    assertTrue(ac > 0, "The APT carries the algorithm template");
+
+    int acEnd = ac + 2 + (apt[ac + 1] & 0xFF);
+    java.util.Set<Byte> advertised = new java.util.HashSet<>();
+    int entry = ac + 2;
+    while (apt[entry] == (byte) 0x80) {
+      assertEquals(0x01, apt[entry + 1], "Each algorithm identifier is one byte");
+      assertTrue(advertised.add(apt[entry + 2]), "No algorithm is advertised twice");
+      entry += 3;
+    }
+    assertArrayEquals(
+        new byte[] {0x06, 0x01, 0x00},
+        java.util.Arrays.copyOfRange(apt, entry, acEnd),
+        "The template ends with its object identifier");
+
+    java.util.Set<Byte> expected = new java.util.HashSet<>();
+    byte[] candidates = {
+      PIV.ID_ALG_DEFAULT,
+      PIV.ID_ALG_TDEA_3KEY,
+      PIV.ID_ALG_RSA_2048,
+      PIV.ID_ALG_RSA_3072,
+      PIV.ID_ALG_AES_128,
+      PIV.ID_ALG_AES_192,
+      PIV.ID_ALG_AES_256,
+      PIV.ID_ALG_ECC_P256,
+      PIV.ID_ALG_ECC_P384
+    };
+    for (byte mechanism : candidates) {
+      if (FipsPolicy.allowsMechanism(mechanism)) expected.add(mechanism);
+    }
+    assertEquals(expected, advertised);
   }
 
   @Test
