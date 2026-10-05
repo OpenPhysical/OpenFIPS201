@@ -147,9 +147,17 @@ public final class AttestationProofService {
         generatedKey, point.valueOffset, point.valueOffset + point.length);
   }
 
+  /** Creates the proof key; an existing key (6E27) is refused, so no foreign key is deleted. */
   private static void createProofKey(CardSession session, byte slot) {
-    AttestationAuthorityService.transmitExpect(
-        session, new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, proofKeyDefinition(slot)), false);
+    CommandAPDU command = new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, proofKeyDefinition(slot));
+    ResponseAPDU response = session.transmit(command);
+    if (response.getSW() != 0x9000) {
+      throw new IllegalStateException(
+          "APDU failed SW="
+              + String.format("0x%04X", response.getSW())
+              + " command="
+              + ApduSupport.describeCommand(command));
+    }
   }
 
   static byte[] proofKeyDefinition(byte slot) {
