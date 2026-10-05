@@ -65,7 +65,9 @@ final class ProvisionCommand extends ScpOptions implements Callable<Integer> {
             + report.objectsCreated
             + " objects, "
             + report.keysImported
-            + " keys ("
+            + " keys imported, "
+            + report.keysGenerated
+            + " generated on card ("
             + report.credentialId
             + ")");
     return 0;

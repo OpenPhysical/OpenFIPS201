@@ -26,9 +26,6 @@
 package dev.mistial.tools.openfips201.emulator;
 
 import apdu4j.core.BIBO;
-import com.makina.security.openfips201.OpenFIPS201;
-import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
-import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ZmqProtocol;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -74,11 +71,10 @@ public final class ZmqApduServer implements AutoCloseable {
   static final String REPLY_OK = ZmqProtocol.REPLY_OK;
   static final String REPLY_ERR = ZmqProtocol.REPLY_ERR;
 
-  private static final byte[] PACKAGE_AID_BYTES = hex("A00000030800001000");
-
   /** Receive poll interval; bounds how quickly stop() is observed. */
   private static final int RECEIVE_TIMEOUT_MS = 250;
 
+  private final EmulatedApplet[] applets;
   private final byte[] scp03MasterKey;
   private final ZContext context;
   private final AtomicBoolean running = new AtomicBoolean(false);
@@ -88,7 +84,20 @@ public final class ZmqApduServer implements AutoCloseable {
   private BIBO card;
   private String boundEndpoint;
 
+  /** An emulator holding the OpenFIPS201 PIV package. */
   public ZmqApduServer(byte[] scp03MasterKey) {
+    this(scp03MasterKey, EmulatedApplet.PIV);
+  }
+
+  /**
+   * An emulator holding {@code applets}; each package is registered so a GlobalPlatform client can
+   * install it. With no applet given, the OpenFIPS201 PIV package is registered.
+   */
+  public ZmqApduServer(byte[] scp03MasterKey, EmulatedApplet... applets) {
+    this.applets =
+        applets == null || applets.length == 0
+            ? new EmulatedApplet[] {EmulatedApplet.PIV}
+            : applets.clone();
     this.scp03MasterKey = scp03MasterKey.clone();
     this.context = new ZContext();
   }
@@ -197,13 +206,16 @@ public final class ZmqApduServer implements AutoCloseable {
     return engine.connect("*", true);
   }
 
-  /** Registers the applet implementation so a GP client can load/install it into the simulator. */
+  /** Registers each applet implementation so a GP client can install it into the simulator. */
   private void registerAppletClass() {
-    engine.loadApplet(
-        new AID(PACKAGE_AID_BYTES, (short) 0, (byte) PACKAGE_AID_BYTES.length),
-        new AID(
-            GlobalPlatformSession.PIV_AID, (short) 0, (byte) GlobalPlatformSession.PIV_AID.length),
-        OpenFIPS201.class);
+    for (EmulatedApplet applet : applets) {
+      byte[] packageAid = applet.packageAid();
+      byte[] appletAid = applet.appletAid();
+      engine.loadApplet(
+          new AID(packageAid, (short) 0, (byte) packageAid.length),
+          new AID(appletAid, (short) 0, (byte) appletAid.length),
+          applet.appletClass);
+    }
   }
 
   private void reply(String status, byte[] payload) {
@@ -213,9 +225,5 @@ public final class ZmqApduServer implements AutoCloseable {
 
   private static byte[] utf8(String value) {
     return value.getBytes(StandardCharsets.UTF_8);
-  }
-
-  private static byte[] hex(String value) {
-    return HexUtil.parse(value);
   }
 }

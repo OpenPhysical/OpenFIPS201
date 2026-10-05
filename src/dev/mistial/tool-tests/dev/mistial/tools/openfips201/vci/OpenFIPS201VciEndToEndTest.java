@@ -1,5 +1,6 @@
 package dev.mistial.tools.openfips201.vci;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -11,15 +12,18 @@ import dev.mistial.tools.openfips201.applet.AppletInstallRequest;
 import dev.mistial.tools.openfips201.applet.AppletInstallService;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.common.ZmqBibo;
 import dev.mistial.tools.openfips201.emulator.ZmqEmulatorFixture;
+import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
 import dev.mistial.tools.openfips201.provisioning.ConformanceProvisioner;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.math.ec.ECPoint;
@@ -107,11 +111,13 @@ class OpenFIPS201VciEndToEndTest {
     NativeVciProfile.Material material =
         NativeVciProfile.build(GSA_CARD_46, caPrefix, "12345678", suite);
 
+    // FIPS builds refuse importable 9A/9C; secure messaging needs only working keys there.
     ConformanceProvisioner.provision(
         () -> new ZmqBibo(endpoint, 10_000),
         ScpConfig.defaultTestScp03(),
         material.profile,
-        System.out);
+        System.out,
+        ConformanceProvisioner.KeySource.forBuild(Boolean.getBoolean("fips.mode")));
     try (BIBO bibo = new ZmqBibo(endpoint, 10_000)) {
       VciProvisioning.provisionSmCredentialOnly(
           bibo, material.signerCertificatePath, material.signerKeyPath, null, material.suite);
@@ -120,6 +126,17 @@ class OpenFIPS201VciEndToEndTest {
       VciProvisioning.EstablishedSession established =
           VciProvisioning.establishSecureMessaging(bibo, material.signerCertificatePath);
       assertNotNull(established, "signed Part 1 profile must establish secure messaging");
+      // SP 800-73-5 Part 2 Table 19: 42 is the signer SKI[0:8]; 5F20 is the Card UUID.
+      assertArrayEquals(
+          VciSupport.issuerIdFromCertificate(material.signerCertificate),
+          cvcField(established.cvcRaw, VciSupport.TAG_CVC_ISSUER_ID));
+      byte[] chuid = null;
+      for (ConformancePackage.DataObject object : material.profile.dataObjects) {
+        if (HexUtil.format(object.id).equals("5FC102")) chuid = object.payload;
+      }
+      assertArrayEquals(
+          VciProvisioning.cardUuidFromChuid(VciSupport.tlv(0x53, chuid)),
+          cvcField(established.cvcRaw, VciSupport.TAG_CVC_SUBJECT_ID));
       assertEquals(
           0x9000,
           VciProvisioning.verifyReferenceDataOverSm(
@@ -130,6 +147,12 @@ class OpenFIPS201VciEndToEndTest {
               .statusWord,
           "pairing must establish VCI on the signed native profile");
     }
+  }
+
+  private static byte[] cvcField(byte[] cvc, int tag) {
+    int[] outer = VciSupport.locateTlv(cvc, 0, VciSupport.TAG_CVC);
+    int[] field = VciSupport.locateTlv(cvc, outer[1], tag);
+    return Arrays.copyOfRange(cvc, field[1], field[1] + field[2]);
   }
 
   /**
