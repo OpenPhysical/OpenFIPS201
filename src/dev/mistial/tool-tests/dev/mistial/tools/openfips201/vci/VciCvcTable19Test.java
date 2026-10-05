@@ -2,11 +2,14 @@ package dev.mistial.tools.openfips201.vci;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.provisioning.ContentSigningProfile;
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -14,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.x500.X500Name;
@@ -49,6 +53,39 @@ class VciCvcTable19Test {
           MessageDigest.getInstance("SHA-256").digest(signer.getPublicKey().getEncoded());
       assertArrayEquals(Arrays.copyOf(spkiHash, 8), iin);
     }
+  }
+
+  @Test
+  void generatedSignerFollowsThePivIContentSigningProfile() throws Exception {
+    for (byte suite : new byte[] {VciSupport.ALG_CS2, VciSupport.ALG_CS7}) {
+      // OpenPhysical credentials are PIV-I: FPKI PIV-I Profiles v1.3 Worksheet 8.
+      X509Certificate signer = VciProvisioning.makeCa(null, "CN=Content Signer", suite).certificate;
+      assertEquals(Collections.singletonList("2.16.840.1.101.3.8.7"), signer.getExtendedKeyUsage());
+      assertTrue(
+          signer.getCriticalExtensionOIDs().contains(Extension.extendedKeyUsage.getId()),
+          "extKeyUsage must be critical");
+      // Worksheet 8 keyUsage: digitalSignature only ("keyCertSign 0"); an end-entity certificate.
+      boolean[] keyUsage = signer.getKeyUsage();
+      assertTrue(keyUsage[0], "digitalSignature");
+      for (int bit = 1; bit < keyUsage.length; bit++) assertFalse(keyUsage[bit], "bit " + bit);
+      assertEquals(-1, signer.getBasicConstraints());
+      assertNotNull(
+          signer.getExtensionValue(Extension.authorityKeyIdentifier.getId()),
+          "Worksheet 8 requires authorityKeyIdentifier");
+    }
+  }
+
+  @Test
+  void signerPurposeFollowsTheCardFascN() {
+    // GSA ICAM card 01 (agency 4700) and card 02 (PIV-I, 9999 9999 999999) FASC-Ns.
+    byte[] federal = HexUtil.parse("531B3019D13810D828AB6C10C339E5A1685A08C92ADE0A6184E739C3E7");
+    byte[] pivI = HexUtil.parse("531B3019D4E739DA739CED39CE739DA16858210842108515CCE739B7FA");
+    assertEquals(
+        ContentSigningProfile.ID_PIV_CONTENT_SIGNING, VciProvisioning.signerPurpose(federal));
+    assertEquals(
+        ContentSigningProfile.ID_FPKI_PIVI_CONTENT_SIGNING, VciProvisioning.signerPurpose(pivI));
+    assertEquals(
+        ContentSigningProfile.ID_FPKI_PIVI_CONTENT_SIGNING, VciProvisioning.signerPurpose(null));
   }
 
   @Test

@@ -2,19 +2,95 @@ package dev.mistial.tools.openfips201.provisioning;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.crypto.CryptoProviders;
+import java.math.BigInteger;
 import java.nio.file.Paths;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.ExtendedKeyUsage;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.KeyPurposeId;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.Test;
 
 class CertificationProfileValidatorTest {
+  private static final KeyPurposeId ID_PIV_CONTENT_SIGNING =
+      KeyPurposeId.getInstance(new ASN1ObjectIdentifier("2.16.840.1.101.3.6.7"));
+  private static final KeyPurposeId ID_PIVI_CONTENT_SIGNING =
+      KeyPurposeId.getInstance(new ASN1ObjectIdentifier("2.16.840.1.101.3.8.7"));
+
+  @Test
+  void secureMessagingSignerMustAssertContentSigningUsage() throws Exception {
+    // SP 800-73-5 Part 1 Section 3.3.7: "The X.509 Certificate for Content Signing SHALL also
+    // include an extended key usage (extKeyUsage) extension asserting id-PIV-content-signing."
+    // GSA ICAM card 01 (agency 4700) and card 02 (PIV-I, 9999 9999 999999) FASC-Ns.
+    byte[] federal = hex("3019D13810D828AB6C10C339E5A1685A08C92ADE0A6184E739C3E7");
+    byte[] pivICard = hex("3019D4E739DA739CED39CE739DA16858210842108515CCE739B7FA");
+    String piv = smSigner(ID_PIV_CONTENT_SIGNING);
+    String pivI = smSigner(ID_PIVI_CONTENT_SIGNING);
+    assertDoesNotThrow(
+        () -> CertificationProfileValidator.validateSmSignerUsage(hex(piv), federal));
+    assertDoesNotThrow(
+        () -> CertificationProfileValidator.validateSmSignerUsage(hex(pivI), pivICard));
+    // FPKI PIV-I Profiles v1.3 Worksheet 8: a PIV-I card's signer asserts the PIV-I purpose.
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> CertificationProfileValidator.validateSmSignerUsage(hex(piv), pivICard));
+    for (String payload :
+        new String[] {
+          smSigner(null), smSigner(KeyPurposeId.id_kp_codeSigning), "700101710100FE00"
+        }) {
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> CertificationProfileValidator.validateSmSignerUsage(hex(payload), federal));
+    }
+  }
+
+  /** Returns a 5FC122 value carrying an uncompressed certificate with the given extKeyUsage. */
+  private static String smSigner(KeyPurposeId usage) throws Exception {
+    CryptoProviders.ensureBouncyCastle();
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("EC", "BC");
+    generator.initialize(new ECGenParameterSpec("secp256r1"));
+    KeyPair keyPair = generator.generateKeyPair();
+    X500Name subject = new X500Name("CN=Test Content Signer");
+    JcaX509v3CertificateBuilder builder =
+        new JcaX509v3CertificateBuilder(
+            subject,
+            BigInteger.ONE,
+            new Date(),
+            new Date(System.currentTimeMillis() + 86_400_000L),
+            subject,
+            keyPair.getPublic());
+    if (usage != null) {
+      builder.addExtension(Extension.extendedKeyUsage, true, new ExtendedKeyUsage(usage));
+    }
+    byte[] certificate =
+        builder
+            .build(new JcaContentSignerBuilder("SHA256withECDSA").build(keyPair.getPrivate()))
+            .getEncoded();
+    return String.format("7082%04X", certificate.length)
+        + HexUtil.format(certificate)
+        + "710100FE00";
+  }
+
   @Test
   void acceptsAppendixAContainerSchemasAndRejectsWrongLeadingTags() {
     String[][] containers = {
@@ -212,6 +288,68 @@ class CertificationProfileValidatorTest {
                     packageWith(objects),
                     new CertificationProfileValidator.Claims(false, true, true)));
     assertTrue(failure.getMessage().contains("contradict frozen claims"));
+  }
+
+  @Test
+  void pinUsagePolicyAcceptsOnlyPart1Table1Values() {
+    List<Integer> table1 =
+        Arrays.asList(0x40, 0x48, 0x4C, 0x50, 0x58, 0x5C, 0x60, 0x68, 0x6C, 0x70, 0x78, 0x7C);
+    for (int first = 0; first < 0x100; first++) {
+      boolean listed = table1.contains(first);
+      boolean global = (first & 0x20) != 0;
+      for (int second : new int[] {0x00, 0x10, 0x20, 0x30}) {
+        boolean expected = listed && (global ? second == 0x10 || second == 0x20 : second == 0x00);
+        assertEquals(
+            expected,
+            CertificationProfileValidator.isTable1PinUsagePolicy(first, second),
+            String.format("%02X%02X", first, second));
+      }
+    }
+  }
+
+  @Test
+  void rejectsDiscoveryPolicyOutsideTable1() {
+    // 0x44 sets "VCI established without a pairing code" without the VCI bit.
+    assertDiscoveryRejected("4400", new CertificationProfileValidator.Claims(false, false, false));
+    // With bit 6 set the second byte is 0x10 or 0x20.
+    assertDiscoveryRejected(
+        "6030", new CertificationProfileValidator.Claims(false, false, false, true));
+  }
+
+  @Test
+  void rejectsDiscoveryAdvertisingFeaturesTheCardLacks() {
+    assertDiscoveryRejected("5000", new CertificationProfileValidator.Claims(false, false, false));
+    assertDiscoveryRejected("6010", new CertificationProfileValidator.Claims(false, false, false));
+
+    ArrayList<ConformancePackage.DataObject> objects = mandatoryPlaceholders();
+    objects.add(discovery("6010"));
+    IllegalArgumentException later =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CertificationProfileValidator.validate(
+                    packageWith(objects),
+                    new CertificationProfileValidator.Claims(false, false, false, true)));
+    assertFalse(later.getMessage().contains("Discovery"), later.getMessage());
+    assertFalse(later.getMessage().contains("PIN Usage Policy"), later.getMessage());
+  }
+
+  private static ConformancePackage.DataObject discovery(String policy) {
+    return object(new byte[] {(byte) 0x7E}, hex("7E124F0BA0000003080000100001005F2F02" + policy));
+  }
+
+  private static void assertDiscoveryRejected(
+      String policy, CertificationProfileValidator.Claims claims) {
+    ArrayList<ConformancePackage.DataObject> objects = mandatoryPlaceholders();
+    objects.add(discovery(policy));
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> CertificationProfileValidator.validate(packageWith(objects), claims));
+    assertTrue(
+        failure.getMessage().contains("PIN Usage Policy")
+            || failure.getMessage().contains("Discovery advertises"),
+        failure.getMessage());
   }
 
   @Test

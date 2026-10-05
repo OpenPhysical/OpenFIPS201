@@ -14,6 +14,7 @@ import dev.mistial.tools.openfips201.common.BerTlvReader;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.provisioning.CertificationProfileValidator;
 import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
+import dev.mistial.tools.openfips201.provisioning.ContentSigningProfile;
 import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Path;
@@ -82,8 +83,13 @@ public final class NativeVciProfile {
       Path icamDirectory, String caOutPrefix, String pairingCode, byte suite) throws Exception {
     VciProvisioning.ensureProvider();
     ConformancePackage base = IcamCardFolder.load(icamDirectory);
+    // The re-signed CHUID keeps the base card's FASC-N, which selects the signer's purpose.
     VciProvisioning.CaMaterial signer =
-        VciProvisioning.makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Content Signer", suite);
+        VciProvisioning.makeCa(
+            caOutPrefix,
+            "CN=OpenFIPS201 VCI Content Signer",
+            suite,
+            ContentSigningProfile.purposeForFascN(ContentSigningProfile.fascN(chuidOf(base))));
     ConformancePackage profile = augment(base, signer.privateKey, signer.certificate, pairingCode);
     CertificationProfileValidator.validate(
         profile, new CertificationProfileValidator.Claims(true, true, true));
@@ -119,6 +125,13 @@ public final class NativeVciProfile {
     }
     VciProvisioning.provisionSmCredentialOnly(
         bibo, material.signerCertificatePath, material.signerKeyPath, null, material.suite);
+  }
+
+  private static byte[] chuidOf(ConformancePackage base) {
+    for (ConformancePackage.DataObject object : base.dataObjects) {
+      if (Arrays.equals(object.id, ID_CHUID)) return object.payload;
+    }
+    throw new IllegalArgumentException("base profile has no CHUID");
   }
 
   private static ConformancePackage augment(

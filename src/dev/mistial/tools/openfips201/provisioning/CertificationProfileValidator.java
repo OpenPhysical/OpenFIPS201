@@ -48,6 +48,16 @@ public final class CertificationProfileValidator {
   private static final byte ACCESS_PIN_ALWAYS = (byte) 0x02;
   private static final byte ACCESS_VCI = (byte) 0x08;
   private static final byte ACCESS_ALWAYS = (byte) 0x7F;
+  // SP 800-73-5 Part 1 Section 3.3.2, first byte of the PIN Usage Policy: bit 6 Global PIN, bit 5
+  // OCC, bit 4 VCI, and bit 3 "set to one if a VCI is established without a pairing code".
+  private static final int PIN_POLICY_GLOBAL_PIN = 0x20;
+  private static final int PIN_POLICY_OCC = 0x10;
+  private static final int PIN_POLICY_VCI = 0x08;
+  private static final int PIN_POLICY_VCI_WITHOUT_PAIRING = 0x04;
+  // "Table 1 lists the acceptable values for the first byte of the PIN Usage Policy".
+  private static final int[] TABLE_1_FIRST_BYTES = {
+    0x40, 0x48, 0x4C, 0x50, 0x58, 0x5C, 0x60, 0x68, 0x6C, 0x70, 0x78, 0x7C
+  };
   private static final String[] MANDATORY = {
     "5FC107", "5FC102", "5FC105", "5FC101", "5FC103", "5FC108", "5FC106"
   };
@@ -63,11 +73,23 @@ public final class CertificationProfileValidator {
     public final boolean governmentEmail;
     public final boolean vci;
     public final boolean pairingRequired;
+    public final boolean globalPin;
 
+    /** Claims for a card whose Global PIN is not enabled. */
     public Claims(boolean governmentEmail, boolean vci, boolean pairingRequired) {
+      this(governmentEmail, vci, pairingRequired, false);
+    }
+
+    /**
+     * @param globalPin whether the applet configuration enables the Global PIN, which Discovery may
+     *     then advertise
+     */
+    public Claims(
+        boolean governmentEmail, boolean vci, boolean pairingRequired, boolean globalPin) {
       this.governmentEmail = governmentEmail;
       this.vci = vci;
       this.pairingRequired = pairingRequired;
+      this.globalPin = globalPin;
     }
   }
 
@@ -136,6 +158,9 @@ public final class CertificationProfileValidator {
       validateContainer(entry.getKey(), entry.getValue().payload);
     }
     validateSecurityObject(objects, true);
+    if (objects.containsKey("5FC122")) {
+      validateSmSignerUsage(objects.get("5FC122").payload, objects.get("5FC102").payload);
+    }
   }
 
   /** Rejects issuer packages whose ACRs contradict Part 1 Tables 2 and 5. */
@@ -333,15 +358,40 @@ public final class CertificationProfileValidator {
     }
     int first = value[policy.value] & 0xFF;
     int second = value[policy.value + 1] & 0xFF;
-    if ((first & 0xC3) != 0x40 || ((first & 0x20) == 0 && second != 0)) {
-      throw new IllegalArgumentException("invalid Part 1 PIN Usage Policy");
+    if (!isTable1PinUsagePolicy(first, second)) {
+      throw new IllegalArgumentException(
+          String.format("invalid Part 1 PIN Usage Policy %02X%02X", first, second));
     }
-    if (((first & 0x08) != 0) != claims.vci
-        || (claims.vci && (((first & 0x04) == 0) != claims.pairingRequired))) {
+    // Section 3.3.2: bit 5 "indicates whether the optional OCC satisfies the PIV ACRs" and bit 6
+    // "whether the optional Global PIN satisfies the PIV ACRs". The applet implements no OCC and
+    // rejects a Discovery Object that advertises a Global PIN its configuration does not enable.
+    if ((first & PIN_POLICY_OCC) != 0) {
+      throw new IllegalArgumentException("Discovery advertises OCC, which the applet lacks");
+    }
+    if ((first & PIN_POLICY_GLOBAL_PIN) != 0 && !claims.globalPin) {
+      throw new IllegalArgumentException("Discovery advertises a Global PIN that is not claimed");
+    }
+    if (((first & PIN_POLICY_VCI) != 0) != claims.vci
+        || (claims.vci
+            && (((first & PIN_POLICY_VCI_WITHOUT_PAIRING) == 0) != claims.pairingRequired))) {
       throw new IllegalArgumentException("Discovery VCI/pairing bits contradict frozen claims");
     }
     if (claims.vci) require(objects, "5FC122");
     if (claims.pairingRequired) require(objects, "5FC123");
+  }
+
+  /**
+   * Returns whether {@code first} is a SP 800-73-5 Part 1 Table 1 value and {@code second} obeys
+   * Section 3.3.2: "0x10 indicates that the PIV Card Application PIN is the primary PIN", "0x20
+   * indicates that the Global PIN is the primary PIN", and "If Bit 6 of the first byte of the PIN
+   * Usage Policy is set to zero, then the second byte is RFU and SHALL be set to 0x00."
+   */
+  static boolean isTable1PinUsagePolicy(int first, int second) {
+    boolean listed = false;
+    for (int value : TABLE_1_FIRST_BYTES) listed |= value == first;
+    if (!listed) return false;
+    if ((first & PIN_POLICY_GLOBAL_PIN) == 0) return second == 0x00;
+    return second == 0x10 || second == 0x20;
   }
 
   static void validateContainer(String id, byte[] payload) {
@@ -486,6 +536,23 @@ public final class CertificationProfileValidator {
     }
     offset = element(payload, offset, 0xFE, 0, 0, id).end;
     requireEnd(payload, offset, id);
+  }
+
+  /**
+   * SP 800-73-5 Part 1 Section 3.3.7: "The X.509 Certificate for Content Signing SHALL also include
+   * an extended key usage (extKeyUsage) extension asserting id-PIV-content-signing", or the PIV-I
+   * purpose for a PIV-I card ({@link ContentSigningProfile}).
+   *
+   * @param chuid the card's CHUID value, which determines the card type
+   */
+  static void validateSmSignerUsage(byte[] payload, byte[] chuid) {
+    X509CertificateHolder certificate;
+    try {
+      certificate = new X509CertificateHolder(certificateValue(payload, "5FC122"));
+    } catch (Exception e) {
+      throw new IllegalArgumentException("5FC122 does not carry an X.509 certificate", e);
+    }
+    ContentSigningProfile.requireUsage(certificate, chuid, "5FC122");
   }
 
   private static void validatePairingCode(String id, byte[] payload) {
@@ -754,6 +821,11 @@ public final class CertificationProfileValidator {
     }
     requirePivSignerDn(signer, certificate);
     requireTable2Digest(signer, certificate, "CHUID");
+    // SP 800-73-5 Part 1 Section 3.1.2.1: "The content signing certificate SHALL also include an
+    // extended key usage (extKeyUsage) extension asserting id-PIV-content-signing"; a PIV-I card's
+    // content signer asserts id-fpki-pivi-content-signing instead. The same certificate verifies
+    // the Security Object signature (Section 3.1.7).
+    ContentSigningProfile.requireUsage(certificate, payload, "CHUID");
     return certificate;
   }
 
