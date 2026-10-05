@@ -44,8 +44,7 @@ final class PIVAuthenticationCommandHandler {
       PIVOpacity opacity
           // #if ATTESTATION_ENABLED
           ,
-      PIVAttestation attestation,
-      byte[] attestationResponse
+      PIVAttestation attestation
       // #endif
       ) {
     this.owner = owner;
@@ -60,7 +59,7 @@ final class PIVAuthenticationCommandHandler {
     this.opacity = opacity;
     // #if ATTESTATION_ENABLED
     this.attestation = attestation;
-    this.attestationResponse = attestationResponse;
+    this.attestationResponse = attestation.getResponseBuffer();
     // #endif
   }
 
@@ -1183,10 +1182,22 @@ final class PIVAuthenticationCommandHandler {
     // RSA public exponent is now fixed to 65537 (Section 3.1 PIV Cryptographic Keys).
     // ECC keys have no parameter.
 
-    // PRE-CONDITION 4A - F9 is the imported attestation authority and must never be generated.
+    // PRE-CONDITION 4A - F9 is generated only under an encrypted and MACed GlobalPlatform secure
+    // channel (prior 9B authentication is not sufficient) and only while the authority is still
+    // provisionable: no certificate accepted and the applet not yet PERSONALIZED.
+    // #if ATTESTATION_ENABLED
+    if (keyReference == ID_KEY_ATTESTATION) {
+      if (!cspPIV.getIsSecureChannel()) {
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      }
+      owner.completeAttestationActivation();
+      attestation.requireAuthorityProvisionable();
+    }
+    // #else
     if (keyReference == ID_KEY_ATTESTATION) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
+    // #endif
 
     // PRE-CONDITION 4B - The key reference and mechanism must exist (key test)
     if (!cspPIV.keyExists(keyReference)) {
@@ -1218,10 +1229,18 @@ final class PIVAuthenticationCommandHandler {
     // EXECUTION STEPS
     //
 
-    // STEP 1 - Generate the key pair
+    // STEP 1 - Generate the key pair. For F9 the authority is reset to NONE first and becomes
+    // GENERATED only after the pair passed its pairwise consistency test and is marked generated,
+    // so a tear at any point leaves either NONE or a complete generated pair.
     PIVKeyObjectPKI keyPair = (PIVKeyObjectPKI) key;
+    // #if ATTESTATION_ENABLED
+    if (keyReference == ID_KEY_ATTESTATION) attestation.beginAuthorityGeneration();
+    // #endif
     length = keyPair.generate(scratch, ZERO);
     keyPair.markGenerated();
+    // #if ATTESTATION_ENABLED
+    if (keyReference == ID_KEY_ATTESTATION) attestation.completeAuthorityGeneration();
+    // #endif
 
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
@@ -1238,7 +1257,7 @@ final class PIVAuthenticationCommandHandler {
    * <p>- {@code slot} must be one of the standard PIV authentication/signature/key-management slots
    * or retired key-management slots.
    *
-   * <p>- F9 must be an active imported P-256 attestation authority.
+   * <p>- F9 must be an active, on-card generated P-256 attestation authority.
    *
    * <p>- The target key must exist, be generated on-card, and satisfy its configured contact or
    * contactless access policy. This intentionally makes ATTEST obey the same interface restrictions
@@ -1276,6 +1295,39 @@ final class PIVAuthenticationCommandHandler {
     short length =
         attestation.buildCertificate(authority, target, slot, scratch, attestationResponse, ZERO);
     chainBuffer.setOutgoing(attestationResponse, ZERO, length, true);
+  }
+
+  /**
+   * Signs the F9 proof-of-possession message {@code "OPF9POP" || N || F9pub}.
+   *
+   * <p>Status words, in check order: {@code 6982} without an encrypted and MACed GlobalPlatform
+   * secure channel, {@code 6700} when the nonce is not 16 through 64 octets, {@code 6A88} when F9
+   * is not defined, and {@code 6985} unless the authority is GENERATED, F9 holds a generated pair,
+   * and the applet is still SELECTABLE. Proof is permanently unavailable once a certificate has
+   * been accepted.
+   *
+   * @param buffer command data buffer
+   * @param offset first nonce octet
+   * @param length nonce length
+   */
+  void proveAuthority(byte[] buffer, short offset, short length) {
+    if (!cspPIV.getIsSecureChannel()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+    if (length < PIVAttestation.LENGTH_POP_NONCE_MIN
+        || length > PIVAttestation.LENGTH_POP_NONCE_MAX) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+    PIVKeyObject key = cspPIV.selectKey(ID_KEY_ATTESTATION);
+    if (!(key instanceof PIVKeyObjectECC)) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      return;
+    }
+    owner.completeAttestationActivation();
+    attestation.requireAuthorityProvisionable();
+    short signatureLength =
+        attestation.signPossessionProof((PIVKeyObjectECC) key, buffer, offset, length, scratch);
+    chainBuffer.setOutgoing(scratch, ZERO, signatureLength, true);
   }
 
   private PIVKeyObjectPKI selectAttestableTarget(byte slot) {

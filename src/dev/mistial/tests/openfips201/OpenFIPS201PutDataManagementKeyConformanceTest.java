@@ -468,7 +468,22 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   }
 
   @Test
+  void attestationBuildReservesAttestationIssuerCertificateObject() {
+    assumeTrue(isAttestationEnabledBuild(), "5FFF01 is virtual in attestation builds");
+    // Attestation builds serve 5FFF01 from the on-card F9 authority; it cannot be created.
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before 5FFF01 create attempt");
+          assertSw(
+              ISO7816.SW_WRONG_DATA,
+              transmit(0x84, 0xDB, 0xFF, 0xFF, hex("640F8B035FFF018C017F8D017F92021000")),
+              "CREATE OBJECT 5FFF01 must be refused in attestation builds");
+        });
+  }
+
+  @Test
   void putDataSupportsYubiKeyCompatibleAttestationIssuerCertificateObject() {
+    assumeFalse(isAttestationEnabledBuild(), "5FFF01 is a stored object without attestation");
     byte[] managementKey = keyMaterialAes128((byte) 0x76);
     byte[] attestationIssuerObjectId = hex("5FFF01");
 

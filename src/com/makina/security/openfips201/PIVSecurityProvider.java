@@ -312,6 +312,9 @@ final class PIVSecurityProvider {
 
   /** Atomically removes a key from the store, then wipes its detached key material. */
   void deleteKey(byte id, byte mechanism) {
+    // The attestation authority is immutable for the life of the applet instance; only deleting
+    // the instance removes it.
+    if (id == PIV.ID_KEY_ATTESTATION) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     if (mechanism == PIV.ID_ALG_DEFAULT) {
       mechanism = PIV.ID_ALG_TDEA_3KEY;
     }
@@ -533,6 +536,18 @@ final class PIVSecurityProvider {
   boolean areMandatoryCvmsProvisioned() {
     return persistentState[STATE_LOCAL_PIN_PROVISIONED] == FLAG_TRUE
         && persistentState[STATE_PUK_PROVISIONED] == FLAG_TRUE;
+  }
+
+  /**
+   * Returns whether the asymmetric key {@code id} holds usable key material generated on the card.
+   *
+   * @param id key reference
+   */
+  boolean hasGeneratedAsymmetricKey(byte id) {
+    PIVKeyObject key = selectKey(id);
+    return key instanceof PIVKeyObjectPKI
+        && ((PIVKeyObjectPKI) key).isInitialised()
+        && key.isGenerated();
   }
 
   boolean hasUsableAsymmetricKey(byte id) {

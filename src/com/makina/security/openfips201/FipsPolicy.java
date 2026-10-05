@@ -65,7 +65,11 @@ final class FipsPolicy {
     }
 
     if (id == PIV.ID_KEY_ATTESTATION) {
-      return mechanism == PIV.ID_ALG_ECC_P256 && role == PIVKeyObject.ROLE_SIGN;
+      // The attestation authority is generated on the card in every profile so the issuer can
+      // certify that its private key never existed outside the card.
+      return mechanism == PIV.ID_ALG_ECC_P256
+          && role == PIVKeyObject.ROLE_SIGN
+          && (attributes & PIVKeyObject.ATTR_IMPORTABLE) == 0;
     }
 
     if (id == (byte) 0x9B) {
@@ -85,7 +89,16 @@ final class FipsPolicy {
       return isCardholderAsymmetric(mechanism) && role == PIVKeyObject.ROLE_KEY_ESTABLISH;
     }
 
-    if (id == (byte) 0x9A || id == (byte) 0x9C || id == (byte) 0x9E) {
+    if (id == (byte) 0x9A || id == (byte) 0x9C) {
+      // FIPS 201-3 Section 4.2.2.1: the PIV authentication key "SHALL be generated on the PIV
+      // Card." Section 4.2.2.4: "The PIV digital signature key SHALL be generated on the PIV
+      // Card." The FIPS profile therefore refuses importable definitions for both references.
+      return isCardholderAsymmetric(mechanism)
+          && role == PIVKeyObject.ROLE_SIGN
+          && (!ENABLED || (attributes & PIVKeyObject.ATTR_IMPORTABLE) == 0);
+    }
+
+    if (id == (byte) 0x9E) {
       return isCardholderAsymmetric(mechanism) && role == PIVKeyObject.ROLE_SIGN;
     }
 

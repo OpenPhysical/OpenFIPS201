@@ -174,6 +174,17 @@ final class PIVAdministrationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
+    // #if ATTESTATION_ENABLED
+    // 5FFF01 is the virtual read-only F9 certificate object served by the attestation authority.
+    byte[] idBuffer = reader.getBuffer();
+    if (objectIdLength == (short) 3
+        && idBuffer[idOffset] == (byte) 0x5F
+        && idBuffer[(short) (idOffset + 1)] == (byte) 0xFF
+        && idBuffer[(short) (idOffset + 2)] == (byte) 0x01) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    // #endif
+
     dataStore.create(
         reader.getBuffer(),
         idOffset,
@@ -293,15 +304,15 @@ final class PIVAdministrationCommandHandler {
     reader.moveNext();
 
     // F9 is reserved for the attestation authority. It is still created through the normal
-    // key-object definition path, but its shape is fixed so provisioning can use CHANGE REFERENCE
-    // DATA without introducing an attestation-specific import APDU.
+    // key-object definition path, but its shape is fixed: a P-256 signing key that is generated on
+    // the card and never importable.
     if (id == ID_KEY_ATTESTATION
         // #if ATTESTATION_ENABLED
         && (modeContact != PIVObject.ACCESS_MODE_NEVER
             || modeContactless != PIVObject.ACCESS_MODE_NEVER
             || keyMechanism != ID_ALG_ECC_P256
             || keyRole != PIVKeyObject.ROLE_SIGN
-            || keyAttribute != PIVKeyObject.ATTR_IMPORTABLE)
+            || keyAttribute != PIVKeyObject.ATTR_NONE)
         // #else
         && true
     // #endif
@@ -677,9 +688,9 @@ final class PIVAdministrationCommandHandler {
         return; // Keep static analyser happy
       }
 
-      // F9 carries the authority private scalar and issuer profile. A prior management-key
-      // authentication may authorize ordinary key rotation, but it must not downgrade authority
-      // import to plaintext.
+      // F9 provisioning requires an encrypted and MACed GlobalPlatform secure channel. A prior
+      // management-key authentication may authorize ordinary key rotation, but it must not
+      // authorize changes to the attestation trust root.
       // #if ATTESTATION_ENABLED
       if (key.getId() == ID_KEY_ATTESTATION && !cspPIV.getIsSecureChannel()) {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
@@ -694,12 +705,6 @@ final class PIVAdministrationCommandHandler {
         ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         return; // Keep static analyser happy
       }
-
-      // #if ATTESTATION_ENABLED
-      if (key.getId() == ID_KEY_ATTESTATION && attestation.isAuthorityActivationPending()) {
-        owner.completeAttestationActivation();
-      }
-      // #endif
 
       // Set up our TLV reader
       TLVReader reader = TLVReader.getInstance();
@@ -735,6 +740,22 @@ final class PIVAdministrationCommandHandler {
         return; // Keep static analyser happy
       }
 
+      // #if ATTESTATION_ENABLED
+      // F9 key material is generated on the card and never imported. Its only provisionable
+      // element is the issuer-signed certificate, which never reaches PRE-CONDITION 7 or the
+      // imported-origin marking below.
+      if (key.getId() == ID_KEY_ATTESTATION) {
+        if (!(key instanceof PIVKeyObjectECC)) {
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          return; // Keep static analyser happy
+        }
+        processAttestationAuthorityElement(
+            (PIVKeyObjectECC) key, elementTag, commandBuffer, elementOffset, elementLength);
+        cspPIV.clearAuthenticatedKey();
+        return;
+      }
+      // #endif
+
       // PRE-CONDITION 7 - The key object MUST have the ATTR_IMPORTABLE attribute, except that the
       // post-generation PIV secure messaging CVC can be loaded onto the generated non-exportable
       // VCI
@@ -754,79 +775,39 @@ final class PIVAdministrationCommandHandler {
       //
 
       // STEP 1 - Update the relevant key element.
-      // #if ATTESTATION_ENABLED
-      if (key.getId() == ID_KEY_ATTESTATION
-          && (elementTag == PIVAttestation.ELEMENT_SUBJECT
-              || elementTag == PIVAttestation.ELEMENT_VALIDITY)) {
-        attestation.updateElement(elementTag, scratch, elementOffset, elementLength);
-      } else {
-        // #endif
-        if (key instanceof PIVKeyObjectPKI) {
-          PIVKeyObjectPKI importedKey = (PIVKeyObjectPKI) key;
-          boolean hadPrivateKey = importedKey.isInitialised();
-          if (key.getId() != ID_KEY_ATTESTATION
-              && hadPrivateKey
-              && !importedKey.hasPendingImportedParts()
-              && importedKey.isImportedKeyMaterial(elementTag)) {
-            ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
-          }
-          JCSystem.beginTransaction();
-          try {
-            key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
-            if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
-              if (importedKey.completesImportedKeyPair(elementTag)
-                  && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
-                key.clear();
-                ISOException.throwIt(ISO7816.SW_FILE_INVALID);
-              }
-              if (!importedKey.hasPendingImportedParts() && importedKey.hasPrivateMaterial()) {
-                importedKey.markImportedPairReady();
-              }
-            }
-            // #if ATTESTATION_ENABLED
-            // Commit F9 deactivation with the component, closing the reset window between them.
-            if (key.getId() == ID_KEY_ATTESTATION) {
-              attestation.noteKeyElementUpdated(elementTag);
-            }
-            // #endif
-            JCSystem.commitTransaction();
-          } finally {
-            if (JCSystem.getTransactionDepth() != (byte) 0) {
-              JCSystem.abortTransaction();
-            }
-          }
-        } else {
+      if (key instanceof PIVKeyObjectPKI) {
+        PIVKeyObjectPKI importedKey = (PIVKeyObjectPKI) key;
+        boolean hadPrivateKey = importedKey.isInitialised();
+        if (hadPrivateKey
+            && !importedKey.hasPendingImportedParts()
+            && importedKey.isImportedKeyMaterial(elementTag)) {
+          ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+        }
+        JCSystem.beginTransaction();
+        try {
           key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
-        }
-        // #if ATTESTATION_ENABLED
-        if (key.getId() == ID_KEY_ATTESTATION) {
-          if (elementTag == PIVKeyObject.ELEMENT_CLEAR) {
-            attestation.clearProfile();
+          if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
+            if (importedKey.completesImportedKeyPair(elementTag)
+                && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
+              key.clear();
+              ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+            }
+            if (!importedKey.hasPendingImportedParts() && importedKey.hasPrivateMaterial()) {
+              importedKey.markImportedPairReady();
+            }
+          }
+          JCSystem.commitTransaction();
+        } finally {
+          if (JCSystem.getTransactionDepth() != (byte) 0) {
+            JCSystem.abortTransaction();
           }
         }
-        // #endif
-        // #if ATTESTATION_ENABLED
+      } else {
+        key.updateElement(elementTag, commandBuffer, elementOffset, elementLength);
       }
-      // #endif
       if (elementTag != PIVKeyObjectECC.ELEMENT_SM_CVC) {
         key.markImported();
       }
-
-      // #if ATTESTATION_ENABLED
-      if (key.getId() == ID_KEY_ATTESTATION) {
-        if (!(key instanceof PIVKeyObjectECC)) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-        }
-        PIVKeyObjectECC authority = (PIVKeyObjectECC) key;
-        if (!attestation.isAuthorityActive() && attestation.isAuthorityReadyToCommit(authority)) {
-          attestation.validateAuthority(authority, scratch);
-          // Persist recovery intent before destructive clearing. A tear leaves F9 inactive and
-          // selection resumes the idempotent clear before completing activation.
-          attestation.beginAuthorityActivation();
-          owner.completeAttestationActivation();
-        }
-      }
-      // #endif
 
       // STEP 4 - Clear any prior key-authenticated session after a key value change.
       cspPIV.clearAuthenticatedKey();
@@ -837,6 +818,39 @@ final class PIVAdministrationCommandHandler {
       PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
     }
   }
+
+  // #if ATTESTATION_ENABLED
+  /**
+   * Applies one provisioning element to the F9 attestation authority.
+   *
+   * <p>Only element 70, the issuer-signed F9 certificate, is accepted. F9 key components (86, 87)
+   * are never importable because the key pair is generated on the card ({@code 6982}). Any other
+   * element is malformed ({@code 6A80}). Once a certificate has been accepted or the applet is
+   * PERSONALIZED, every element returns {@code 6985}. A successful load runs the activation wipe of
+   * every other key and data object, then activates the authority.
+   *
+   * @param authority the F9 key object
+   * @param elementTag element tag
+   * @param buffer buffer holding the element value
+   * @param offset first value octet
+   * @param length value length
+   */
+  private void processAttestationAuthorityElement(
+      PIVKeyObjectECC authority, byte elementTag, byte[] buffer, short offset, short length) {
+    owner.completeAttestationActivation();
+    attestation.requireAuthorityProvisionable();
+    if (elementTag == PIVAttestation.ELEMENT_PUBLIC_KEY
+        || elementTag == PIVAttestation.ELEMENT_PRIVATE_KEY) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+    if (elementTag != PIVAttestation.ELEMENT_CERTIFICATE) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    attestation.loadAuthorityCertificate(authority, buffer, offset, length);
+    // ACTIVATING is persistent, so a tear during the wipe is resumed at the next selection.
+    owner.completeAttestationActivation();
+  }
+  // #endif
 
   private short processGetVersion(TLVWriter writer) {
 
@@ -910,6 +924,26 @@ final class PIVAdministrationCommandHandler {
         BuildProfile.PLATFORM_ID,
         ZERO,
         (short) BuildProfile.PLATFORM_ID.length);
+
+    // #if ATTESTATION_ENABLED
+    // Attestation authority state, and once ACTIVE the card OPID (F9 subject serialNumber) and
+    // the F9 subject key identifier. The worst case (32-octet platform ID, 17-digit OPID) is 102
+    // octets, within the single-octet length this response uses.
+    final byte CONST_TAG_ATTESTATION_STATE = (byte) 0x89;
+    final byte CONST_TAG_OPID = (byte) 0x8A;
+    final byte CONST_TAG_AUTHORITY_KEY_ID = (byte) 0x8B;
+    writer.write(CONST_TAG_ATTESTATION_STATE, attestation.getAuthorityState());
+    if (attestation.isAuthorityActive()) {
+      byte[] container = attestation.getAuthorityContainer();
+      writer.write(
+          CONST_TAG_OPID, container, attestation.getOpidOffset(), attestation.getOpidLength());
+      writer.write(
+          CONST_TAG_AUTHORITY_KEY_ID,
+          container,
+          attestation.getKeyIdOffset(),
+          PIVAttestation.LENGTH_KEY_IDENTIFIER);
+    }
+    // #endif
 
     return writer.finish();
   }

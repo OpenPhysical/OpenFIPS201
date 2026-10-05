@@ -233,7 +233,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
       keyPair.genKeyPair();
 
-      if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(scratch, offset)) {
+      // The attestation authority runs the pairwise consistency test in every profile: its public
+      // key is certified by the issuer, so a generated pair must be proven consistent first.
+      if ((FipsPolicy.ENABLED || getId() == PIV.ID_KEY_ATTESTATION)
+          && !pairwiseConsistencyTest(scratch, offset)) {
         ISOException.throwIt(ISO7816.SW_FILE_INVALID);
       }
 
@@ -452,6 +455,24 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     return PIVCrypto.doVerify(
         publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
   }
+
+  // #if ATTESTATION_ENABLED
+  /**
+   * Writes the uncompressed public point {@code 04 || X || Y} (ANSI X9.62).
+   *
+   * @param outBuffer the output buffer
+   * @param outOffset the starting output offset
+   * @return the point length (65 octets for P-256)
+   * @throws ISOException with {@link ISO7816#SW_CONDITIONS_NOT_SATISFIED} if no public key is set
+   */
+  short getPublicPoint(byte[] outBuffer, short outOffset) throws ISOException {
+    if (publicKey == null || !publicKey.isInitialized()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0x00;
+    }
+    return publicKey.getW(outBuffer, outOffset);
+  }
+  // #endif
 
   @Override
   short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {

@@ -325,8 +325,16 @@ abstract class OpenFIPS201TestSupport {
    * deliberately supports both paths.
    */
   protected <T> T withMockedScp(Supplier<T> action) {
+    return withMockedScp(GPSystem.APPLICATION_SELECTABLE, action);
+  }
+
+  /**
+   * Runs an administrative operation over a mocked authenticated SCP while GlobalPlatform reports
+   * the given application lifecycle state, for example {@code 0x0F} (PERSONALIZED).
+   */
+  protected <T> T withMockedScp(byte lifecycleState, Supplier<T> action) {
     try (MockedStatic<GPSystem> mockedGp = Mockito.mockStatic(GPSystem.class)) {
-      Mockito.when(GPSystem.getCardContentState()).thenReturn(GPSystem.APPLICATION_SELECTABLE);
+      Mockito.when(GPSystem.getCardContentState()).thenReturn(lifecycleState);
       SecureChannel secureChannel = Mockito.mock(SecureChannel.class);
       Mockito.when(secureChannel.getSecurityLevel())
           .thenReturn(
@@ -338,6 +346,14 @@ abstract class OpenFIPS201TestSupport {
           .thenAnswer(invocation -> (short) invocation.getArgument(2));
       Mockito.when(GPSystem.getSecureChannel()).thenReturn(secureChannel);
       return action.get();
+    }
+  }
+
+  /** Runs an APDU flow with Java Card's transport reported as the given contact protocol. */
+  protected void withContactProtocol(byte protocol, Runnable action) {
+    try (MockedStatic<APDU> mockedApdu = Mockito.mockStatic(APDU.class)) {
+      mockedApdu.when(APDU::getProtocol).thenReturn(protocol);
+      action.run();
     }
   }
 

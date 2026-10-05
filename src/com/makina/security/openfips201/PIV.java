@@ -209,11 +209,6 @@ final class PIV {
   private final ECCurveRegistry curves;
   // TRANSIENT - Holds any authentication related intermediary state
   private final PIVAuthenticationContext authenticationContext;
-  // #if ATTESTATION_ENABLED
-  // TRANSIENT - Response buffer for attestation certificates. Allocated once per applet
-  // selection (CLEAR_ON_DESELECT) and reused for all attestations in the session.
-  private byte[] attestationResponse;
-  // #endif
   // TRANSIENT - Reusable response/work buffer for OPACITY (CS2/CS7) establishment.
   private final byte[] smResponse;
   // TRANSIENT - Reassembled secure-messaging command data.
@@ -252,10 +247,10 @@ final class PIV {
     dataCommands = new PIVDataCommandHandler(config, cspPIV, dataStore, chainBuffer, scratch);
 
     // #if ATTESTATION_ENABLED
-    // Attestation profile state and response buffer are allocated at install time; strict
-    // JavaCard platforms may reject transient allocations during APDU processing.
+    // Attestation authority state, certificate container, and response buffer are allocated at
+    // install time; strict JavaCard platforms may reject transient allocations during APDU
+    // processing.
     attestation = new PIVAttestation();
-    attestationResponse = PIVAttestation.allocateResponseBuffer();
     // #endif
 
     secureMessaging = new PIVSecureMessaging();
@@ -276,8 +271,7 @@ final class PIV {
             opacity
             // #if ATTESTATION_ENABLED
             ,
-            attestation,
-            attestationResponse
+            attestation
             // #endif
             );
     administrationCommands =
@@ -658,13 +652,13 @@ final class PIV {
   /**
    * Completes an interrupted attestation-authority activation before command processing resumes.
    *
-   * <p>The pending flag is persistent. Repeating the data and key clearing operations is safe, so
-   * selection can finish a power-interrupted destructive rotation before F9 becomes active.
+   * <p>The ACTIVATING state is persistent. Repeating the data and key clearing operations is safe,
+   * so selection can finish a power-interrupted activation before F9 becomes active.
    */
   void completeAttestationActivation() {
     if (!attestation.isAuthorityActivationPending()) return;
     // Clearing is intentionally idempotent and outside a transaction. If power is lost, the
-    // persistent pending flag survives and selection resumes before F9 can become active.
+    // persistent ACTIVATING state survives and selection resumes before F9 can become active.
     dataStore.clearContents();
     cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
     attestation.completeAuthorityActivation();
@@ -711,8 +705,13 @@ final class PIV {
     // SP 800-73-5 Part 1, Table 1 requires these seven data objects. The
     // certification profile also requires its PIN, PUK, 9A, and 9E material
     // to be issuer-provisioned before the lifecycle becomes irreversible.
+    // FIPS 201-3 Section 4.2.2.1: "This key SHALL be generated on the PIV Card." (PIV
+    // authentication key) and Section 4.2.2.4: "The PIV digital signature key SHALL be generated
+    // on the PIV Card." The optional 9C key is checked only when present.
     if (!cspPIV.areMandatoryCvmsProvisioned()
-        || !cspPIV.hasUsableAsymmetricKey((byte) 0x9A)
+        || !cspPIV.hasGeneratedAsymmetricKey((byte) 0x9A)
+        || (cspPIV.hasUsableAsymmetricKey((byte) 0x9C)
+            && !cspPIV.hasGeneratedAsymmetricKey((byte) 0x9C))
         || !cspPIV.hasUsableAsymmetricKey((byte) 0x9E)
         || !hasStructurallyValidMandatoryObject((byte) 0x07)
         || !hasStructurallyValidMandatoryObject((byte) 0x02)
@@ -801,10 +800,73 @@ final class PIV {
    * @param length The length of the CDATA section
    */
   short getData(byte[] buffer, short offset, short length) throws ISOException {
+    // #if ATTESTATION_ENABLED
+    if (isAttestationAuthorityObject(buffer, offset, length)) {
+      return getAttestationAuthorityContainer();
+    }
+    // #endif
     // SP 800-73-5 Part 1 Sections 3.3.2 and 5.5 require an issuer-controlled Discovery Object
     // for VCI. The fallback response must not advertise policy that cannot satisfy the ACR.
     return dataCommands.getData(buffer, offset, length, isVciSatisfied(), false);
   }
+
+  // #if ATTESTATION_ENABLED
+  /** Returns whether a GET DATA tag list names the read-only F9 certificate object 5FFF01. */
+  private static boolean isAttestationAuthorityObject(byte[] buffer, short offset, short length) {
+    return length == (short) 5
+        && buffer[offset] == (byte) 0x5C
+        && buffer[(short) (offset + 1)] == (byte) 0x03
+        && buffer[(short) (offset + 2)] == (byte) 0x5F
+        && buffer[(short) (offset + 3)] == (byte) 0xFF
+        && buffer[(short) (offset + 4)] == (byte) 0x01;
+  }
+
+  /**
+   * Serves the F9 certificate container as virtual read-only data object 5FFF01.
+   *
+   * <p>The object is the public attestation-authority certificate in the PIV X.509 certificate
+   * container layout (tags 70, 71, and FE). It exists only once the authority is ACTIVE and is
+   * readable without authentication on every interface; PUT DATA and CREATE OBJECT cannot reach it.
+   *
+   * @return container length
+   */
+  private short getAttestationAuthorityContainer() {
+    if (!attestation.isAuthorityActive()) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
+    short length = attestation.getAuthorityContainerLength();
+    chainBuffer.setOutgoing(attestation.getAuthorityContainer(), ZERO, length, false);
+    return length;
+  }
+
+  /**
+   * Returns the stored F9 certificate for {@code 00 F9 F9 00}.
+   *
+   * <p>The certificate is public and needs no access control, but exists only once the authority is
+   * ACTIVE.
+   *
+   * @throws ISOException with {@link ISO7816#SW_CONDITIONS_NOT_SATISFIED} before activation
+   */
+  void getAttestationAuthorityCertificate() {
+    if (!attestation.isAuthorityActive()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    chainBuffer.setOutgoing(
+        attestation.getAuthorityContainer(),
+        PIVAttestation.CERT_STORE_OFFSET,
+        attestation.getCertificateLength(),
+        false);
+  }
+
+  /**
+   * Signs the F9 proof-of-possession message for the issuer nonce in the command data.
+   *
+   * @param buffer command data buffer
+   * @param offset first nonce octet
+   * @param length nonce length
+   */
+  void proveAttestationAuthority(byte[] buffer, short offset, short length) {
+    authenticationCommands.proveAuthority(buffer, offset, length);
+  }
+  // #endif
 
   void putData(byte[] buffer, short offset, short length) throws ISOException {
     dataCommands.putData(buffer, offset, length, isVciSatisfied(), currentProtection());

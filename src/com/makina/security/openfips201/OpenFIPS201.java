@@ -41,9 +41,10 @@ import org.globalplatform.SecureChannel;
  * The main applet class, which is responsible for handling APDU's and dispatching them to the PIV
  * provider.
  *
- * <p>The applet also exposes INS F9 ATTEST for generated-key attestation. The command has no
- * request body, requires P2=00, and returns a DER X.509 certificate through the standard outgoing
- * response chaining path.
+ * <p>The applet also exposes INS F9 ATTEST for generated-key attestation. With P2=00 the command
+ * has no request body and returns a DER X.509 certificate through the standard outgoing response
+ * chaining path: the attestation certificate for slot P1, or the F9 authority certificate when
+ * P1=F9. {@code 84 F9 F9 01} proves possession of the on-card F9 key over an issuer nonce.
  */
 public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLength {
   /*
@@ -70,8 +71,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   static final byte INS_PIV_GENERAL_AUTHENTICATE = (byte) 0x87;
   private static final byte INS_PIV_PUT_DATA = (byte) 0xDB;
   private static final byte INS_PIV_GENERATE_ASYMMETRIC_KEYPAIR = (byte) 0x47;
-  // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key.
+  // Attestation command (INS F9): returns a DER X.509 certificate for an on-card generated key,
+  // returns the F9 certificate (P1=F9 P2=00), or proves F9 possession (P1=F9 P2=01).
   static final byte INS_PIV_ATTEST = (byte) 0xF9;
+  private static final byte P2_ATTEST_PROVE = (byte) 0x01;
   // Helper constants
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
@@ -284,10 +287,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
     //
     // We can now safely call setIncomingAndReceive because all other expected commands are
-    // either CASE 2 or 4 (command data present).
+    // either CASE 3 or 4 (command data present). The ATTEST certificate form is case 2 and never
+    // receives command data over T=0.
     //
-    short length = receiveAllIncomingData(apdu);
-    short offset = apdu.getOffsetCdata();
+    boolean receivesCommandData = true;
+    // #if ATTESTATION_ENABLED
+    receivesCommandData = !isCase2AttestOverT0(buffer);
+    // #endif
+    short length = receivesCommandData ? receiveAllIncomingData(apdu) : ZERO_SHORT;
+    short offset = receivesCommandData ? apdu.getOffsetCdata() : ISO7816.OFFSET_CDATA;
 
     //
     // Process GlobalPlatform Secure Channel unwrapping if relevant to this command
@@ -328,7 +336,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
 
     byte[] commandDataBuffer = buffer;
-    short commandDataOffset = apdu.getOffsetCdata();
+    short commandDataOffset = offset;
     if (piv.isSecureMessagingCommand()
         && (short) (commandDataOffset + length) > (short) buffer.length) {
       commandDataBuffer = piv.getSecureMessagingCommandBuffer();
@@ -427,7 +435,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
 
           // #if ATTESTATION_ENABLED
         case INS_PIV_ATTEST:
-          processPIV_ATTEST(apdu, length);
+          processPIV_ATTEST(apdu, commandDataBuffer, commandDataOffset, length);
           break;
           // #endif
 
@@ -1010,21 +1018,63 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   // #if ATTESTATION_ENABLED
-  private void processPIV_ATTEST(APDU apdu, short length) {
+  /**
+   * Processes INS F9.
+   *
+   * <ul>
+   *   <li>{@code P1=F9 P2=01}: PROVE, signs the F9 proof-of-possession message over the nonce in
+   *       the command data.
+   *   <li>{@code P1=F9 P2=00}: returns the stored F9 certificate.
+   *   <li>{@code P1=<slot> P2=00}: returns an attestation certificate for the slot.
+   * </ul>
+   *
+   * @param apdu the incoming APDU
+   * @param commandData buffer holding the command data
+   * @param offset first command-data octet
+   * @param length command-data length after any secure-channel unwrap
+   */
+  private void processPIV_ATTEST(APDU apdu, byte[] commandData, short offset, short length) {
     byte[] buffer = apdu.getBuffer();
+    byte p1 = buffer[ISO7816.OFFSET_P1];
+    byte p2 = buffer[ISO7816.OFFSET_P2];
 
-    if (buffer[ISO7816.OFFSET_P2] != (byte) 0x00) {
+    if (p1 == PIV.ID_KEY_ATTESTATION && p2 == P2_ATTEST_PROVE) {
+      piv.proveAttestationAuthority(commandData, offset, length);
+      piv.processOutgoing(apdu);
+      return;
+    }
+
+    if (p2 != (byte) 0x00) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // ATTEST is a no-body command. Reject unexpected command data after any SCP unwrap instead of
-    // silently ignoring it.
+    // The certificate forms are no-body commands. Reject unexpected command data after any SCP
+    // unwrap instead of silently ignoring it.
     if (length != ZERO_SHORT) {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
 
-    piv.attest(buffer[ISO7816.OFFSET_P1]);
+    if (p1 == PIV.ID_KEY_ATTESTATION) {
+      piv.getAttestationAuthorityCertificate();
+    } else {
+      piv.attest(p1);
+    }
     piv.processOutgoing(apdu);
+  }
+
+  /**
+   * Returns whether the command is the plain interindustry ATTEST certificate form over T=0.
+   *
+   * <p>JC 3.0.5 {@code APDU.setIncomingAndReceive()}: &quot;This method should only be called on a
+   * case 3 or case 4 command&quot; and &quot;In T=0 ( Case 3&amp;4 ) protocol, the P3 param is
+   * assumed to be Lc.&quot; {@code 00 F9 <ref> 00 [Le]} is case 2, so over T=0 its P3 is Le and no
+   * command data is received.
+   */
+  private static boolean isCase2AttestOverT0(byte[] buffer) {
+    return buffer[ISO7816.OFFSET_INS] == INS_PIV_ATTEST
+        && buffer[ISO7816.OFFSET_CLA] == (byte) 0x00
+        && buffer[ISO7816.OFFSET_P2] == (byte) 0x00
+        && (byte) (APDU.getProtocol() & APDU.PROTOCOL_TYPE_MASK) == APDU.PROTOCOL_T0;
   }
   // #endif
 }
