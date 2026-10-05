@@ -45,7 +45,9 @@ public final class CardKeyRollService {
     if (!request.yes && !request.target.isZmq()) {
       throw new IllegalArgumentException("gp keys keyroll requires --yes for physical cards");
     }
-    byte[] kdd = request.kdd == null ? kddService.readKdd(request.target).kdd : request.kdd.clone();
+    byte[] kdd =
+        CardDiversificationDataService.requireExpectedKdd(
+            kddService.readKdd(request.target).kdd, request.kdd);
     ScpConfig stock =
         request.stockScpOverride == null
             ? issuerKeys.stockScp(request.profile)
@@ -68,8 +70,7 @@ public final class CardKeyRollService {
     preflightRequest.target = request.target;
     preflightRequest.current = current;
     preflightRequest.targetKeys = target;
-    preflightRequest.kdd = kdd;
-    preflight.preflight(preflightRequest);
+    preflight.preflightWithCardKdd(preflightRequest, kdd);
     rotation.rotate(request.target, current, target, true);
     return new Result(request.direction, kdd, current.keyVersion, target.config.keyVersion, target);
   }

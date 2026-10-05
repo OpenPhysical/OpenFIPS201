@@ -40,9 +40,43 @@ final class Pkcs11Structs {
       this.ulParameterLen = new NativeLong(0);
     }
 
+    /** A mechanism whose parameter is the written structure {@code parameter}. */
+    Mechanism(long mechanism, Structure parameter) {
+      parameter.write();
+      this.mechanism = new NativeLong(mechanism);
+      this.pParameter = parameter.getPointer();
+      this.ulParameterLen = new NativeLong(parameter.size());
+    }
+
     @Override
     protected List<String> getFieldOrder() {
       return Arrays.asList("mechanism", "pParameter", "ulParameterLen");
+    }
+  }
+
+  /** CK_ECDH1_DERIVE_PARAMS (PKCS#11 v2.40 section 2.3.10). */
+  public static final class EcdhDeriveParams extends Structure {
+    public NativeLong kdf;
+    public NativeLong ulSharedDataLen;
+    public Pointer pSharedData;
+    public NativeLong ulPublicDataLen;
+    public Pointer pPublicData;
+
+    @Override
+    protected List<String> getFieldOrder() {
+      return Arrays.asList(
+          "kdf", "ulSharedDataLen", "pSharedData", "ulPublicDataLen", "pPublicData");
+    }
+  }
+
+  /** CK_KEY_DERIVATION_STRING_DATA (PKCS#11 v2.40 section 2.39.1). */
+  public static final class KeyDerivationStringData extends Structure {
+    public Pointer pData;
+    public NativeLong ulLen;
+
+    @Override
+    protected List<String> getFieldOrder() {
+      return Arrays.asList("pData", "ulLen");
     }
   }
 
@@ -98,6 +132,19 @@ final class Pkcs11Structs {
           "hardwareVersion",
           "firmwareVersion",
           "utcTime");
+    }
+  }
+
+  /** CK_SESSION_INFO (PKCS#11 v2.40 section 3.6). */
+  public static final class SessionInfo extends Structure {
+    public NativeLong slotID;
+    public NativeLong state;
+    public NativeLong flags;
+    public NativeLong ulDeviceError;
+
+    @Override
+    protected List<String> getFieldOrder() {
+      return Arrays.asList("slotID", "state", "flags", "ulDeviceError");
     }
   }
 

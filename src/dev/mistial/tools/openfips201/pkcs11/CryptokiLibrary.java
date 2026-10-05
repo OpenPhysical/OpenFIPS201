@@ -15,6 +15,28 @@ import com.sun.jna.ptr.NativeLongByReference;
 interface CryptokiLibrary extends Library {
   NativeLong C_Initialize(Pointer initArgs);
 
+  NativeLong C_Finalize(Pointer reserved);
+
+  /**
+   * @param label exactly 32 bytes, blank padded, not NUL terminated (PKCS#11 v2.40 section 5.5)
+   */
+  NativeLong C_InitToken(NativeLong slotId, byte[] soPin, NativeLong soPinLength, byte[] label);
+
+  NativeLong C_InitPIN(NativeLong session, byte[] pin, NativeLong pinLength);
+
+  NativeLong C_SetPIN(
+      NativeLong session,
+      byte[] oldPin,
+      NativeLong oldPinLength,
+      byte[] newPin,
+      NativeLong newPinLength);
+
+  NativeLong C_GetSessionInfo(NativeLong session, Pkcs11Structs.SessionInfo info);
+
+  NativeLong C_CloseAllSessions(NativeLong slotId);
+
+  NativeLong C_DestroyObject(NativeLong session, NativeLong object);
+
   NativeLong C_GetSlotList(byte tokenPresent, NativeLong[] slotList, NativeLongByReference count);
 
   NativeLong C_GetTokenInfo(NativeLong slotId, Pkcs11Structs.TokenInfo info);
@@ -79,4 +101,45 @@ interface CryptokiLibrary extends Library {
       NativeLong dataLength,
       byte[] signature,
       NativeLongByReference signatureLength);
+
+  NativeLong C_GetMechanismList(
+      NativeLong slotId, NativeLong[] mechanismList, NativeLongByReference count);
+
+  NativeLong C_SetAttributeValue(
+      NativeLong session, NativeLong object, Pointer template, NativeLong attributeCount);
+
+  NativeLong C_EncryptInit(NativeLong session, Pkcs11Structs.Mechanism mechanism, NativeLong key);
+
+  NativeLong C_Encrypt(
+      NativeLong session,
+      byte[] data,
+      NativeLong dataLength,
+      byte[] encrypted,
+      NativeLongByReference encryptedLength);
+
+  NativeLong C_DeriveKey(
+      NativeLong session,
+      Pkcs11Structs.Mechanism mechanism,
+      NativeLong baseKey,
+      Pointer template,
+      NativeLong attributeCount,
+      NativeLongByReference key);
+
+  NativeLong C_WrapKey(
+      NativeLong session,
+      Pkcs11Structs.Mechanism mechanism,
+      NativeLong wrappingKey,
+      NativeLong key,
+      byte[] wrappedKey,
+      NativeLongByReference wrappedKeyLength);
+
+  NativeLong C_UnwrapKey(
+      NativeLong session,
+      Pkcs11Structs.Mechanism mechanism,
+      NativeLong unwrappingKey,
+      byte[] wrappedKey,
+      NativeLong wrappedKeyLength,
+      Pointer template,
+      NativeLong attributeCount,
+      NativeLongByReference key);
 }

@@ -26,7 +26,8 @@ public final class Scp03Kdf3DerivationService {
     this(new Pkcs11AesCmacService());
   }
 
-  Scp03Kdf3DerivationService(Pkcs11AesCmacService cmac) {
+  /** Derives with {@code cmac}, typically bound to the command's {@code Pkcs11Session}. */
+  public Scp03Kdf3DerivationService(Pkcs11AesCmacService cmac) {
     this.cmac = cmac;
   }
 

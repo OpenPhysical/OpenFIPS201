@@ -17,10 +17,11 @@ public final class PemSigningKey implements SigningKey {
   private final PrivateKey privateKey;
   private final PublicKey publicKey;
   private final String description;
+  private final X509Certificate certificate;
 
   public PemSigningKey(Path keyPath, Path certificatePath, char[] passphrase) throws Exception {
     this.privateKey = PemFiles.readPrivateKey(keyPath, passphrase);
-    X509Certificate certificate = PemFiles.readCertificate(certificatePath);
+    this.certificate = PemFiles.readCertificate(certificatePath);
     this.publicKey = certificate.getPublicKey();
     this.description = "pem:" + keyPath;
   }
@@ -29,6 +30,12 @@ public final class PemSigningKey implements SigningKey {
     this.privateKey = privateKey;
     this.publicKey = publicKey;
     this.description = description;
+    this.certificate = null;
+  }
+
+  @Override
+  public X509Certificate certificate() {
+    return certificate;
   }
 
   @Override

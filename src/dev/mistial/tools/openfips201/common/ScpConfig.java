@@ -46,6 +46,21 @@ public final class ScpConfig {
   /** Resolves the mutually exclusive shared-key and split-key CLI representations. */
   public static ScpConfig fromCliKeys(
       Mode mode, int keyVersion, String sharedKey, String encKey, String macKey, String dekKey) {
+    return fromKeys(
+        mode,
+        keyVersion,
+        sharedKey == null ? null : HexUtil.parse(sharedKey),
+        encKey == null ? null : HexUtil.parse(encKey),
+        macKey == null ? null : HexUtil.parse(macKey),
+        dekKey == null ? null : HexUtil.parse(dekKey));
+  }
+
+  /**
+   * Resolves the mutually exclusive shared-key and split-key representations. The arguments are
+   * copied, so the caller may wipe them after this returns.
+   */
+  public static ScpConfig fromKeys(
+      Mode mode, int keyVersion, byte[] sharedKey, byte[] encKey, byte[] macKey, byte[] dekKey) {
     boolean shared = sharedKey != null;
     boolean enc = encKey != null;
     boolean mac = macKey != null;
@@ -55,11 +70,10 @@ public final class ScpConfig {
       throw new IllegalArgumentException("Use one shared SCP key or the three split SCP keys");
     }
     if (shared) {
-      return fromMaster(mode, keyVersion, HexUtil.parse(sharedKey));
+      return fromMaster(mode, keyVersion, sharedKey);
     }
     if (enc && mac && dek) {
-      return new ScpConfig(
-          mode, keyVersion, HexUtil.parse(encKey), HexUtil.parse(macKey), HexUtil.parse(dekKey));
+      return new ScpConfig(mode, keyVersion, encKey, macKey, dekKey);
     }
     throw new IllegalArgumentException("Provide one shared SCP key or all three split SCP keys");
   }

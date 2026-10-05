@@ -13,6 +13,7 @@ import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.common.CardTarget;
 import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
@@ -63,6 +64,28 @@ public final class CardDiversificationDataService {
     }
 
     return new Result(Arrays.copyOfRange(response, 0, KDD_LENGTH), response);
+  }
+
+  /**
+   * Checks an operator-supplied KDD against the KDD the card returned in INITIALIZE UPDATE (GP
+   * SCP03 v1.1.2 Section 7.1.1.6 Table 7-3: "The key diversification data is data typically used by
+   * a backend system to derive the card static keys"). Keys are always derived from the card's KDD;
+   * a different expected value is refused before any EXTERNAL AUTHENTICATE or PUT KEY.
+   *
+   * @param cardKdd KDD read from the card
+   * @param expectedKdd operator-supplied KDD, or {@code null} when none was supplied
+   * @return a copy of {@code cardKdd}
+   */
+  public static byte[] requireExpectedKdd(byte[] cardKdd, byte[] expectedKdd) {
+    if (expectedKdd != null && !Arrays.equals(cardKdd, expectedKdd)) {
+      throw new IllegalArgumentException(
+          "--kdd "
+              + HexUtil.format(expectedKdd)
+              + " does not match the card's KDD "
+              + HexUtil.format(cardKdd)
+              + "; refusing before any EXTERNAL AUTHENTICATE or PUT KEY");
+    }
+    return cardKdd.clone();
   }
 
   private static void requireSuccess(ResponseAPDU response, String label) {
