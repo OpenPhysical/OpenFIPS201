@@ -19,11 +19,23 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.ASN1Set;
+import org.bouncycastle.asn1.cms.Attribute;
+import org.bouncycastle.asn1.cms.AttributeTable;
 import org.bouncycastle.asn1.icao.DataGroupHash;
 import org.bouncycastle.asn1.icao.LDSSecurityObject;
+import org.bouncycastle.asn1.nist.NISTObjectIdentifiers;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.sec.SECObjectIdentifiers;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
+import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cms.CMSProcessableByteArray;
 import org.bouncycastle.cms.CMSSignedData;
@@ -39,6 +51,12 @@ public final class CertificationProfileValidator {
   private static final String[] MANDATORY = {
     "5FC107", "5FC102", "5FC105", "5FC101", "5FC103", "5FC108", "5FC106"
   };
+  private static final ASN1ObjectIdentifier ID_PIV_CHUID_SECURITY_OBJECT =
+      new ASN1ObjectIdentifier("2.16.840.1.101.3.6.1");
+  private static final ASN1ObjectIdentifier ID_PIV_SIGNER_DN =
+      new ASN1ObjectIdentifier("2.16.840.1.101.3.6.5");
+  private static final ASN1ObjectIdentifier ID_ICAO_LDS_SECURITY_OBJECT =
+      new ASN1ObjectIdentifier("1.3.27.1.1.1");
 
   /** Frozen issuer claims that affect which Part 1 objects are required. */
   public static final class Claims {
@@ -638,8 +656,27 @@ public final class CertificationProfileValidator {
     }
     X509CertificateHolder contentSigner = validateChuidSignature(objects.get("5FC102").payload);
     verifyCmsSigner(cms, contentSigner, "Security Object");
+    // SP 800-85B AS06.04.06: "The eContentType of the encapContentInfo shall be
+    // id-icao-ldsSecurityObject (OID = 1.3.27.1.1.1)."
+    if (!ID_ICAO_LDS_SECURITY_OBJECT.getId().equals(cms.getSignedContentTypeOID())) {
+      throw new IllegalArgumentException(
+          "Security Object eContentType must be id-icao-ldsSecurityObject, not "
+              + cms.getSignedContentTypeOID());
+    }
+    SignerInformation securityObjectSigner = singleSigner(cms, "Security Object");
+    requireTable2Digest(securityObjectSigner, contentSigner, "Security Object");
     byte[] ldsBytes = (byte[]) cms.getSignedContent().getContent();
     LDSSecurityObject lds = LDSSecurityObject.getInstance(ASN1Primitive.fromByteArray(ldsBytes));
+    // SP 800-78-5 Section 3.2.3: "This specification requires that the message digests of digital
+    // information be computed using the same hash algorithm used to generate the digital signature
+    // on the Security Object."
+    if (!lds.getDigestAlgorithmIdentifier()
+        .getAlgorithm()
+        .getId()
+        .equals(securityObjectSigner.getDigestAlgOID())) {
+      throw new IllegalArgumentException(
+          "Security Object LDS hash algorithm differs from its signature hash algorithm");
+    }
     MessageDigest digest =
         MessageDigest.getInstance(lds.getDigestAlgorithmIdentifier().getAlgorithm().getId(), "BC");
     Set<Integer> seen = new HashSet<Integer>();
@@ -708,7 +745,81 @@ public final class CertificationProfileValidator {
     }
     X509CertificateHolder certificate = (X509CertificateHolder) matched;
     verifyCmsSigner(cms, certificate, "CHUID");
+    // SP 800-73-5 Part 1 Section 3.1.2.1: "The encapContentInfo SHALL: Specify an eContentType of
+    // id-PIV-CHUIDSecurityObject".
+    if (!ID_PIV_CHUID_SECURITY_OBJECT.getId().equals(cms.getSignedContentTypeOID())) {
+      throw new IllegalArgumentException(
+          "CHUID eContentType must be id-PIV-CHUIDSecurityObject, not "
+              + cms.getSignedContentTypeOID());
+    }
+    requirePivSignerDn(signer, certificate);
+    requireTable2Digest(signer, certificate, "CHUID");
     return certificate;
+  }
+
+  /**
+   * SP 800-73-5 Part 1 Section 3.1.2.1: the CHUID SignerInfo SHALL "Include, at a minimum, the
+   * following signed attributes: ... A pivSigner-DN attribute containing the subject name that
+   * appears in the PKI certificate for the entity that signed the CHUID".
+   */
+  private static void requirePivSignerDn(
+      SignerInformation signer, X509CertificateHolder certificate) {
+    AttributeTable attributes = signer.getSignedAttributes();
+    ASN1EncodableVector values =
+        attributes == null ? new ASN1EncodableVector() : attributes.getAll(ID_PIV_SIGNER_DN);
+    if (values.size() != 1) {
+      throw new IllegalArgumentException("CHUID signer must carry exactly one pivSigner-DN");
+    }
+    ASN1Set attributeValues = ((Attribute) values.get(0)).getAttrValues();
+    if (attributeValues.size() != 1
+        || !certificate
+            .getSubject()
+            .equals(X500Name.getInstance(attributeValues.getObjectAt(0).toASN1Primitive()))) {
+      throw new IllegalArgumentException(
+          "CHUID pivSigner-DN does not match the content signing certificate subject");
+    }
+  }
+
+  /**
+   * Enforces SP 800-78-5 Section 3.2.1 Table 2: "ECDSA (Curve P-256) | SHA-256", "ECDSA (Curve
+   * P-384) | SHA-384", and RSA with "SHA-256 or SHA-384".
+   */
+  private static void requireTable2Digest(
+      SignerInformation signer, X509CertificateHolder certificate, String label) {
+    AlgorithmIdentifier keyAlgorithm = certificate.getSubjectPublicKeyInfo().getAlgorithm();
+    String digest = signer.getDigestAlgOID();
+    boolean conforming;
+    if (X9ObjectIdentifiers.id_ecPublicKey.equals(keyAlgorithm.getAlgorithm())) {
+      ASN1Encodable curve = keyAlgorithm.getParameters();
+      String signature = signer.getEncryptionAlgOID();
+      if (SECObjectIdentifiers.secp256r1.equals(curve)) {
+        conforming =
+            NISTObjectIdentifiers.id_sha256.getId().equals(digest)
+                && X9ObjectIdentifiers.ecdsa_with_SHA256.getId().equals(signature);
+      } else if (SECObjectIdentifiers.secp384r1.equals(curve)) {
+        conforming =
+            NISTObjectIdentifiers.id_sha384.getId().equals(digest)
+                && X9ObjectIdentifiers.ecdsa_with_SHA384.getId().equals(signature);
+      } else {
+        conforming = false;
+      }
+    } else if (PKCSObjectIdentifiers.rsaEncryption.equals(keyAlgorithm.getAlgorithm())) {
+      conforming =
+          NISTObjectIdentifiers.id_sha256.getId().equals(digest)
+              || NISTObjectIdentifiers.id_sha384.getId().equals(digest);
+    } else {
+      conforming = false;
+    }
+    if (!conforming) {
+      throw new IllegalArgumentException(
+          label
+              + " signature algorithm and hash do not match SP 800-78-5 Table 2 for the signer key"
+              + " (digest "
+              + digest
+              + ", signature "
+              + signer.getEncryptionAlgOID()
+              + ")");
+    }
   }
 
   private static void verifyCmsSigner(
