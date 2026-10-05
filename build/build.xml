@@ -28,6 +28,7 @@
   <property name="tool.test.sourcepath" value="src/dev/mistial/tool-tests"/>
   <property name="test.outputpath" value="build/test-bin"/>
   <property name="tool.outputpath" value="build/tool-bin"/>
+  <property name="tool.sam.sourcepath" value="${tool.outputpath}-sam-src"/>
   <property name="test.reportpath" value="build/test-reports"/>
   <property name="coverage.outputpath" value="build/coverage"/>
   <property name="coverage.execfile" value="${coverage.outputpath}/jacoco.exec"/>
@@ -119,8 +120,10 @@
     <delete dir="${docs.outputpath}"/>
     <delete dir="${test.outputpath}"/>
     <delete dir="${tool.outputpath}"/>
+    <delete dir="${tool.sam.sourcepath}"/>
     <delete dir="${test.reportpath}"/>
     <delete dir="${coverage.outputpath}"/>
+    <antcall target="clean-sam"/>
   </target>
 
   <target name="jpp-build">
@@ -201,11 +204,22 @@
         </and>
       </condition>
     </fail>
+    <!-- The platform identifier is carried in every attestation certificate; the 1024-octet
+         certificate budget assumes at most 32 octets. -->
+    <fail message="build.platform.id must be at most 32 characters, got '${build.platform.id}'">
+      <condition>
+        <length string="${build.platform.id}" when="greater" length="32"/>
+      </condition>
+    </fail>
     <delete dir="${build.sourcepath}"/>
     <mkdir dir="${build.sourcepath}"/>
     <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
     <jpp destdir="${build.sourcepath}" force="true" readonly="false" verbose="false">
-      <fileset dir="${applet.sourcepath}" includes="**/*.java"/>
+      <fileset dir="${applet.sourcepath}" includes="**/*.java">
+        <!-- DERValidator carries no preprocessor directives (the SAM build shares it from the
+             source tree), so builds without attestation omit the file to keep it out of the CAP. -->
+        <exclude name="DERValidator.java" unless="ATTESTATION_ENABLED"/>
+      </fileset>
     </jpp>
     <echo file="${build.sourcepath}/BuildProfile.java">package com.makina.security.openfips201;
 
@@ -260,6 +274,10 @@ platform.id=${build.platform.id}
     </javac>
 
     <javac srcdir="${test.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <exclude name="com/makina/security/openfips201/PIVAttestationAuthorityCertificateTest.java"
+               unless="ATTESTATION_ENABLED"/>
+      <exclude name="com/makina/security/openfips201/PIVAttestationStateTest.java"
+               unless="ATTESTATION_ENABLED"/>
       <exclude name="com/makina/security/openfips201/PIVAttestationDerValidationTest.java"
                unless="ATTESTATION_ENABLED"/>
       <classpath>
@@ -285,6 +303,28 @@ platform.id=${build.platform.id}
          is compiled into the tool output as well. Compilation uses the SDK/GP stub jars,
          which stay confined to this step and off the tool runtime classpath. -->
     <javac srcdir="${build.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <classpath>
+        <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
+        <pathelement location="${gp.exportjar}"/>
+      </classpath>
+    </javac>
+    <!-- The emulator also hosts the Issuer SAM. Its sources and the shared whitelist are staged
+         beside this tool output (never in build/sam), so concurrent matrix profiles never share a
+         staging directory. -->
+    <delete dir="${tool.sam.sourcepath}"/>
+    <mkdir dir="${tool.sam.sourcepath}/dev/mistial/openphysical/sam"/>
+    <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
+    <jpp destdir="${tool.sam.sourcepath}/dev/mistial/openphysical/sam" force="true" readonly="false" verbose="false">
+      <fileset dir="${sam.sourcepath}" includes="**/*.java"/>
+    </jpp>
+    <copy todir="${tool.sam.sourcepath}/dev/mistial/openphysical/sam" overwrite="true">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+      <filterchain>
+        <replacestring from="package com.makina.security.openfips201;"
+                       to="package dev.mistial.openphysical.sam;"/>
+      </filterchain>
+    </copy>
+    <javac srcdir="${tool.sam.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="UTF-8">
       <classpath>
         <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
         <pathelement location="${gp.exportjar}"/>
@@ -329,12 +369,13 @@ platform.id=${build.platform.id}
       <param name="test.reportpath" value="build/test-reports/CS7-no-attestation"/>
       <param name="attestation.enabled" value="false"/>
     </antcall>
+    <antcall target="test-sam"/>
   </target>
 
   <target name="test-suite" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
 
-    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow">
+    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow,softhsm,issuance-e2e">
       <classpath refid="test.runtime.classpath"/>
       <testclasses outputdir="${test.reportpath}">
         <fork>
@@ -357,6 +398,9 @@ platform.id=${build.platform.id}
     <!-- The ZeroMQ bridge is profile-independent and owns native sockets. Run it once after the
          parallel matrix so eight duplicate servers do not compete on constrained CI runners. -->
     <antcall target="test-zmq-integration"/>
+    <antcall target="test-sam"><param name="sam.include.slow" value="true"/></antcall>
+    <!-- SoftHSM custody and issuance end-to-end tests run once, in one JVM, after the matrix. -->
+    <antcall target="test-host"/>
   </target>
 
   <macrodef name="run-verification-profile">
@@ -452,7 +496,32 @@ platform.id=${build.platform.id}
   <target name="test-all-suite" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
 
-    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="transport-integration">
+    <junitlauncher printSummary="true" haltOnFailure="true"
+                   excludeTags="transport-integration,softhsm,issuance-e2e">
+      <classpath refid="test.runtime.classpath"/>
+      <testclasses outputdir="${test.reportpath}">
+        <fork>
+          <sysproperty key="vci.suite" value="${vci.suite}"/>
+          <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+          <sysproperty key="fips.mode" value="${fips.mode}"/>
+          <sysproperty key="cap.path" value="${build.outputpath}/${build.outputfile}"/>
+        </fork>
+        <fileset dir="${test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <!-- Host-only tests that need a SoftHSM2 module (OPENFIPS201_SOFTHSM_MODULE or a default
+       install path); they skip when none is found. One JVM, because a SoftHSM2 module reads
+       SOFTHSM2_CONF once per process. The issuance-e2e tests drive the default-profile CAP
+       (standard, CS2, attestation) and the Issuer SAM on two ZeroMQ emulators. -->
+  <target name="test-host" depends="compile-cap,test-compile">
+    <mkdir dir="${test.reportpath}" />
+    <junitlauncher printSummary="true" haltOnFailure="true" includeTags="softhsm,issuance-e2e">
       <classpath refid="test.runtime.classpath"/>
       <testclasses outputdir="${test.reportpath}">
         <fork>
@@ -563,6 +632,150 @@ platform.id=${build.platform.id}
     </java>
 
   </target>
+
+  <!-- ==================================================================================
+       Issuer SAM applet (dev.mistial.openphysical.sam)
+
+       The SAM is a separate CAP. Shared, profile-independent DER/TLV/EC classes are copied from
+       the PIV package at build time (package rewritten, GENERATED header prepended) rather than
+       shipped as a library CAP. A whitelisted file that contains a JPP directive fails the build,
+       because the copy is not preprocessed against any PIV profile.
+       ================================================================================== -->
+  <property name="sam.sourcepath" value="src/dev/mistial/openphysical/sam"/>
+  <property name="sam.outputpath" value="build/sam"/>
+  <property name="sam.build.sourcepath" value="build/sam/preprocessed-src/dev/mistial/openphysical/sam"/>
+  <property name="sam.test.sourcepath" value="src/dev/mistial/sam-tests"/>
+  <property name="sam.test.outputpath" value="build/sam/test-bin"/>
+  <property name="sam.test.reportpath" value="build/test-reports/sam"/>
+  <!-- ISO/IEC 7816-5 category F: F0 ‖ "OPENPHY" ‖ "SAM"; the applet AID appends a 00 separator,
+       the applet number 01 and three reserved octets. -->
+  <property name="sam.package.aid" value="F04F50454E50485953414D"/>
+  <property name="sam.applet.aid" value="F04F50454E50485953414D0001000000"/>
+  <property name="sam.version" value="0.1"/>
+  <property name="sam.outputfile" value="OpenPhysicalIssuerSam-${sam.version}.cap"/>
+  <property name="sam.shared.includes"
+            value="TLV.java,TLVReader.java,DERWriter.java,DERValidator.java,ECParams.java,ECParamsP256.java,ECPointValidator.java"/>
+  <property name="sam.shared.count" value="7"/>
+  <property name="sam.include.slow" value="false"/>
+
+  <path id="sam.test.runtime.classpath">
+    <pathelement location="${sam.test.outputpath}"/>
+    <pathelement location="${tool.outputpath}"/>
+    <pathelement location="tools/jcard-v26.08.10.jar"/>
+    <fileset dir="${deps.outputpath}">
+      <include name="*.jar"/>
+    </fileset>
+  </path>
+
+  <target name="preprocess-sam" depends="jpp-build">
+    <resourcecount property="sam.shared.present">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+    </resourcecount>
+    <fail message="SAM shared whitelist is incomplete: found ${sam.shared.present} of ${sam.shared.count} files">
+      <condition>
+        <not><equals arg1="${sam.shared.present}" arg2="${sam.shared.count}"/></not>
+      </condition>
+    </fail>
+    <resourcecount property="sam.shared.directives">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}">
+        <contains text="#if"/>
+      </fileset>
+    </resourcecount>
+    <fail message="SAM shared whitelist files must not contain JPP directives (#if)">
+      <condition>
+        <not><equals arg1="${sam.shared.directives}" arg2="0"/></not>
+      </condition>
+    </fail>
+    <delete dir="${sam.outputpath}/preprocessed-src"/>
+    <delete dir="${sam.outputpath}/shared-checksums"/>
+    <mkdir dir="${sam.build.sourcepath}"/>
+    <mkdir dir="${sam.outputpath}/shared-checksums"/>
+    <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
+    <jpp destdir="${sam.build.sourcepath}" force="true" readonly="false" verbose="false">
+      <fileset dir="${sam.sourcepath}" includes="**/*.java"/>
+    </jpp>
+    <echo file="${sam.outputpath}/shared-header.txt">// GENERATED from ${applet.sourcepath} by build/build.xml preprocess-sam. Do not edit; edit
+// the source file instead.
+</echo>
+    <copy todir="${sam.build.sourcepath}" overwrite="true">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+      <filterchain>
+        <replacestring from="package com.makina.security.openfips201;"
+                       to="package dev.mistial.openphysical.sam;"/>
+        <concatfilter prepend="${sam.outputpath}/shared-header.txt"/>
+      </filterchain>
+    </copy>
+    <checksum algorithm="SHA-256" todir="${sam.outputpath}/shared-checksums" pattern="{0}  {1}"
+              fileext=".sha256">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+    </checksum>
+    <concat destfile="${sam.outputpath}/shared-sources.sha256">
+      <fileset dir="${sam.outputpath}/shared-checksums" includes="*.sha256"/>
+    </concat>
+  </target>
+
+  <target name="compile-sam" depends="preprocess-sam">
+    <mkdir dir="build/bin"/>
+    <taskdef name="javacard" classname="pro.javacard.ant.JavaCard" classpath="tools/ant-javacard.jar"/>
+    <javacard>
+      <cap targetsdk="${TARGET_SDK}" aid="${sam.package.aid}" output="build/bin/${sam.outputfile}"
+           sources="${sam.build.sourcepath}" version="${sam.version}">
+        <applet class="dev.mistial.openphysical.sam.IssuerSam" aid="${sam.applet.aid}"/>
+        <import exps="${gp.home}" jar="${gp.exportjar}"/>
+      </cap>
+    </javacard>
+    <echo file="build/bin/${sam.outputfile}.properties">applet=dev.mistial.openphysical.sam.IssuerSam
+package.aid=${sam.package.aid}
+applet.aid=${sam.applet.aid}
+version=${sam.version}
+</echo>
+  </target>
+
+  <target name="sam-test-compile" depends="resolve-test-deps,tool-compile,preprocess-sam">
+    <delete dir="${sam.test.outputpath}"/>
+    <mkdir dir="${sam.test.outputpath}"/>
+    <!-- SAM applet classes are compiled against the SDK/GP stubs in this step only. -->
+    <javac srcdir="${sam.outputpath}/preprocessed-src" destdir="${sam.test.outputpath}" source="1.8"
+           target="1.8" debug="true" includeantruntime="false" encoding="UTF-8">
+      <classpath refid="test.compile.classpath"/>
+    </javac>
+    <javac srcdir="${sam.test.sourcepath}" destdir="${sam.test.outputpath}" source="1.8"
+           target="1.8" debug="true" includeantruntime="false" encoding="UTF-8">
+      <classpath>
+        <path refid="test.compile.classpath"/>
+        <pathelement location="${tool.outputpath}"/>
+        <pathelement location="${sam.test.outputpath}"/>
+      </classpath>
+    </javac>
+  </target>
+
+  <target name="test-sam" depends="compile-sam,sam-test-compile">
+    <mkdir dir="${sam.test.reportpath}"/>
+    <condition property="sam.exclude.tags" value="transport-integration" else="slow,transport-integration">
+      <equals arg1="${sam.include.slow}" arg2="true"/>
+    </condition>
+    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="${sam.exclude.tags}">
+      <classpath refid="sam.test.runtime.classpath"/>
+      <testclasses outputdir="${sam.test.reportpath}">
+        <fork>
+          <sysproperty key="sam.cap.path" value="build/bin/${sam.outputfile}"/>
+          <sysproperty key="sam.include.slow" value="${sam.include.slow}"/>
+        </fork>
+        <fileset dir="${sam.test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <target name="clean-sam">
+    <delete dir="${sam.outputpath}"/>
+    <delete file="build/bin/${sam.outputfile}"/>
+    <delete file="build/bin/${sam.outputfile}.properties"/>
+  </target>
+  <!-- ===== end Issuer SAM applet ===== -->
 
   <target name="all" depends="clean,compile,doc"/>
   
