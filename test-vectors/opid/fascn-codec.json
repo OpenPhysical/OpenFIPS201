@@ -1,0 +1,123 @@
+{
+  "schema": "openphysical.opid-vectors/2",
+  "vectors": [
+    {
+      "hex": "D70339D8410F2D04403CCDA1685821841A2CC333870339A3F5",
+      "agencyCode": 7099,
+      "systemCode": 8007,
+      "credentialNumber": 121073,
+      "credentialSeries": 1,
+      "individualCredentialIssue": 1,
+      "personIdentifier": 11683139,
+      "organizationalCategory": 1,
+      "organizationalIdentifier": 7099,
+      "personAssociation": 2
+    },
+    {
+      "hex": "D70339DA680D6C18644185A1685821841B380604870339A3E4",
+      "agencyCode": 7099,
+      "systemCode": 9205,
+      "credentialNumber": 13801,
+      "credentialSeries": 1,
+      "individualCredentialIssue": 1,
+      "personIdentifier": 11691014,
+      "organizationalCategory": 1,
+      "organizationalIdentifier": 7099,
+      "personAssociation": 2
+    },
+    {
+      "hex": "D70339DAA1E22C10873025A168582184055AE784870339A3E4",
+      "agencyCode": 7099,
+      "systemCode": 5072,
+      "credentialNumber": 314,
+      "credentialSeries": 1,
+      "individualCredentialIssue": 1,
+      "personIdentifier": 11855374,
+      "organizationalCategory": 1,
+      "organizationalIdentifier": 7099,
+      "personAssociation": 2
+    },
+    {
+      "hex": "D13810D828AB6C10C339E5A1685A08C92ADE0A6184E739C3E7",
+      "agencyCode": 4700,
+      "systemCode": 256,
+      "credentialNumber": 1337,
+      "credentialSeries": 1,
+      "individualCredentialIssue": 1,
+      "personIdentifier": 1234567890,
+      "organizationalCategory": 1,
+      "organizationalIdentifier": 9999,
+      "personAssociation": 1
+    },
+    {
+      "hex": "D4E739DA739CED39CE739DA16858210842108515CCE739B7FA",
+      "agencyCode": 9999,
+      "systemCode": 9999,
+      "credentialNumber": 999999,
+      "credentialSeries": 1,
+      "individualCredentialIssue": 1,
+      "personIdentifier": 25,
+      "organizationalCategory": 3,
+      "organizationalIdentifier": 9999,
+      "personAssociation": 6
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D821085A285728CCE73987F0",
+      "agencyCode": 9999,
+      "systemCode": 9999,
+      "credentialNumber": 999999,
+      "credentialSeries": 0,
+      "individualCredentialIssue": 0,
+      "personIdentifier": 681532,
+      "organizationalCategory": 3,
+      "organizationalIdentifier": 9999,
+      "personAssociation": 0
+    }
+  ],
+  "invalid": [
+    {
+      "hex": "D5E739DA739CED39CE739D8360D821085A285728CCE73987F0",
+      "reason": "parity"
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D821085A285728CCE73987F1",
+      "reason": "parity"
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D821085A285728CCE73987E8",
+      "reason": "lrc"
+    },
+    {
+      "hex": "D4D739DA739CED39CE739D8360D821085A285728CCE73987F0",
+      "reason": "lrc"
+    },
+    {
+      "hex": "B4E739DA739CED39CE739D8360D821085A285728CCE73987FC",
+      "reason": "sentinel"
+    },
+    {
+      "hex": "D4E739E6739CED39CE739D8360D821085A285728CCE73987FF",
+      "reason": "sentinel"
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D821085A285728CCE73986D9",
+      "reason": "sentinel"
+    },
+    {
+      "hex": "D4E739DA769CED39CE739D8360D821085A285728CCE73987F5",
+      "reason": "non-digit"
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D82B085A285728CCE73987FA",
+      "reason": "non-digit"
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D821085A285728CCE73987",
+      "reason": "length"
+    },
+    {
+      "hex": "D4E739DA739CED39CE739D8360D821085A285728CCE73987F000",
+      "reason": "length"
+    }
+  ]
+}
