@@ -25,8 +25,8 @@ zmq:<endpoint>
 A reader fragment must match exactly one reader name, or one reader name exactly; an ambiguous
 fragment is refused.
 
-Exit status: `0` success, `1` failure (any error), `2` usage error. `card produce`, `ledger verify`
-and `attestation verify` define more specific codes below.
+Exit status: `0` success, `1` failure (any error), `2` usage error. `card produce`, `ledger verify`,
+`root audit-ledger` and `attestation verify` define more specific codes below.
 
 ## Issuance Overview
 
@@ -528,6 +528,11 @@ and event sequence, OPID, raw ISSUE response, entry and signature; the F9 point,
 certificate and hash, read-back result; the proof slot, point, leaf and deletion; the verifier
 reports; identifiers; and the new key version and KCVs. Receipts never contain raw keys.
 
+From the ledger `issue` line on, and for every rewrite on the failure path or of a superseded
+receipt, each receipt rewrite is immediately followed by a ledger line carrying the SHA-256 of the
+octets written (see [Ledger](#ledger)), so a later edit or deletion of a receipt fails `ledger
+verify`.
+
 `receipts.csv` columns: timestamp, producer, batch, target, status, stage, opid, issuance_seq,
 cplc, kdd_initial, kdd_final, new_key_version, enc_kcv, mac_kcv, dek_kcv, f9_ski, f9_cert_sha256,
 guid, fascn, receipt.
@@ -538,21 +543,42 @@ options.
 
 ## Ledger
 
-`batches/IIII-NNNN/ledger.jsonl` holds one compact JSON object per line: `v` (1), `type`, `at`, and
-`prev` (SHA-256 of the previous line's text; 64 zeros on the first line). Types:
+`batches/IIII-NNNN/ledger.jsonl` holds one compact JSON object per line: `v` (format version),
+`type`, `at`, and `prev` (SHA-256 of the previous line's text; 64 zeros on the first line). Types:
 
 | Type      | Content                                                        |
 | --------- | -------------------------------------------------------------- |
 | `genesis` | SAM genesis entry and signature                                |
 | `topup`   | SAM TOPUP entry and signature                                  |
-| `issue`   | SAM ISSUE entry and signature, seq, OPID, F9 SKI, certificate hash, receipt, `recovered` |
-| `void`    | SAM VOID entry and signature for an issued OPID                |
+| `issue`   | SAM ISSUE entry and signature, seq, OPID, F9 SKI, certificate hash, receipt (optional `receiptSha256`), `recovered` |
+| `void`    | SAM VOID entry and signature for an issued OPID, receipt (optional `receiptSha256`) |
 | `close`   | SAM CLOSE entry and signature; the batch produces no further cards |
 | `term`    | SAM TERM entry and signature, written by `sam terminate`       |
-| `outcome` | final status and stage of an issued OPID's card, optionally linked by `reissueOf` / `supersededBy` |
+| `outcome` | final status and stage of an issued OPID's card, receipt (optional `receiptSha256`), optionally linked by `reissueOf` / `supersededBy` |
 | `lost`    | an issued OPID whose card will never carry it                  |
+| `receipt` | (v2) `receipt` (file name), `sha256`, `reason`: binds a receipt rewrite no other line binds |
 
 Every SAM line carries the SAM's ledger `entry`, its `sig`, `eventSeq` and `head`.
+
+The genesis line fixes the format version of the whole ledger; every later line carries the same
+`v`. A new ledger is written in format 2:
+
+- `receiptSha256` on an `issue`, `outcome` or `void` line is the hex SHA-256 of the receipt file's
+  octets as written by the rewrite that line follows. It is present only when the receipt was just
+  rewritten: a recovered `issue`, a `void` and the `VOIDED` outcome of a reissue name the receipt
+  without a hash, and any rewrite that follows is bound by its own line.
+- A `receipt` line binds every other rewrite: stage advances after the `issue` line (`reason`
+  `stage <STAGE>`), failure records (`failed <stage>`) and the `supersededBy` edit of a burned
+  receipt on reissue.
+
+A format 1 ledger names receipts but does not bind them. It keeps format 1 when appended to (no
+hashes, no `receipt` lines) and verifies only with the warning `ledger format v1 (legacy): receipts
+not bound; their contents are not tamper-evident`. Any other format version fails verification.
+
+A receipt rewrite and its ledger line are two file writes. A host crash between them leaves a
+receipt that no longer matches its last binding, and `ledger verify` fails closed for that receipt;
+see [Production Qualification](PRODUCTION_QUALIFICATION.md#ledger-and-receipt-integrity) for the
+operator procedure.
 
 ### ledger verify
 
@@ -573,13 +599,21 @@ Offline checks:
 - issuance numbers 1, 2, …, each OPID a canonical 17-digit OPID of the batch IIN, no repeated OPID or
   F9 key identifier;
 - every `outcome`, `lost` and `void` line names an issued (seq, OPID) pair;
-- `close` records the final issued count; no `issue` or `topup` follows it; nothing follows `term`.
+- `close` records the final issued count; no `issue` or `topup` follows it; nothing follows `term`;
+- every line has the genesis line's format version;
+- (format 2) every receipt name is a plain file name and every receipt hash is 64 hex digits; every
+  receipt any line names exists in `receipts/` as a regular file, has at least one hash binding, and
+  its octets hash to the last value the ledger recorded for it. An edited receipt (for example its
+  CPLC, KDD or OPID) fails as `differs from its last ledger binding (edited)`.
 
 The production station never recomputes an OPID. With `--sam`, the live SAM's signed STATUS must be
 at the ledger's last entry (event, chain head, issued count) and CLOSED exactly when the ledger is
 closed, which detects a truncated or diverged ledger. With an operator PIN as well, up to
 `--decipher-sample` issued OPIDs (default 8; first, last and evenly spaced; `0` disables) are
-DECIPHERed and must return their issuance numbers. Exit `0` valid, `1` invalid.
+DECIPHERed and must return their issuance numbers.
+
+Exit `0` valid, `1` invalid, `4` valid with warnings (a format 1 ledger, whose receipts are not
+bound). Exit `4` is not a clean pass; problems print as `FAIL`, warnings as `WARN`.
 
 ### ledger reconcile
 
@@ -602,8 +636,10 @@ ant -f build/build.xml openfips201-tool -Dargs='root audit-ledger --producer big
 
 Verifies the ledger's hash chain and SAM entries under the bound SAM's certificate from the root's
 SAM record (genesis commitment to that certificate, the recorded `paramsDigest` and quota), then
-replays every issued OPID from the root's LCG record and the IIN FF1 key on the root token. Exit `0` valid, `1`
-invalid.
+replays every issued OPID from the root's LCG record and the IIN FF1 key on the root token. The
+exported ledger travels without the receipt files, so receipt bindings are checked for form only
+(plain file names, 64-digit hashes); their contents are checked at the production station by `ledger
+verify`. Exit `0` valid, `1` invalid, `4` valid with warnings (a format 1 ledger).
 
 ## Closing a Batch
 

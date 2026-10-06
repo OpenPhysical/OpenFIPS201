@@ -57,7 +57,7 @@ actually submitted.
 | Capability                                            | Posture                                                          | Notes                                                                                       |
 | ----------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | PIV AID `A000000308000010000100`                      | Implemented                                                      | SELECT returns the APT; tag `AC` lists the SM suite (`27` or `2E`) whenever key `04` and its CVC are present, independent of VCI mode (SP 800-73-5 Part 2 §3.1.1) |
-| Local PIN (`0x80`) / PUK (`0x81`)                     | Implemented                                                      | SP 800-73-5 length and retry caps enforced in config; a disabled PUK returns `6A88` for CHANGE REFERENCE DATA and RESET RETRY COUNTER |
+| Local PIN (`0x80`) / PUK (`0x81`)                     | Implemented                                                      | SP 800-73-5 length and retry caps enforced in config; the PUK is exactly 8 bytes; a disabled PUK returns `6A88` for CHANGE REFERENCE DATA and RESET RETRY COUNTER |
 | Global PIN (`0x00`)                                   | Supported; every defined Discovery policy combination is covered | Document explicitly if listed                                                               |
 | OCC (on-card comparison)                              | Out of scope                                                     | Not implemented and not claimed                                                             |
 | VCI with pairing code                                 | Implemented                                                      | Discovery PIN Usage Policy bits; VERIFY key ref `0x98` over SM                              |
@@ -113,11 +113,20 @@ ant -f build/build.xml test-all   # includes slow tests / suite matrix
 - Command dispatch, P1/P2 rejection, unprovisioned GET DATA (`6A82`)
 - Local PIN VERIFY / CHANGE REFERENCE DATA / RESET RETRY COUNTER status-word
   behaviour (including several SP 800-73-5 “either 6A80 or 63Cx” cases), the disabled-PUK `6A88`
-  response, and retry-counter restoration after a PIN-history or platform rejection
+  response, and retry-counter restoration after a PIN-history or platform rejection; a
+  table-driven matrix across malformed, wrong, blocked, contactless, VCI and intermediate-reserve
+  conditions; an unprovisioned (install-time) PUK that matches fails as a mismatch (`63CX`,
+  counter decremented)
+- Administrative entry points over contactless keep their status words: `6982` for the GP secure
+  channel and proprietary `80 24`/`80 25`, `6A81` for PUT DATA and GENERATE ASYMMETRIC KEY PAIR
+  (SP 800-73-5 Part 2 Section 3)
 - GET RESPONSE bound to the class family of the initiating command: a GP SCP GET RESPONSE
   continues only a response started under GP SCP (otherwise `6985`) and never releases a pending
   PIV secure-messaging response
-- Rejection of non-minimal BER-TLV length encodings on every incoming TLV path
+- Rejection of non-minimal BER-TLV length encodings on every incoming TLV path, including the
+  streamed secure-messaging `87` object (`6988`); shortest-form lengths in every `TLVWriter` output
+- Seeded property tests of SM unwrap, command chaining and GET/PUT DATA against reference models
+- Imported EC public points validated on the curve (`6A80`, partial import cleared)
 - Config rejection of non-conformant PIN/PUK retry (>10) and PIN length bounds
 - Management key (9B) GENERAL AUTHENTICATE and CHANGE REFERENCE DATA
 - Selected GENERAL AUTHENTICATE paths (RSA key transport, ECC signature shapes,

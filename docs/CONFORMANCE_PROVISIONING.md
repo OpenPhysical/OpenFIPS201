@@ -143,6 +143,13 @@ The validator checks, among others:
 - the mandatory objects (CCC, CHUID, PIV Authentication and Card Authentication certificates,
   fingerprints, facial image, Security Object);
 - the CHUID signature (eContentType id-PIV-CHUIDSecurityObject, signer DN, Table 2 digest);
+- the Security Object signature: eContentType id-icao-ldsSecurityObject `1.3.27.1.1.1`, no
+  embedded signer certificate, Table 2 digest, and LDS hashes computed with the signature's hash
+  algorithm. SP 800-73-5 Part 1 Section 3.1.7 defines the Security Object by reference to ICAO 9303
+  Part 10, whose identifier is `2.23.136.1.1.1`; SP 800-85B AS06.04.06 ("The eContentType of the
+  encapContentInfo shall be id-icao-ldsSecurityObject (OID = 1.3.27.1.1.1)") and SP 800-166
+  DTR-07.02.01.06 fix `1.3.27.1.1.1`, which GSA ICAM test cards carry and the piv-conformance tool
+  enforces. `2.23.136.1.1.1` is rejected, and `NativeVciProfile` signs with `1.3.27.1.1.1`;
 - the content signing certificate's extKeyUsage (`ContentSigningProfile`): critical and asserting
   only the purpose of the card type. An all-nines FASC-N (non-federally issued PIV-I) requires
   id-fpki-pivi-content-signing (`2.16.840.1.101.3.8.7`). Otherwise an FPKI PIV content signing

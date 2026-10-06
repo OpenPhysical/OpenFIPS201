@@ -59,7 +59,9 @@ Run each step under dual control and retain its output:
    `batch close` (SAM-signed CLOSE entry; the SAM refuses further BEGIN, ISSUE and TOP UP), then `sam
    terminate` (TERM entry recorded; the SAM's signing key, FF1 key and LCG state are cleared). Run
    `ledger verify` once more offline, transfer `ledger.jsonl` to the root for `root audit-ledger`,
-   archive the batch directory, and retire or destroy the terminated SAM.
+   archive the batch directory, and retire or destroy the terminated SAM. Only exit `0` is a clean
+   pass; exit `4` (a legacy format 1 ledger whose receipts are not bound) needs a recorded
+   disposition.
 
 Every `card produce` receipt (`openfips201.receipt/2`) records the CAP SHA-256, load-file hash and
 `.cap.properties`, the GET VERSION and GET STATUS read-back (authority ACTIVE, OPID, F9 SKI), the
@@ -68,6 +70,32 @@ SCP key KCVs. Retain receipts, the CSV and `ledger.jsonl` with the batch evidenc
 every exit-3 (burned OPID) result with `ledger reconcile` before the next card; a burned card is
 reissued with `card produce --reissue`, which VOIDs its OPID. Produced cards leave the line with an
 unrecorded random local PIN; personalization must set the cardholder PIN over the secure channel.
+
+## Ledger and receipt integrity
+
+The ledger (format 2) binds every receipt rewrite from the `issue` line on, and every failure
+record, by the SHA-256 of the receipt as written. `ledger verify` requires each receipt the ledger
+names to exist in the batch's `receipts/` directory and to match its last binding, so an edited
+CPLC, KDD or OPID fails verification. `root audit-ledger` checks the bindings for form only; the
+receipt files stay at the production station and are checked there. See
+[Issuer Tool](OPENFIPS201_TOOL.md#ledger).
+
+A receipt rewrite and its ledger line are two separate file writes. A host crash between them
+leaves the receipt one rewrite ahead of its last binding, and `ledger verify` fails closed for that
+receipt. The tool does not re-bind a receipt. When `ledger verify` reports a receipt that `differs
+from its last ledger binding`:
+
+1. Stop production on the batch. Do not edit the receipt or the ledger, and do not append lines by
+   hand: the ledger is hash-chained and append-only.
+2. Preserve the receipt, the ledger and the host logs, and record the receipt's SHA-256 and the
+   last hash the ledger recorded for it.
+3. Under dual control, establish the cause. A crash leaves the receipt exactly one rewrite ahead of the last bound
+   version: one further stage, a failure record, or a `supersededBy` link. Treat any other
+   difference as tampering. Confirm the card's state from the card (`attestation verify --from-card`) and the
+   SAM's from `ledger verify --sam`.
+4. Record the finding and the decision to continue or close the batch in the batch evidence. The
+   batch's `ledger verify` keeps reporting that receipt; retain the record with every later
+   verification result and with the archived batch.
 
 ## Issuer key lifecycle
 
@@ -146,11 +174,32 @@ Before issuing production credentials on a platform:
 3. Exercise the actual provider and transports: AES/CMAC/ECDH failure cleanup,
    CS2/CS7 establishment and replacement, command and response chaining, final
    partial receive blocks, and contact/contactless access policy. The segmented
-   receive fallback supports input blocks up to 256 bytes.
-4. Measure object write latency, EEPROM/storage use, and commit capacity with the
+   receive fallback supports input blocks up to 256 bytes. Measure, over contact and contactless,
+   CS2 (P-256) and CS7 (P-384) secure-messaging establishment latency and the software EC
+   point-validation latency (GENERAL AUTHENTICATE key agreement, OPACITY and EC public-point import)
+   against the reader timeout.
+4. Interrupt power around:
+   - CHANGE REFERENCE DATA and RESET RETRY COUNTER (PIN or PUK update with PIN history). After
+     reselection the reference data and the PIN history must both be old or both new. The retry
+     counter may lie between its prior value and the maximum only after the correct value was
+     presented (`OwnerPIN` counter updates are not transactional; see
+     [SECURITY_NOTES.md](../SECURITY_NOTES.md#pin-and-puk-retry-counters)).
+   - replacement of the secure-messaging CVC of key `04`. The card must hold the complete previous
+     or the complete new CVC, and OPACITY must establish with it.
+   - the Issuer SAM ISSUE, VOID and CLOSE commits (see [Issuer SAM platform
+     gates](#issuer-sam-platform-gates)) and the F9 certificate load and activation (item 2).
+5. Confirm that the PIV security status does not outlive the host session. The status is held in
+   `CLEAR_ON_RESET` memory, so a card reset clears PIN validation; verify on the target reader and
+   middleware that the card is reset (or powered down) when the issuer tool disconnects, and that a
+   new session must verify the PIN again.
+6. Confirm that a re-SELECT of the PIV application preserves the security status and the
+   secure-messaging session (SP 800-73-5 Part
+   2 Section 3.1.1, SELECT) while selecting another application and then PIV again clears it. jCardEngine
+   cannot model `reSelectingApplet()`, so this is verified on hardware only.
+7. Measure object write latency, EEPROM/storage use, and commit capacity with the
    largest supported face container. Check interrupted staging and publication
    using the real reader and card, not emulator transaction mocks.
-5. For a certificate-free Veridt test credential, use standard/non-FIPS mode and
+8. For a certificate-free Veridt test credential, use standard/non-FIPS mode and
    a disposable identity. Qualify CCC/CHUID/UUID recognition, the actual encoded
    face file and capacity, PIN retries, and PIN-gated retrieval. Contactless VCI,
    pairing, and access policy require their own end-to-end checks.
