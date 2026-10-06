@@ -11,6 +11,14 @@ OpenFIPS201 provides two applet configurations:
 - The **standard profile** supports the full documented OpenPhysical feature set.
 - The **FIPS profile** applies the applet's FIPS-oriented object, lifecycle, and algorithm policy.
 
+Code used by only one profile or attestation setting is compiled only into those CAPs: the FIPS
+power-up self-tests (`FipsPowerUpSelfTests`, excluded as a whole file), the FIPS personalization
+readiness check, the OPACITY key-derivation known-answer test and the FIPS access-mode checks only
+into FIPS CAPs; `PIVAttestation`, `DERWriter` and `DERValidator` (the latter two excluded as whole
+files) and the activation wipe helpers only into attestation-enabled CAPs. A standard CAP therefore
+contains no FIPS self-test code, and an attestation-disabled CAP omits the attestation
+implementation.
+
 The profile choice does not change shared APDU syntax, TLV parsing, or input validation. A
 FIPS-profile CAP is one part of a PIV card system. It does not establish FIPS 140 validation,
 NPIVP listing, or approval of the Java Card platform.
@@ -103,6 +111,9 @@ Repository tests cover:
 - OPACITY CS2 and CS7 key establishment
 - secure-messaging encryption, MACs, counters, replay checks, pairing, and session teardown
 - malformed APDU, TLV, DER, CVC, and secure-messaging inputs
+- applet deletion: services are owned per instance and allocated at install, `uninstall()` clears
+  nothing, a refused deletion leaves the PIV or Issuer SAM instance usable without allocation, and
+  two PIV instances share no service object (`OpenFIPS201UninstallTest`, `IssuerSamUninstallTest`)
 
 The GSA profile smoke provisions seven positive standard profiles and three positive FIPS profiles.
 In FIPS builds it first confirms that importing the profiles' `9A`/`9C` keys is refused, then
@@ -160,7 +171,8 @@ validation remains an external gate.
 ### Attestation
 
 F9 attestation is an OpenPhysical extension and is outside the NPIVP card-application claim. Use an
-attestation-disabled CAP for an NPIVP submission unless the test authority directs otherwise. The
+attestation-disabled CAP, which omits the attestation implementation, for an NPIVP submission
+unless the test authority directs otherwise. The
 release matrix still tests attestation-enabled and attestation-disabled CAPs.
 
 ### Platform Behavior
@@ -184,7 +196,8 @@ The emulator cannot establish:
 Before deployment, repeat the applicable tests on every target card and reader combination (the
 gates are detailed in [Production Qualification](PRODUCTION_QUALIFICATION.md#card-platform-gates)):
 
-1. Install the exact retained CAP and verify its hash and build properties.
+1. Install the exact retained CAP and verify its hash and build properties, including
+   `build.sha256`.
 2. Run contact and contactless command-interface suites.
 3. Run CS2 or CS7 VCI tests for the suite in the CAP.
 4. Verify F9 provisioning and every supported attestation target algorithm if attestation is enabled.

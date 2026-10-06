@@ -38,6 +38,13 @@
    - **SAM output is not channel-protected.** The SAM does not wrap responses. The authenticity of
      ledger entries, issued certificates and signed STATUS comes from SAM signatures. Responses are
      not confidential on the reader link, so no SAM response carries secret material.
+   - **Build and CAP identity are claims, not on-card measurements.** The leaf `buildSha256` is a
+     constant compiled into the applet (`build.sha256`), so a modified applet can report any value.
+     The F9 issuance extension `capSha256` and `cplcSha256` are SHA-256 values the production host
+     computes over the CAP file it was given and the CPLC data the card served; the SAM signs them
+     as received and cannot check them. They bind a card to a release only as far as the
+     production station is trusted. `attestation verify` rejects version 1 extensions, which lack
+     them.
 
    ## Issuer SAM Metering
    The SAM, not the host, owns OPID allocation and the quota:
@@ -140,6 +147,15 @@
    SAM ISSUE, TOP UP, VOID, CLOSE and personalization, the PIV F9 certificate load, PIN/PUK updates
    and secure-messaging CVC replacement must be qualified on every target chip before production
    use.
+
+   ## Applet Deletion
+   Each PIV and Issuer SAM instance owns its cryptographic services and codecs (PIV: `PIVCrypto`,
+   `TLVReader`, `TLVWriter`, `DERWriter`; SAM: its certificate writer), allocated in its constructor
+   at install; no static field references an allocated object, and two instances share no service
+   object. `uninstall()` clears nothing. A deletion the platform refuses (JCRE 3.0.5 Section
+   11.3.4.2) therefore leaves the instance fully usable without any allocation after install, and
+   deleting one instance does not affect another. Qualify the platform's deletion path on hardware
+   ([docs/PRODUCTION_QUALIFICATION.md](docs/PRODUCTION_QUALIFICATION.md#card-platform-gates)).
 
    ## PIN and PUK Retry Counters
    CHANGE REFERENCE DATA and RESET RETRY COUNTER evaluate PIN history only after the current PIN or

@@ -71,7 +71,8 @@ actually submitted.
 | RSA-3072 (`0x05`)                                     | **Implemented**                                                  | Advertised in the application property template and supported by the RSA key implementation |
 | 3TDEA admin / default                                 | Still present                                                    | Deprecated through 2030; prefer AES for new listings                                        |
 | AES-128/192/256 admin                                 | Implemented                                                      | Preferred for management key                                                                |
-| OpenPhysical attestation (`INS F9`, key `F9`)         | Extension                                                        | Outside base NPIVP PIV data model; document separately ([ATTESTATION.md](ATTESTATION.md))   |
+| OpenPhysical attestation (`INS F9`, key `F9`)         | Extension                                                        | Outside base NPIVP PIV data model; document separately ([ATTESTATION.md](ATTESTATION.md)). Compiled only into attestation-enabled CAPs (`PIVAttestation`, `DERWriter`, `DERValidator`) |
+| FIPS power-up self-tests and FIPS policy checks       | FIPS CAPs only                                                   | `FipsPowerUpSelfTests`, the FIPS personalization readiness check and the OPACITY KDA known-answer test are compiled only into FIPS CAPs |
 
 ## Automated test coverage (repository CI)
 
@@ -214,7 +215,8 @@ Configuration and notes: [tools/piv_test_runner/README.md](../tools/piv_test_run
 
 ### Gate 1: SP 800-85A and NPIVP interface evidence
 
-Freeze the source commit, exact CAP and SHA-256 digest, profile sidecar, platform descriptor,
+Freeze the source commit, exact CAP and SHA-256 digest, `.cap.properties` (including
+`build.sha256`), profile sidecar, platform descriptor,
 personalisation inputs, reader model, card platform, and Test Runner version/configuration. Run the
 official NIST PIV Test Runner against disposable, fully personalised physical cards over every
 claimed interface. Every applicable vector must pass; an applicable test may not be filtered,

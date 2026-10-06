@@ -64,7 +64,7 @@ Run each step under dual control and retain its output:
    disposition.
 
 Every `card produce` receipt (`openfips201.receipt/2`) records the CAP SHA-256, load-file hash and
-`.cap.properties`, the GET VERSION and GET STATUS read-back (authority ACTIVE, OPID, F9 SKI), the
+`.cap.properties` (including `build.sha256`), the CPLC SHA-256 (`card.cplcSha256`), the GET VERSION and GET STATUS read-back (authority ACTIVE, OPID, F9 SKI), the
 SAM entry and signature, the verifier reports (including the SAM's DECIPHER of the OPID) and the new
 SCP key KCVs. Retain receipts, the CSV and `ledger.jsonl` with the batch evidence, and reconcile
 every exit-3 (burned OPID) result with `ledger reconcile` before the next card; a burned card is
@@ -143,6 +143,36 @@ virtual-contact runner reports policy-rejection failures for operations that
 SP 800-85A-4 C.2.2.4, C.2.3.4, and C.3.1.4 require to fail. Preserve the XML,
 traces, and controlling requirements; do not relabel the raw run as all-green.
 
+## Release identity
+
+Every attested card carries three SHA-256 values (see
+[Attestation](ATTESTATION.md#build-cap-and-cplc-identity)): the leaf `buildSha256`, asserted by the
+applet build, and the F9 issuance extension `capSha256` and `cplcSha256`, measured by the
+production host and signed by the SAM.
+
+For each released CAP variant, publish to relying parties through the same authenticated channel
+as the trust material:
+
+1. the SHA-256 of the CAP file (`shasum -a 256 <cap>`, equal to the receipt's `cap.sha256`);
+2. `build.sha256` from its `.cap.properties`.
+
+`card produce` refuses a CAP whose `.cap.properties` lacks `build.sha256` and a card that serves no
+CPLC data, both before an OPID is burned. Produce cards only from a published CAP file.
+
+To verify a card against a release:
+
+```sh
+ant -f build/build.xml openfips201-tool -Dargs='attestation verify --from-card \
+  --target pcsc:CardReader --slot 9A --anchor root.pem --chain sam.pem \
+  --expect-cap <published CAP SHA-256> --expect-build <published build.sha256>'
+```
+
+Add `--expect-cplc <SHA-256 of the card CPLC>` where the card's CPLC is recorded, or use
+`--receipt <receipt.json>` at the production station. A match on `capSha256` shows that a trusted
+SAM issued the card for that CAP file as reported by the production host; a match on `buildSha256`
+shows that the applet signing the leaf claims that build. Neither is an on-card measurement of the
+installed code.
+
 ## Issuer SAM platform gates
 
 The emulator does not roll back persistent writes on `abortTransaction`, so SAM atomicity is tested
@@ -151,7 +181,7 @@ only with white-box ordering tests. On every SAM platform:
 1. Confirm AES-256 (`KeyBuilder.LENGTH_AES_256`, `ALG_AES_BLOCK_128_CBC_NOPAD` and
    `ALG_AES_BLOCK_128_ECB_NOPAD`), ECDSA P-256 sign and verify with SHA-256,
    `Signature.signPreComputedHash`, P-256 ECDH (`ALG_EC_SVDP_DH_PLAIN`, for the transport key that
-   unwraps the FF1 key), and about 1.4 KB of `CLEAR_ON_DESELECT` RAM. Installation fails without
+   unwraps the FF1 key), and about 1.45 KB of `CLEAR_ON_DESELECT` RAM. Installation fails without
    these algorithms.
 2. Confirm `JCSystem.getMaxCommitCapacity()` of at least 512 octets; LOCK refuses less.
 3. Interrupt power around ISSUE (before, during and after the commit), TOP UP, VOID, CLOSE, LOCK
@@ -203,6 +233,12 @@ Before issuing production credentials on a platform:
    a disposable identity. Qualify CCC/CHUID/UUID recognition, the actual encoded
    face file and capacity, PIN retries, and PIN-gated retrieval. Contactless VCI,
    pairing, and access policy require their own end-to-end checks.
+9. Exercise a DELETE of the PIV and Issuer SAM instances that the card refuses (JCRE 3.0.5
+   Section 11.3.4.2) and confirm the instance stays fully usable, and that deleting one of two
+   PIV instances leaves the other usable. Each instance owns its cryptographic services and codecs,
+   allocated at install, and `uninstall()` releases nothing, so a failed deletion needs no
+   allocation after install. The emulator tests (`OpenFIPS201UninstallTest`,
+   `IssuerSamUninstallTest`) cover this behaviour, not the platform's deletion path.
 
 Retain card/OS/provider version, reader firmware, build profile, CAP hash,
 provisioning profile, sanitized traces, and recovery outcomes with each result.

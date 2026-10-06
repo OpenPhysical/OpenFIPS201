@@ -137,7 +137,8 @@ stores the certificate in the container `53 82 LL LL 70 82 LL LL <cert> 71 01 00
 | `6982` | No encrypted and MACed secure channel, or element `86` / `87` (F9 import)   |
 | `6A88` | F9 is not defined, or P1 is not `11`                                        |
 | `6985` | State is not `GENERATED`, F9 has no generated pair, or applet not SELECTABLE |
-| `6A84` | Certificate longer than `0x2E0` (736) octets, or subject longer than 128    |
+| `6700` | Certificate longer than `0x2F8` (760) octets: the command `30 82 LL LL 70 82 LL LL <cert>` overruns the 0x300-octet staging buffer during chain reassembly |
+| `6A84` | Subject longer than 128 octets                                              |
 | `6A80` | Any other element tag, certificate shorter than 256 octets, any profile or binding failure |
 
 Element `86` and `87` (F9 public point and private scalar) are never accepted: F9 key material is
@@ -200,10 +201,11 @@ clears every non-F9 key, every attestable key was generated after the F9 certifi
 - `6A80`: malformed element, malformed or non-canonical DER, profile violation, or key binding
   mismatch; F9 definition with the wrong shape; F9 delete; CREATE OBJECT `5FFF01`.
 - `6A82`: GET DATA `5FFF01` before activation.
-- `6A84`: certificate or subject above the supported limits.
+- `6A84`: F9 subject above the supported limit, or generated leaf above the response buffer.
 - `6A86`: invalid attestation slot or parameters.
 - `6A88`: F9 or target key reference not found.
-- `6700`: PROVE nonce length, or command data on a certificate request.
+- `6700`: PROVE nonce length, command data on a certificate request, or an F9 certificate load
+  longer than `0x2F8` octets.
 
 ## GET STATUS
 
@@ -243,7 +245,7 @@ The card enforces the following when the certificate is loaded:
 
 - An explicit `critical FALSE` is rejected (X.690 Section 11.5). Any other critical extension is
   rejected. Other non-critical extensions, such as the SAM issuance extension, are accepted.
-- Size 256 to 736 octets.
+- Size 256 to 760 (`0x2F8`) octets. The Issuer SAM's worst-case F9 certificate is 756 octets.
 
 The card does not check the signature value, the AKI value, or the validity dates against a clock.
 It does not decipher the OPID. Those checks belong to the issuance host and to
@@ -285,7 +287,7 @@ keyUsage follows the target role in GENERAL AUTHENTICATE dispatch order (RFC 528
 
 ```asn1
 OpenPhysicalAttestation ::= SEQUENCE {
-  version          INTEGER (1),
+  version          INTEGER (2),
   appletVersion    OCTET STRING (SIZE 4),  -- major, minor, revision, debug
   buildFlags       OCTET STRING (SIZE 1),  -- bit 0 FIPS profile, bit 1 attestation support
   vciSuite         OCTET STRING (SIZE 1),  -- 27 (CS2) or 2E (CS7)
@@ -296,11 +298,34 @@ OpenPhysicalAttestation ::= SEQUENCE {
   attributes       OCTET STRING (SIZE 1),  -- key attribute bits
   origin           ENUMERATED { generated(2) },
   contactMode      OCTET STRING (SIZE 1),  -- access mode, contact
-  contactlessMode  OCTET STRING (SIZE 1)   -- access mode, contactless
+  contactlessMode  OCTET STRING (SIZE 1),  -- access mode, contactless
+  buildSha256      OCTET STRING (SIZE 32)  -- build identity, build.sha256
 }
 ```
 
-`appletVersion`, `buildFlags`, `vciSuite` and `platformId` match the CAP's `.cap.properties`. The
+`appletVersion`, `buildFlags`, `vciSuite`, `platformId` and `buildSha256` match the CAP's
+`.cap.properties` (`buildSha256` is its `build.sha256`). Version 1 (without `buildSha256`) is
+rejected by `attestation verify`.
+
+`build.sha256` is computed by the `preprocess-applet` target in `build/build.xml` over the
+variant's preprocessed applet sources (the package directory under `build/preprocessed-src/`,
+after JPP and after the whole-file exclusions of the variant); every variant's `.cap.properties`
+carries it:
+
+1. Every `*.java` file except the generated `BuildProfile.java` is copied with its line endings
+   normalized to LF (ISO-8859-1 in and out).
+2. Ant's `checksum` task (`algorithm="SHA-256"`, `totalproperty`) computes SHA-256 of each
+   normalized file, then one SHA-256 over the files in relative-path order, each contributing its
+   32-octet file digest followed by its path relative to the package directory (the file name).
+3. The result must be 64 lowercase hex digits (the build fails otherwise). It is written to
+   `.cap.properties` as `build.sha256` and compiled into the applet as `BuildProfile.BUILD_SHA256`.
+
+`BuildProfile.java` (platform identifier and the hash itself) is not covered; the platform
+identifier is attested separately in `platformId`. `build.sha256` identifies the source of a
+variant, not the CAP file: the CAP file is identified by its own SHA-256 (`capSha256` in the F9
+issuance extension, see below).
+
+The
 build fails if the platform identifier is longer than 32 characters, which keeps the worst-case leaf
 (maximum issuer subject and an RSA-3072 key) inside the 1024-octet response buffer.
 
@@ -325,9 +350,34 @@ A verifier holding the root certificate should:
    (`allocationSeq` names this SAM's allocation, a `bind` line binds it to this SAM, and its head
    equals `registryHead`) and require the OPID not to appear in any SAM-signed VOID entry.
 
+7. Where the issuer publishes the release identity, require the leaf `buildSha256` to equal the
+   release's `build.sha256` and the F9 issuance extension `capSha256` to equal the SHA-256 of the
+   released CAP file; where the card's CPLC is known, require `cplcSha256` to equal its SHA-256.
+
 `openfips201 attestation verify` implements these checks; `--registry` and `--voids` enable step 6,
-`--expect-opid` pins the OPID, and `--producer`/`--batch` take the anchor and SAM certificate from a
-producer profile.
+`--expect-build`, `--expect-cap` and `--expect-cplc` (64 hex digits each), or `--receipt`, enable
+step 7, `--expect-opid` pins the OPID, and `--producer`/`--batch` take the anchor and SAM
+certificate from a producer profile.
+
+### Build, CAP and CPLC Identity
+
+Three SHA-256 values bind a card to the software it runs. They differ in who asserts them:
+
+| Value        | Where                                   | Asserted by                                            | Verifier check      |
+| ------------ | --------------------------------------- | ------------------------------------------------------ | ------------------- |
+| `buildSha256`| leaf OpenPhysical extension (v2)        | the applet build itself (`BuildProfile.BUILD_SHA256`), signed by F9 | `leaf.expect-build` |
+| `capSha256`  | F9 issuance extension (v2), SAM ledger ISSUE entry | the issuance host, which hashes the CAP file given to `card produce --cap`; signed by the SAM | `f9.expect-cap`     |
+| `cplcSha256` | F9 issuance extension (v2), SAM ledger ISSUE entry | the issuance host, which hashes the CPLC data the card served; signed by the SAM | `f9.expect-cplc`    |
+
+- `buildSha256` is self-asserted: it proves only that the code which built the leaf carries that
+  constant. A modified applet can carry any value, so it identifies a genuine build only together
+  with the SAM-signed F9 certificate (the card was issued by a trusted SAM) and `capSha256`.
+- `capSha256` and `cplcSha256` are host measurements. The SAM cannot measure either; it binds them
+  as received in ISSUE. They are as trustworthy as the production station and its operators.
+- `--receipt <receipt.json>` takes `cap.sha256`, `card.cplcSha256` and `cap.properties`
+  `build.sha256` from an `openfips201.receipt/2` issuance receipt. An explicit `--expect-*` value
+  that differs from the receipt's is a usage error (exit `2`); a hash that does not match the
+  certificates is invalid (exit `1`).
 
 ## Card Identity (OPID)
 
@@ -407,9 +457,13 @@ any other POA does not match the OPID.
 | OID                              | Name                                       | Where                         |
 | -------------------------------- | ------------------------------------------ | ----------------------------- |
 | `1.3.6.1.4.1.57923.20.10.10.1`   | SAM parameters packet (version 5)          | SAM PUT PARAMETERS            |
-| `1.3.6.1.4.1.57923.20.10.10.2`   | F9 issuance extension (version 1)          | F9 certificate, non-critical  |
+| `1.3.6.1.4.1.57923.20.10.10.2`   | F9 issuance extension (version 2)          | F9 certificate, non-critical  |
 | `1.3.6.1.4.1.57923.20.10.10.3`   | SAM batch extension (version 3)            | SAM certificate, non-critical |
-| `1.3.6.1.4.1.57923.20.10.20.1`   | OpenPhysical attestation extension         | leaf certificate, non-critical |
+| `1.3.6.1.4.1.57923.20.10.20.1`   | OpenPhysical attestation extension (version 2) | leaf certificate, non-critical |
+
+Version 2 of the F9 issuance extension adds `capSha256` and `cplcSha256`
+([ISSUER_SAM.md](ISSUER_SAM.md#f9-certificate-profile)); version 2 of the attestation extension
+adds `buildSha256`. `attestation verify` accepts only these versions and rejects version 1.
 | `2.5.4.5`                        | serialNumber (carries the OPID)            | F9 subject, leaf issuer       |
 | `1.2.840.10045.4.3.2`            | ecdsa-with-SHA256                          | all three signatures          |
 

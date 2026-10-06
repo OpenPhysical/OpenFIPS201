@@ -130,6 +130,14 @@ ant -f build/build.xml compile -Dvci.suite=CS7
 ant -f build/build.xml compile-fips -Dvci.suite=CS2 -Dattestation.enabled=false
 ```
 
+Each CAP contains only the code its variant uses. FIPS-only code (the power-up self-tests in
+`FipsPowerUpSelfTests`, the FIPS personalization readiness check, the OPACITY key-derivation
+known-answer test and the FIPS object and key access-mode checks) is compiled only into FIPS CAPs; attestation-only code
+(`PIVAttestation`, `DERWriter`, `DERValidator`, the activation wipe helpers) only into
+attestation-enabled CAPs. Every CAP's `.cap.properties` records `build.sha256`, the build identity
+of its preprocessed sources, which attestation-enabled CAPs also carry in every attestation leaf
+(see [Attestation](docs/ATTESTATION.md#openphysical-attestation-extension)).
+
 The FIPS profile controls applet configuration, required PIV objects, and permitted algorithms.
 Shared APDU syntax, TLV validation, and error handling are the same in both profiles. A FIPS-profile
 CAP does not by itself establish certification of the Java Card platform or the complete card
