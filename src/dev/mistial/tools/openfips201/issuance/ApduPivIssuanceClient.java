@@ -36,7 +36,8 @@ public final class ApduPivIssuanceClient implements PivIssuanceClient {
   static final byte[] GENERATE_P256 = HexUtil.parse("AC03800111");
   private static final byte[] GET_VERSION = HexUtil.parse("5C032F4756");
   private static final byte[] GET_STATUS = HexUtil.parse("5C032F4753");
-  private static final int SW_OBJECT_EXISTS = 0x6E27;
+  /** ISO/IEC 7816-4 Table 7 '6A89' (file already exists): the key reference is already defined. */
+  private static final int SW_OBJECT_EXISTS = 0x6A89;
 
   /** A chunk of at most 0xEF octets fits a short APDU after SCP03 wrapping. */
   private static final int MAX_FRAME = 0xEF;

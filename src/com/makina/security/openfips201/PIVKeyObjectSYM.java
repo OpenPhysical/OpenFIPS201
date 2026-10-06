@@ -109,7 +109,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
             } else if (replacement.getType() == KeyBuilder.TYPE_AES) {
               ((AESKey) replacement).setKey(buffer, offset);
             } else {
-              ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+              // Internal fault: ISO/IEC 7816-4 Table 6 '6F00' (no precise diagnosis).
+              ISOException.throwIt(ISO7816.SW_UNKNOWN);
             }
           } catch (Exception ex) {
             replacement.clearKey();
@@ -209,7 +210,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
         return PIVCrypto.LENGTH_BLOCK_AES;
 
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // ISO/IEC 7816-4 Table 7 '6A81' (function not supported): not a symmetric mechanism.
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
         return (short) 0; // Keep compiler happy
     }
   }
@@ -231,7 +233,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
         return KeyBuilder.LENGTH_AES_256;
 
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // ISO/IEC 7816-4 Table 7 '6A81' (function not supported): not a symmetric mechanism.
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
         return (short) 0; // Keep compiler happy
     }
   }
@@ -241,7 +244,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
 
     // PRE-CONDITION 1 - The length must be equal to the block length
     if (inLength != getBlockLength()) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      // ISO/IEC 7816-4 Table 7 '6A80' (incorrect parameters in the command data field).
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     return PIVCrypto.doEncrypt(key, inBuffer, inOffset, inLength, outBuffer, outOffset);

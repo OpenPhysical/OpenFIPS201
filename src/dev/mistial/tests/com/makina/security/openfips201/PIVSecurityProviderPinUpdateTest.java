@@ -85,7 +85,7 @@ class PIVSecurityProviderPinUpdateTest {
             () ->
                 provider.updatePIN(
                     PIV.ID_CVM_LOCAL_PIN, PIN_A, (short) 0, (byte) PIN_A.length, HISTORY));
-    assertEquals(ISO7816.SW_DATA_INVALID, reuse.getReason());
+    assertEquals(ISO7816.SW_WRONG_DATA, reuse.getReason());
   }
 
   @Test
@@ -101,7 +101,7 @@ class PIVSecurityProviderPinUpdateTest {
             () ->
                 provider.updatePIN(
                     PIV.ID_CVM_LOCAL_PIN, PIN_A, (short) 0, (byte) PIN_A.length, HISTORY));
-    assertEquals(ISO7816.SW_DATA_INVALID, reuse.getReason());
+    assertEquals(ISO7816.SW_WRONG_DATA, reuse.getReason());
     assertArrayEquals(historyBefore, pinHistory(provider));
     assertTrue(
         provider.getPIN(PIV.ID_CVM_LOCAL_PIN).check(PIN_B, (short) 0, (byte) PIN_B.length),

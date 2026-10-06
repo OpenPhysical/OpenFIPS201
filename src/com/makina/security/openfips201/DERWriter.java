@@ -47,6 +47,10 @@ import javacard.framework.Util;
  * values written through {@link #writePositiveInteger} are canonical per X.690 §8.3.2: redundant
  * leading zero octets are removed and a single zero octet is prepended only when the most
  * significant bit of the magnitude is set.
+ *
+ * <p>A structural misuse of the writer (unbalanced {@code end()}, empty INTEGER magnitude) is an
+ * internal fault, not a property of the command, and is reported as ISO/IEC 7816-4 Table 6 '6F00'
+ * (no precise diagnosis).
  */
 final class DERWriter {
 
@@ -129,14 +133,14 @@ final class DERWriter {
 
   void end() {
     short depth = state[STATE_DEPTH];
-    if (depth == (short) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (depth == (short) 0x00) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     depth--;
     state[STATE_DEPTH] = depth;
     byte[] buffer = buffer();
     short lengthOffset = state[depth];
     short contentOffset = (short) (lengthOffset + 3);
     short contentLength = (short) (state[STATE_OFFSET] - contentOffset);
-    if (contentLength < (short) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (contentLength < (short) 0x00) ISOException.throwIt(ISO7816.SW_UNKNOWN);
 
     // JavaCard gives us fixed byte arrays, not a growable DER stream. begin() reserves a 3-byte
     // length and end() compacts the content left when DER permits a shorter length encoding.
@@ -198,7 +202,7 @@ final class DERWriter {
    * @param length the magnitude length, which must be at least one octet
    */
   void writePositiveInteger(byte[] in, short inOffset, short length) {
-    if (length <= (short) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (length <= (short) 0x00) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     while (length > (short) 0x01 && in[inOffset] == (byte) 0x00) {
       inOffset++;
       length--;

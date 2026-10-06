@@ -314,7 +314,7 @@ final class TLVReader {
     } else if ((short) 2 == length) {
       return Util.getShort(data, offset);
     } else {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (short) -1; // Dummy
     }
   }
@@ -323,6 +323,8 @@ final class TLVReader {
    * Reads the current tag value as a byte value
    *
    * @return The current tag value as a byte
+   * @throws ISOException '6A80' (ISO/IEC 7816-4 Table 7, incorrect parameters in the command data
+   *     field) if the value is not exactly one byte
    */
   byte toByte() throws ISOException {
     byte[] data = (byte[]) dataPtr[0];
@@ -331,7 +333,7 @@ final class TLVReader {
     if ((short) 1 == length) {
       return data[getDataOffset()];
     } else {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (byte) 0; // Keep compiler happy
     }
   }

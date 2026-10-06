@@ -381,16 +381,16 @@ class IssuerSamPersonalizationTest extends IssuerSamTestSupport {
   }
 
   @Test
-  void personalizationAfterLockReturns6986() {
+  void personalizationAfterLockReturns6985() {
     Params params = Params.variant(root, 0);
     personalize(params);
     withMockedScp(
         () -> {
-          assertSw(0x6986, putParameters(params), "PUT after LOCK");
-          assertSw(0x6986, transmit(0x84, 0xD2, 0x00, 0x81, PIN), "SET PIN after LOCK");
-          assertSw(0x6986, transmit(0x84, 0x46, 0x00, 0x00), "GENERATE after LOCK");
-          assertSw(0x6986, transmit(0x84, 0xD4, 0x00, 0x00, new byte[] {0x30, 0x00}), "LOAD");
-          assertSw(0x6986, transmit(0x84, 0xD6, 0x00, 0x00), "LOCK again");
+          assertSw(0x6985, putParameters(params), "PUT after LOCK");
+          assertSw(0x6985, transmit(0x84, 0xD2, 0x00, 0x81, PIN), "SET PIN after LOCK");
+          assertSw(0x6985, transmit(0x84, 0x46, 0x00, 0x00), "GENERATE after LOCK");
+          assertSw(0x6985, transmit(0x84, 0xD4, 0x00, 0x00, new byte[] {0x30, 0x00}), "LOAD");
+          assertSw(0x6985, transmit(0x84, 0xD6, 0x00, 0x00), "LOCK again");
           assertEquals(LC_OPERATIONAL, lifecycle());
         });
   }

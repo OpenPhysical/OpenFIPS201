@@ -352,7 +352,8 @@ final class PIVCrypto {
     if ((inBuffer == outBuffer)
         && (inOffset < outOffset)
         && (outOffset < (short) (inOffset + inLength))) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      // Internal buffer misuse, not a property of the command: ISO/IEC 7816-4 Table 6 '6F00'.
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
 
     Cipher cipher = null;

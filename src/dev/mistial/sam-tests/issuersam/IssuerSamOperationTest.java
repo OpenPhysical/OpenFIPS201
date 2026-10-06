@@ -321,7 +321,7 @@ class IssuerSamOperationTest extends IssuerSamTestSupport {
         () -> {
           assertSw(0x6985, transmit(0x84, 0x84, 0x00, 0x00), "BEGIN after TERMINATE");
           assertSw(0x6985, transmit(0x84, 0x20, 0x00, 0x81, PIN), "VERIFY after TERMINATE");
-          assertSw(0x6986, transmit(0x84, 0x46, 0x00, 0x00), "GENERATE after TERMINATE");
+          assertSw(0x6985, transmit(0x84, 0x46, 0x00, 0x00), "GENERATE after TERMINATE");
         });
     assertSw(0x6985, transmit(0x80, 0xCA, 0x01, 0x01, new byte[16]), "no signed STATUS");
     assertSw(0x6985, transmit(0x80, 0x32, 0, 0, root.topUp(samSki(), INITIAL_TS + 1, 1)), "TOP UP");

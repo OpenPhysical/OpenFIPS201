@@ -322,7 +322,7 @@ final class PIVSecurityProvider {
     }
 
     if (keyExists(id)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      ISOException.throwIt(PIV.SW_OBJECT_EXISTS);
     }
 
     if (!PIVCrypto.supportsKeyRole(mechanism, role)) {
@@ -374,7 +374,8 @@ final class PIVSecurityProvider {
       key = (PIVKeyObject) key.getNext();
     }
     if (key == null) {
-      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+      // ISO/IEC 7816-4 Table 7 '6A88' (referenced data or DO not found).
+      ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
       return;
     }
 
@@ -639,7 +640,10 @@ final class PIVSecurityProvider {
             matched = true;
           }
         }
-        if (matched) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // A reused PIN is new reference data that fails the issuer's PIN criteria. SP 800-73-5
+        // Part 2 Sections 3.2.2 and 3.2.3: such new reference data "SHALL return the status word
+        // '6A 80'" and leaves the reference data and retry counter unchanged.
+        if (matched) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       if (ownTransaction) JCSystem.beginTransaction();

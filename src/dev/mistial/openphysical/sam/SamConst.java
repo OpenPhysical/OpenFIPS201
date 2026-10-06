@@ -24,6 +24,8 @@
 
 package dev.mistial.openphysical.sam;
 
+import javacard.framework.ISO7816;
+
 /**
  * Constants for the issuer SAM: lifecycle values, instructions, status words, wire-contract
  * prefixes and OIDs, and the documented offsets of every scratch region.
@@ -89,7 +91,7 @@ final class SamConst {
   static final byte GET_DATA_SIGNED = (byte) 0x01;
 
   //
-  // Status words that ISO7816 does not name.
+  // Status words, all interindustry per ISO/IEC 7816-4 Tables 6 and 7.
   //
   /** Signature verification failed; persistent state is unchanged. */
   static final short SW_VERIFICATION_FAILED = (short) 0x6300;
@@ -97,8 +99,11 @@ final class SamConst {
   static final short SW_FAILURE_AFTER_COMMIT = (short) 0x6500;
   /** Quota or OPID period exhausted, or insufficient commit capacity. */
   static final short SW_EXHAUSTED = (short) 0x6A84;
-  /** Personalization command after LOCK. */
-  static final short SW_LOCKED = (short) 0x6986;
+  /**
+   * Personalization command after LOCK: ISO/IEC 7816-4 Table 7 '6985' (conditions of use not
+   * satisfied). '6986' is reserved by ISO for "command not allowed (curEF not set)".
+   */
+  static final short SW_LOCKED = ISO7816.SW_CONDITIONS_NOT_SATISFIED;
   /** Unexpected error before any commit. */
   static final short SW_UNEXPECTED = (short) 0x6F00;
 

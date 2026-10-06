@@ -73,7 +73,7 @@ class TLVValidationTest {
 
     TLVReader invalid = reader(new byte[] {(byte) 0x80, 0x02, 0x00, 0x01});
     ISOException exception = assertThrows(ISOException.class, invalid::toByte);
-    assertEquals(ISO7816.SW_DATA_INVALID, exception.getReason());
+    assertEquals(ISO7816.SW_WRONG_DATA, exception.getReason());
   }
 
   @Test

@@ -82,7 +82,9 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
     this.params = params;
     if (params == null) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      // No curve is registered for this mechanism: ISO/IEC 7816-4 Table 7 '6A81' (function not
+      // supported), the same status as an unsupported mechanism at key creation.
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
     // Uncompressed ECC public keys are marshaled as 04 || X || Y, where each coordinate is the
@@ -255,7 +257,9 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       // key is certified by the issuer, so a generated pair must be proven consistent first.
       if ((FipsPolicy.ENABLED || getId() == PIV.ID_KEY_ATTESTATION)
           && !pairwiseConsistencyTest(scratch, offset)) {
-        ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+        // A generated pair that fails its consistency test is an internal fault: ISO/IEC 7816-4
+        // Table 6 '6F00' (no precise diagnosis).
+        ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
 
       TLVWriter writer = TLVWriter.getInstance();

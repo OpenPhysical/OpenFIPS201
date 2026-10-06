@@ -62,7 +62,7 @@ class DERWriterTest {
         assertThrows(
             ISOException.class,
             () -> writer.writePositiveInteger(new byte[1], (short) 0, (short) 0));
-    assertEquals(ISO7816.SW_DATA_INVALID, thrown.getReason());
+    assertEquals(ISO7816.SW_UNKNOWN, thrown.getReason());
   }
 
   @Test

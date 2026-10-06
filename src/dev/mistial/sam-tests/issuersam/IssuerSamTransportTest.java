@@ -105,7 +105,7 @@ class IssuerSamTransportTest extends IssuerSamTestSupport {
           assertSw(0x6985, transmit(0x84, 0x4A, 0x00, 0x00), "after GENERATE SAM KEY");
         });
     personalizeRest(params);
-    withMockedScp(() -> assertSw(0x6986, transmit(0x84, 0x4A, 0x00, 0x00), "after LOCK"));
+    withMockedScp(() -> assertSw(0x6985, transmit(0x84, 0x4A, 0x00, 0x00), "after LOCK"));
   }
 
   /** Completes personalization after PUT PARAMETERS and GENERATE SAM KEY. */

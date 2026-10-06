@@ -455,7 +455,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
         0x9000, transmit(0x00, INS_VERIFY, 0xFF, LOCAL_PIN_REFERENCE), "Clear PIN security status");
 
     assertSw(
-        0x6984,
+        0x6A80,
         transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0x00, LOCAL_PIN_REFERENCE, concat(third, second)),
         "PIN history rejects a recent value");
 
@@ -479,7 +479,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
         0x9000, transmit(0x00, INS_VERIFY, 0xFF, LOCAL_PIN_REFERENCE), "Clear PIN security status");
 
     assertSw(
-        0x6984,
+        0x6A80,
         transmit(
             0x00,
             INS_RESET_RETRY_COUNTER,
@@ -514,7 +514,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
             "Wrong PIN decrements the retry counter");
 
     assertSw(
-        0x6984,
+        0x6A80,
         transmit(0x00, INS_CHANGE_REFERENCE_DATA, 0x00, LOCAL_PIN_REFERENCE, concat(third, second)),
         "PIN history rejects a recent value");
 
@@ -551,7 +551,7 @@ class OpenFIPS201PinCommandTest extends OpenFIPS201TestSupport {
             "Wrong PUK decrements the PUK retry counter");
 
     assertSw(
-        0x6984,
+        0x6A80,
         transmit(
             0x00,
             INS_RESET_RETRY_COUNTER,

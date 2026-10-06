@@ -36,7 +36,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
           public void run() {
             assertSw(0x9000, selectApplet(), "SELECT before VCI config update");
             ResponseAPDU response = transmit(0x84, 0xDB, 0xFF, 0xFF, hex("68 05 A2 03 80 01 03"));
-            assertSw(0x6984, response, "VCI mode must be disabled, enabled, or pairing-code");
+            assertSw(0x6A80, response, "VCI mode must be disabled, enabled, or pairing-code");
           }
         });
   }

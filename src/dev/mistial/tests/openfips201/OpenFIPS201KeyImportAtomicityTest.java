@@ -50,7 +50,7 @@ class OpenFIPS201KeyImportAtomicityTest extends OpenFIPS201TestSupport {
             jcSystem.clearInvocations();
 
             assertSw(
-                ISO7816.SW_FILE_INVALID,
+                ISO7816.SW_WRONG_DATA,
                 importElement(0x87, scalar((ECPrivateKey) mismatch.getPrivate())),
                 "A private scalar that does not match the public point fails the PCT");
             // An abort would restore the import flags but not the non-atomically cleared key

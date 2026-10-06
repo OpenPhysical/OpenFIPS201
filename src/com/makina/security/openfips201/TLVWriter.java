@@ -36,6 +36,10 @@ import javacard.framework.Util;
  * essentially BER-TLV, with the following exceptions: = The hierarchy is flat (constructed objects
  * are outside the scope of PIV to interpret itself) - The TAG identifier is non-compliant (no
  * class, no constructed flag, no length formatting)
+ *
+ * <p>Writing without {@code init()} or overflowing the length form chosen at {@code init()} is an
+ * internal fault, reported as ISO/IEC 7816-4 Table 6 '6F00' (no precise diagnosis). Running out of
+ * output space is '6A84' (not enough memory space).
  */
 final class TLVWriter {
 
@@ -153,7 +157,7 @@ final class TLVWriter {
   short finish() throws ISOException {
 
     // Write the length to the data object tag field
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_UNKNOWN);
 
     byte[] data = (byte[]) dataPtr[0];
 
@@ -161,12 +165,12 @@ final class TLVWriter {
     short length;
     if (context[CONTEXT_LENGTH_MAX] >= 0 && context[CONTEXT_LENGTH_MAX] <= TLV.LENGTH_1BYTE_MAX) {
       length = (short) (context[CONTEXT_OFFSET] - context[CONTEXT_LENGTH_PTR] - 1);
-      if (length > TLV.LENGTH_1BYTE_MAX) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      if (length > TLV.LENGTH_1BYTE_MAX) ISOException.throwIt(ISO7816.SW_UNKNOWN);
       data[context[CONTEXT_LENGTH_PTR]] = (byte) (length & (short) 0x007F);
     } else if (context[CONTEXT_LENGTH_MAX] >= 0
         && context[CONTEXT_LENGTH_MAX] <= TLV.LENGTH_2BYTE_MAX) {
       length = (short) (context[CONTEXT_OFFSET] - context[CONTEXT_LENGTH_PTR] - 1);
-      if (length > TLV.LENGTH_2BYTE_MAX) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      if (length > TLV.LENGTH_2BYTE_MAX) ISOException.throwIt(ISO7816.SW_UNKNOWN);
       data[context[CONTEXT_LENGTH_PTR]] = (byte) (length & (short) 0x00FF);
     } else if (context[CONTEXT_LENGTH_MAX] >= 0
         && context[CONTEXT_LENGTH_MAX] <= TLV.LENGTH_3BYTE_MAX) {
@@ -216,7 +220,7 @@ final class TLVWriter {
    * @param value The value to write
    */
   void write(byte tag, byte value) throws ISOException {
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     byte[] data = (byte[]) dataPtr[0];
 
     ensureCapacity((short) 3);
@@ -241,7 +245,7 @@ final class TLVWriter {
    */
   void write(byte tag, byte[] buffer, short offset, short length) throws ISOException {
 
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     byte[] data = (byte[]) dataPtr[0];
 
     ensureInput(buffer, offset, length);
@@ -332,7 +336,7 @@ final class TLVWriter {
   }
 
   private void ensureCapacity(short length) {
-    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (dataPtr[0] == null) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     if (length < 0
         || context[CONTEXT_OFFSET] > (short) (context[CONTEXT_BUFFER_END] - length)
         || (short) (context[CONTEXT_OFFSET] - context[CONTEXT_CONTENT_START])

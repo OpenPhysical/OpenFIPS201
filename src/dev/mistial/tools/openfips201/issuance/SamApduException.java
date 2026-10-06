@@ -36,9 +36,7 @@ public final class SamApduException extends IllegalStateException {
       case 0x6982:
         return " (secure channel or operator PIN required)";
       case 0x6985:
-        return " (conditions of use not satisfied)";
-      case 0x6986:
-        return " (personalization command after LOCK)";
+        return " (conditions of use not satisfied, e.g. personalization after LOCK)";
       case 0x6A80:
         return " (malformed or rejected data)";
       case 0x6A84:

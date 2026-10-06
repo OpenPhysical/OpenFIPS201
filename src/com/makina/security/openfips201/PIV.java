@@ -127,24 +127,10 @@ final class PIV {
    */
   static final short SW_REFERENCE_NOT_FOUND = (short) 0x6A88;
 
-  static final short SW_PUT_DATA_OP_MISSING = (short) 0x6E12;
-  static final short SW_PUT_DATA_OP_INVALID_LENGTH = (short) 0x6E13;
-  static final short SW_PUT_DATA_OP_INVALID_VALUE = (short) 0x6E14;
-  static final short SW_PUT_DATA_ID_MISSING = (short) 0x6E15;
-  static final short SW_PUT_DATA_ID_INVALID_LENGTH = (short) 0x6E16;
-  static final short SW_PUT_DATA_MODE_CONTACT_MISSING = (short) 0x6E17;
-  static final short SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH = (short) 0x6E18;
-  static final short SW_PUT_DATA_MODE_CONTACTLESS_MISSING = (short) 0x6E1A;
-  static final short SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH = (short) 0x6E1B;
-  static final short SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH = (short) 0x6E1D;
-  static final short SW_PUT_DATA_KEY_MECHANISM_MISSING = (short) 0x6E1E;
-  static final short SW_PUT_DATA_KEY_MECHANISM_INVALID_LENGTH = (short) 0x6E1F;
-  static final short SW_PUT_DATA_KEY_ROLE_MISSING = (short) 0x6E20;
-  static final short SW_PUT_DATA_KEY_ROLE_INVALID_LENGTH = (short) 0x6E21;
-  static final short SW_PUT_DATA_KEY_ATTR_MISSING = (short) 0x6E22;
-  static final short SW_PUT_DATA_KEY_ATTR_INVALID_LENGTH = (short) 0x6E23;
-  static final short SW_PUT_DATA_CONFIG_INVALID_VALUE = (short) 0x6E26;
-  static final short SW_PUT_DATA_OBJECT_EXISTS = (short) 0x6E27;
+  // ISO/IEC 7816-4 Table 7 '6A89' (file already exists): a create request names a data object or
+  // key reference that is already defined. javacard.framework.ISO7816 has no constant for it.
+  // Every other administrative PUT DATA failure uses an interindustry status word from ISO7816.
+  static final short SW_OBJECT_EXISTS = (short) 0x6A89;
 
   // The current authentication stage
   static final short OFFSET_AUTH_STATE = ZERO;

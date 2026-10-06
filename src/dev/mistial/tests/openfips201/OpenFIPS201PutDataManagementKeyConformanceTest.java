@@ -143,7 +143,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
               transmit(0x84, 0xDB, 0xFF, 0xFF, request),
               "Deleting an existing object should succeed");
           assertSw(
-              ISO7816.SW_RECORD_NOT_FOUND,
+              PIV_SW_REFERENCE_NOT_FOUND,
               transmit(0x84, 0xDB, 0xFF, 0xFF, request),
               "Deleting the same object twice should report it missing");
         });
@@ -331,7 +331,7 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
         () -> {
           assertSw(0x9000, selectApplet(), "SELECT before empty-object option update");
           assertSw(
-              PIV_SW_PUT_DATA_CONFIG_INVALID_VALUE,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A403850101")),
               "The retired empty-object option must not change conformant behavior");
         });
@@ -606,32 +606,32 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
   @Test
   void putDataAdminReportsMalformedOperationAndIdentifierElements() {
     // The compatibility container '30' carries its operation in element '8A' and the identifier
-    // in element '8B'. Each malformed element reports its own proprietary status word.
+    // in element '8B'. Each malformed element reports ISO/IEC 7816-4 '6A80'.
     withMockedScp(
         () -> {
           assertSw(0x9000, selectApplet(), "SELECT before element validation");
           assertSw(
-              PIV_SW_PUT_DATA_OP_INVALID_LENGTH,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("30048A020101")),
               "A two-byte operation element is an invalid operation length");
           assertSw(
-              PIV_SW_PUT_DATA_OP_MISSING,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("30038B0101")),
               "A container without the operation element is missing its operation");
           assertSw(
-              PIV_SW_PUT_DATA_ID_MISSING,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("30038A0101")),
               "CREATE OBJECT without an identifier is missing its identifier");
           assertSw(
-              PIV_SW_PUT_DATA_ID_INVALID_LENGTH,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("30058A01018B00")),
               "An empty object identifier is an invalid identifier length");
           assertSw(
-              PIV_SW_PUT_DATA_ID_INVALID_LENGTH,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("30098A01018B0401020304")),
               "A four-byte object identifier is an invalid identifier length");
           assertSw(
-              PIV_SW_PUT_DATA_ID_INVALID_LENGTH,
+              ISO7816.SW_WRONG_DATA,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("30078A01028B029A9A")),
               "A two-byte key identifier is an invalid identifier length");
         });
@@ -947,9 +947,4 @@ class OpenFIPS201PutDataManagementKeyConformanceTest extends OpenFIPS201TestSupp
 
   // Local copy of PIV.SW_REFERENCE_NOT_FOUND (package-private in production code).
   private static final int PIV_SW_REFERENCE_NOT_FOUND = 0x6A88;
-  private static final int PIV_SW_PUT_DATA_CONFIG_INVALID_VALUE = 0x6E26;
-  private static final int PIV_SW_PUT_DATA_OP_MISSING = 0x6E12;
-  private static final int PIV_SW_PUT_DATA_OP_INVALID_LENGTH = 0x6E13;
-  private static final int PIV_SW_PUT_DATA_ID_MISSING = 0x6E15;
-  private static final int PIV_SW_PUT_DATA_ID_INVALID_LENGTH = 0x6E16;
 }

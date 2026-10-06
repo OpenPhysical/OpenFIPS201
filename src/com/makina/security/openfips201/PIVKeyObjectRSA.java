@@ -300,7 +300,9 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       keyPair.genKeyPair();
 
       if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(outBuffer, outOffset)) {
-        ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+        // A generated pair that fails its consistency test is an internal fault: ISO/IEC 7816-4
+        // Table 6 '6F00' (no precise diagnosis).
+        ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
 
       TLVWriter writer = TLVWriter.getInstance();
@@ -396,7 +398,8 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
         return KeyBuilder.LENGTH_RSA_3072;
 
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // ISO/IEC 7816-4 Table 7 '6A81' (function not supported): not an RSA mechanism.
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
         return (short) 0; // Keep compiler happy
     }
   }

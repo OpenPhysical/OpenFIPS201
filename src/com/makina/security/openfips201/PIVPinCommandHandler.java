@@ -317,6 +317,8 @@ final class PIVPinCommandHandler {
     PIVDataObject object = dataStore.find(PIV.ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) 3);
     if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     if (!PIVDataCommandHandler.isValidPairingCodeContainer(object)) {
+      // The pairing code reference data exists but cannot be used: ISO/IEC 7816-4 Table 7 '6984'
+      // (reference data not usable).
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 

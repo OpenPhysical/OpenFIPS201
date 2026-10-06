@@ -56,7 +56,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
     // SP 800-73-5 (Part 2, VERIFY/CHANGE REFERENCE DATA behavior) caps retry counters at 10.
     // This APDU attempts to configure contact and contactless PIN retries to 11.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A0 06 86 01 0B 87 01 0B"));
-    assertSw(0x6984, response, "Configuring PIN retry limits above 10 must be rejected");
+    assertSw(0x6A80, response, "Configuring PIN retry limits above 10 must be rejected");
   }
 
   @Test
@@ -65,7 +65,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
     // Same conformance requirement as PIN retries; attempts to set PUK retries to 11.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A1 06 83 01 0B 84 01 0B"));
-    assertSw(0x6984, response, "Configuring PUK retry limits above 10 must be rejected");
+    assertSw(0x6A80, response, "Configuring PUK retry limits above 10 must be rejected");
   }
 
   @Test
@@ -74,7 +74,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
     // SP 800-73-5 PIN encoding rules require at least six significant PIN bytes.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A0 06 84 01 05 85 01 08"));
-    assertSw(0x6984, response, "Configuring PIN minimum length below 6 must be rejected");
+    assertSw(0x6A80, response, "Configuring PIN minimum length below 6 must be rejected");
   }
 
   @Test
@@ -83,7 +83,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
 
     // SP 800-73-5 PIN presentation is 8 bytes with 0xFF padding, so max significant length is 8.
     ResponseAPDU response = updateConfigOverMockedScp(hex("68 08 A0 06 84 01 06 85 01 09"));
-    assertSw(0x6984, response, "Configuring PIN maximum length above 8 must be rejected");
+    assertSw(0x6A80, response, "Configuring PIN maximum length above 8 must be rejected");
   }
 
   @Test
@@ -128,7 +128,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
         transmit(0x00, 0x24, 0x00, 0x80, hex("363534333231FFFF373839303132FFFF")),
         "Change PIN to a second new value");
     assertSw(
-        0x6984,
+        0x6A80,
         transmit(0x00, 0x24, 0x00, 0x80, hex("373839303132FFFF363534333231FFFF")),
         "PIN history must reject reuse of a recent value");
   }
@@ -297,7 +297,7 @@ class OpenFIPS201Sp800735ConformanceTest extends OpenFIPS201TestSupport {
     // SP 800-73-5 Part 2 Section 3.2.1: "Key reference '80' SHALL be able to be verified by the
     // PIV Card Application VERIFY command."
     assertSw(
-        0x6984,
+        0x6A80,
         updateConfigOverMockedScp(hex("68 05 A0 03 80 01 00")),
         "Disabling the mandatory PIV Card Application PIN must be rejected");
     assertSw(

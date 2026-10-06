@@ -147,7 +147,7 @@ public final class AttestationProofService {
         generatedKey, point.valueOffset, point.valueOffset + point.length);
   }
 
-  /** Creates the proof key; an existing key (6E27) is refused, so no foreign key is deleted. */
+  /** Creates the proof key; an existing key (6A89) is refused, so no foreign key is deleted. */
   private static void createProofKey(CardSession session, byte slot) {
     CommandAPDU command = new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, proofKeyDefinition(slot));
     ResponseAPDU response = session.transmit(command);

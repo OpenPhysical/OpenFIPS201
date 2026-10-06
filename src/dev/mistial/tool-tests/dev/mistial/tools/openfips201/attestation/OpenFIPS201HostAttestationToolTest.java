@@ -152,7 +152,7 @@ class OpenFIPS201HostAttestationToolTest {
   @Test
   void proofServiceFailsWhenProofSlotAlreadyExists() throws Exception {
     ProofCleanupSession session = new ProofCleanupSession(0x9000, 0x9000);
-    session.createStatus = 0x6E27;
+    session.createStatus = 0x6A89;
 
     IllegalStateException failure =
         assertThrows(
@@ -161,7 +161,7 @@ class OpenFIPS201HostAttestationToolTest {
                 new AttestationProofService()
                     .prove(session, AttestationProofService.DEFAULT_PROOF_SLOT, true));
 
-    assertTrue(failure.getMessage().contains("APDU failed SW=0x6E27"));
+    assertTrue(failure.getMessage().contains("APDU failed SW=0x6A89"));
     assertEquals(0, session.deleteCommands, "The tool must not delete a key it did not create");
   }
 

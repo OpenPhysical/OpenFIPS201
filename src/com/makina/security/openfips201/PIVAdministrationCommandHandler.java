@@ -65,37 +65,32 @@ final class PIVAdministrationCommandHandler {
    * reader is left on the element so the caller can read the identifier before advancing.
    *
    * @param maxLength the longest identifier the operation accepts
-   * @throws ISOException {@link PIV#SW_PUT_DATA_ID_MISSING} if the element is absent, or {@link
-   *     PIV#SW_PUT_DATA_ID_INVALID_LENGTH} if its length is not between 1 and {@code maxLength}
+   * @throws ISOException {@link ISO7816#SW_WRONG_DATA} (ISO/IEC 7816-4 Table 7, '6A80' incorrect
+   *     parameters in the command data field) if the element is absent or its length is not between
+   *     1 and {@code maxLength}
    */
   private static short readIdLength(TLVReader reader, short maxLength) {
     if (!reader.match(CONST_TAG_ID)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_MISSING);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     short length = reader.getLength();
     if (length < (short) 1 || length > maxLength) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_ID_INVALID_LENGTH);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     return length;
   }
 
   /** Reads the required contact and contactless access modes and advances past both tags. */
   private short readAccessModes(TLVReader reader) {
-    if (!reader.match(CONST_TAG_MODE_CONTACT)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_MISSING);
-    }
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH);
+    if (!reader.match(CONST_TAG_MODE_CONTACT) || reader.getLength() != (short) 1) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     byte contact = reader.toByte();
     owner.rejectUnsupportedOccAccessMode(contact);
     reader.moveNext();
 
-    if (!reader.match(CONST_TAG_MODE_CONTACTLESS)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_MISSING);
-    }
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH);
+    if (!reader.match(CONST_TAG_MODE_CONTACTLESS) || reader.getLength() != (short) 1) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     byte contactless = reader.toByte();
     owner.rejectUnsupportedOccAccessMode(contactless);
@@ -109,7 +104,7 @@ final class PIVAdministrationCommandHandler {
       return (byte) 0;
     }
     if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     byte adminKey = reader.toByte();
     reader.moveNext();
@@ -244,15 +239,10 @@ final class PIVAdministrationCommandHandler {
     byte modeContactless = (byte) accessModes;
     byte adminKey = readOptionalAdminKey(reader);
 
-    // PRE-CONDITION 9 - The 'KEY MECHANISM' tag MUST be present
-    if (!reader.match(CONST_TAG_KEY_MECHANISM)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_MECHANISM_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 10 - The 'KEY MECHANISM' tag MUST have length 1 only
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_MECHANISM_INVALID_LENGTH);
+    // PRE-CONDITIONS 9 and 10 - The 'KEY MECHANISM' tag MUST be present with length 1 only
+    // (ISO/IEC 7816-4 Table 7, '6A80' incorrect parameters in the command data field)
+    if (!reader.match(CONST_TAG_KEY_MECHANISM) || reader.getLength() != (short) 1) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return;
     }
     byte keyMechanism = reader.toByte();
@@ -263,29 +253,17 @@ final class PIVAdministrationCommandHandler {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
-    // PRE-CONDITION 12 - The 'KEY ROLE' tag MUST be present
-    if (!reader.match(CONST_TAG_KEY_ROLE)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_ROLE_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 13 - The 'KEY ROLE' tag MUST have length 1
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_ROLE_INVALID_LENGTH);
+    // PRE-CONDITIONS 12 and 13 - The 'KEY ROLE' tag MUST be present with length 1
+    if (!reader.match(CONST_TAG_KEY_ROLE) || reader.getLength() != (short) 1) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return;
     }
     byte keyRole = reader.toByte();
     reader.moveNext();
 
-    // PRE-CONDITION 14 - The 'KEY ATTRIBUTE' tag MUST be present
-    if (!reader.match(CONST_TAG_KEY_ATTRIBUTE)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_ATTR_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 15 - The 'KEY ATTRIBUTE' tag MUST have length 1
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_ATTR_INVALID_LENGTH);
+    // PRE-CONDITIONS 14 and 15 - The 'KEY ATTRIBUTE' tag MUST be present with length 1
+    if (!reader.match(CONST_TAG_KEY_ATTRIBUTE) || reader.getLength() != (short) 1) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return;
     }
     byte keyAttribute = reader.toByte();
@@ -317,9 +295,10 @@ final class PIVAdministrationCommandHandler {
 
     // PRE-CONDITION 16 - The key reference MUST NOT already have a key definition. SP 800-73
     // commands select a key by reference (P2) and validate the mechanism separately (P1), so
-    // OpenFIPS201 stores exactly one key object for each key reference.
+    // OpenFIPS201 stores exactly one key object for each key reference. ISO/IEC 7816-4 Table 7:
+    // '6A89' file already exists.
     if (cspPIV.keyExists(id)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      ISOException.throwIt(PIV.SW_OBJECT_EXISTS);
       return;
     }
 
@@ -353,15 +332,9 @@ final class PIVAdministrationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    // PRE-CONDITION 3 - The 'KEY MECHANISM' tag MUST be present
-    if (!reader.match(CONST_TAG_KEY_MECHANISM)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_MECHANISM_MISSING);
-      return;
-    }
-
-    // PRE-CONDITION 4 - The 'KEY MECHANISM' tag MUST have length 1 only
-    if (reader.getLength() != (short) 1) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_KEY_MECHANISM_INVALID_LENGTH);
+    // PRE-CONDITIONS 3 and 4 - The 'KEY MECHANISM' tag MUST be present with length 1 only
+    if (!reader.match(CONST_TAG_KEY_MECHANISM) || reader.getLength() != (short) 1) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return;
     }
     byte keyMechanism = reader.toByte();
@@ -443,14 +416,16 @@ final class PIVAdministrationCommandHandler {
     // Get the operation value
     byte operation = reader.getTag();
     short operationLength = reader.getLength();
+    // Every malformed or missing element of the request is reported as ISO/IEC 7816-4 Table 7
+    // '6A80' (incorrect parameters in the command data field).
     short operationEnd = (short) (reader.getDataOffset() + operationLength);
     if (operationEnd != length) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // PRE-CONDITION 1 - The tag must be constructed
     if (!reader.isConstructed()) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // Move into the constructed tag
@@ -461,13 +436,9 @@ final class PIVAdministrationCommandHandler {
     // keys only, and it uses the default applet settings.
     boolean compatibilityFormat = false;
     if (operation == CONST_TAG_COMPATIBILITY) {
-      // PRE-CONDITION 2A - The compatibility operation tag must be present.
-      if (!reader.match(CONST_TAG_COMPATIBILITY_OPERATION)) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OP_MISSING);
-      }
-      // PRE-CONDITION 2B - The 'OPERATION' tag MUST have length 1
-      if (reader.getLength() != (short) 1) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_OP_INVALID_LENGTH);
+      // PRE-CONDITIONS 2A and 2B - The 'OPERATION' tag MUST be present with length 1
+      if (!reader.match(CONST_TAG_COMPATIBILITY_OPERATION) || reader.getLength() != (short) 1) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       // Update the operation and move on
@@ -519,7 +490,7 @@ final class PIVAdministrationCommandHandler {
         break;
 
       default:
-        ISOException.throwIt(SW_PUT_DATA_OP_INVALID_VALUE);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
   }
 
@@ -771,7 +742,9 @@ final class PIVAdministrationCommandHandler {
           if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
             if (importedKey.isLastImportedPart(elementTag)
                 && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
-              failure = ISO7816.SW_FILE_INVALID;
+              // An inconsistent imported pair is incorrect command data: ISO/IEC 7816-4 Table 7
+              // '6A80', the same status as key material the provider refuses below.
+              failure = ISO7816.SW_WRONG_DATA;
             } else {
               JCSystem.beginTransaction();
               importedKey.completesImportedKeyPair(elementTag);
@@ -1020,9 +993,11 @@ final class PIVAdministrationCommandHandler {
         return (0); // Keep static analyser happy
     }
 
-    // Length sanity check (I should never construct a length larger than a short length)
+    // Length sanity check (I should never construct a length larger than a short length). This is
+    // an internal fault, not a property of the command: ISO/IEC 7816-4 Table 6 '6F00' (no precise
+    // diagnosis).
     if (length > TLV.LENGTH_1BYTE_MAX) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
 
     // STEP 1 - Set up the outgoing chainbuffer
