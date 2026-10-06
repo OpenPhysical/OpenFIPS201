@@ -1243,21 +1243,6 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertSw(ISO7816.SW_NO_ERROR, response, "F9 certificate load");
   }
 
-  private ResponseAPDU transmitChained(int cla, int ins, int p1, int p2, byte[] payload) {
-    final int chunkLength = 0xC0;
-    int offset = 0;
-    ResponseAPDU response = null;
-    while (offset < payload.length) {
-      int length = Math.min(chunkLength, payload.length - offset);
-      byte[] chunk = Arrays.copyOfRange(payload, offset, offset + length);
-      offset += length;
-      boolean last = offset >= payload.length;
-      response = transmit(last ? cla : (cla | 0x10), ins, p1, p2, chunk);
-      if (!last && response.getSW() != 0x9000) return response;
-    }
-    return response;
-  }
-
   private void assertLoadRejected(
       TestIssuer issuer, F9Profile profile, int expectedSw, String reason) throws Exception {
     final byte[] certificate = issuer.sign(profile);
