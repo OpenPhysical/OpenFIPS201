@@ -20,35 +20,64 @@ boundary.
 
 ## Automated Release Gates
 
-| Gate                 | Command                                        | Scope                                                           |
-| -------------------- | ---------------------------------------------- | --------------------------------------------------------------- |
-| Default applet tests | `ant -f build/build.xml test`                  | APDU behavior, access control, crypto paths, and negative cases |
-| Eight-variant matrix | `ant -f build/build.xml test-all`              | Standard/FIPS × CS2/CS7 × attestation on/off                    |
-| Coverage             | `ant -f build/build.xml coverage`              | JaCoCo applet line floor of 80%                                 |
-| GSA profile smoke    | `ant -f build/build.xml test-gsa-icam-smoke`   | Profile provisioning and selected card-access checks            |
-| VCI matrix           | `tools/piv_test_runner/run-nist-vci-matrix.sh` | CS2 and CS7 secure messaging and virtual-contact vectors        |
-| Data-model groups    | `tools/piv_test_runner/run-nist-data-model.sh` | Applicable SP 800-85B data-model checks                         |
+| Gate                 | Command                                        | Scope                                                                                          |
+| -------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Default applet tests | `ant -f build/build.xml test`                  | Standard profile, CS2/CS7 × attestation on/off; excludes `@Tag("slow")`                        |
+| Release matrix       | `ant -f build/build.xml test-all`              | Standard/FIPS × CS2/CS7 × attestation on/off with slow tests, then ZMQ transport, `test-sam` (full-period) and `test-host` |
+| Coverage             | `ant -f build/build.xml coverage`              | JaCoCo line and branch ratchets over three profiles, per-class floors, host-tool floor        |
+| GSA profile smoke    | `ant -f build/build.xml test-gsa-icam-smoke`   | Profile provisioning and selected card-access checks                                           |
+| VCI matrix           | `tools/piv_test_runner/run-nist-vci-matrix.sh` | CS2 and CS7 secure messaging and virtual-contact vectors                                       |
+| Data-model groups    | `tools/piv_test_runner/run-nist-data-model.sh` | Applicable SP 800-85B data-model checks                                                        |
 
-The eight-variant matrix is the repository release gate. A release must also retain the CAP,
-matching build-properties file, test logs, and hashes.
+The coverage target measures `standard-CS2-attestation`, `standard-CS7-no-attestation` and
+`fips-CS2-attestation`, which together compile every preprocessor branch. Only applet classes are
+instrumented; a coverage-only source copy rewrites `ISOException.throwIt` calls into explicit throws
+so those lines are counted. `CoverageGate` applies `[Class:]COUNTER=minimum` rules; each floor sits
+just below the measured value and is raised as coverage improves:
+
+| Profile                       | Bundle floor             | Per-class floors (line / branch)                                                                                                                                                  |
+| ----------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `standard-CS2-attestation`    | line 0.88, branch 0.75   | `PIVPinCommandHandler` 0.83/0.76, `PIVSecureMessaging` 0.94/0.85, `ChainBuffer` 0.91/0.87, `PIVSecurityProvider` 0.78/0.67, `PIVAuthenticationCommandHandler` 0.86/0.80, `PIVAttestation` 0.95/0.78 |
+| `standard-CS7-no-attestation` | line 0.84, branch 0.73   | —                                                                                                                                                                                 |
+| `fips-CS2-attestation`        | line 0.88, branch 0.76   | —                                                                                                                                                                                 |
+| host tool                     | line 0.66, branch 0.54   | —                                                                                                                                                                                 |
+
+The authoritative values are the `coverage.rules.*` properties in `build/build.xml`. The host-tool
+floor assumes no SoftHSM2 module; the `softhsm`-tagged tests add to it.
+
+CI runs `test-all` (which includes the GSA profile smoke test in each matrix variant) and, in a
+separate job with SoftHSM2 installed, the coverage ratchets. The VCI matrix and data-model rows are
+manual release gates: `setup-nist-tester.sh` needs the NIST archive password interactively, so CI
+cannot install the runner. A release must also retain the CAP, matching build-properties file, test
+logs including the manual NIST runs, and hashes.
 
 ## Verified in the Emulator
 
 Repository tests cover:
 
-- ISO/IEC 7816-4 command and response chaining, including interruption and malformed sequences
+- ISO/IEC 7816-4 command and response chaining, including interruption and malformed sequences;
+  GET RESPONSE is bound to the class family of the initiating command (a GP SCP GET RESPONSE
+  continues only a GP SCP response and never releases a pending PIV SM response)
 - standard and proprietary command separation
-- PIN, PUK, retry-counter, and security-status transitions
+- PIN, PUK, retry-counter, and security-status transitions, including retry-counter restoration
+  after a PIN-history or platform rejection and `6A88` for a disabled PUK
+- rejection of non-minimal BER-TLV length encodings on every incoming TLV path
+- FIPS-profile power-up self-tests (AES, AES-CMAC, SHA-256, SHA-384 in CS7, ECDSA P-256, ECC CDH
+  P-256, RSA-2048 and the OPACITY KDA through its production entry point) and the fail-closed latch
+  through the installed applet
 - administrative authorization through GlobalPlatform SCP and key reference `9B`
 - key and object creation, replacement, deletion, and lifecycle restrictions
 - RSA-2048, RSA-3072, P-256, and P-384 operations in their permitted profiles
-- F9 provisioning, staged authority updates, proof attestation, and independent certificate parsing
+- on-card F9 generation, proof of possession, F9 certificate load and activation, proof attestation,
+  and independent certificate parsing; Issuer SAM issuance through `test-sam`
 - OPACITY CS2 and CS7 key establishment
 - secure-messaging encryption, MACs, counters, replay checks, pairing, and session teardown
 - malformed APDU, TLV, DER, CVC, and secure-messaging inputs
 
 The GSA profile smoke provisions seven positive standard profiles and three positive FIPS profiles.
-It checks exact data readback and selected certificate-to-key operations. This evidence is useful for
+In FIPS builds it first confirms that importing the profiles' `9A`/`9C` keys is refused, then
+generates `9A` and `9C` on the card and imports the remaining keys. It checks exact data readback and
+selected certificate-to-key operations. This evidence is useful for
 regression testing but is not a substitute for an official GSA or NIST result.
 
 ## Recorded External-Suite Results
@@ -82,11 +111,17 @@ The FIPS profile permits a deliberate subset of the SP 800-78-5 algorithm combin
 RSA-1024 and 3TDEA are not permitted in the FIPS profile. A CAP advertises only its selected OPACITY
 suite. Product claims must name the exact CAP profile and suite.
 
+In the FIPS profile, keys `9A` and `9C` cannot be defined as importable and must be generated on the
+card (FIPS 201-3 Sections 4.2.2.1 and 4.2.2.4). The standard profile allows imported `9A` and `9C`.
+Key `F9` is generated on the card in both profiles.
+
 ### Personalization Readiness
 
 The applet checks the required object and key structure before the one-way personalization
-transition. Issuer software remains responsible for semantic checks of certificates, signed
-objects, data hashes, access-control rules, and private-key bindings.
+transition. In the FIPS profile this includes generated origin for `9A` and, when present, `9C`,
+and an active F9 authority in attestation-enabled CAPs. Issuer software remains responsible for
+semantic checks of certificates, signed objects, data hashes, access-control rules, and private-key
+bindings.
 
 The repository issuer path verifies CHUID and Security Object signatures, LDS hashes, subject-key
 identifiers, object readback, and selected key-to-certificate bindings. Formal issuer-policy
@@ -105,7 +140,9 @@ The emulator cannot establish:
 - default application selection after reset
 - multi-application selection and security-status behavior
 - contactless radio timing and field-loss behavior
-- EEPROM tear resistance and transaction behavior on the target chip
+- EEPROM tear resistance and transaction behavior on the target chip, including a tear during PIN
+  or PUK retry-counter restoration (`OwnerPIN` counter updates do not participate in transactions,
+  so the restore is not atomic)
 - Java Card platform cryptographic validation
 - physical-card response timing and reader compatibility
 
@@ -117,7 +154,8 @@ Before deployment, repeat the applicable tests on every target card and reader c
 2. Run contact and contactless command-interface suites.
 3. Run CS2 or CS7 VCI tests for the suite in the CAP.
 4. Verify F9 provisioning and every supported attestation target algorithm if attestation is enabled.
-5. Exercise reset, deselect, field loss, interrupted writes, and interrupted authority rotation.
+5. Exercise reset, deselect, field loss, interrupted writes, interrupted F9 certificate load and
+   activation, and, for the Issuer SAM, interrupted ISSUE, TOP UP and personalization.
 6. Measure P-256 and P-384 ECDH latency and reader timeout margins.
 7. Run multi-application selection and security-status tests.
 8. Retain official tool output, card identifiers, platform details, and test configuration.

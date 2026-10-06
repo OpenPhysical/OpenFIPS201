@@ -8,7 +8,8 @@ directory such as:
 gsa-icam-card-builder/cards/ICAM_Card_Objects/46_Golden_FIPS_201-2_PIV/
 ```
 
-and the host tooling creates containers, imports keys, and PUT DATAs object bodies over GlobalPlatform
+and the host tooling creates containers, imports keys (or generates `9A` and `9C` on the card, see
+[FIPS-profile CAPs](#fips-profile-caps-9a-and-9c)), and PUT DATAs object bodies over GlobalPlatform
 SCP03.
 
 ## What an ICAM folder contains
@@ -82,21 +83,78 @@ java -cp "build/tool-bin:tools/jcard-v26.08.10.jar:build/lib/*" \
   --target zmq:tcp://127.0.0.1:5555
 ```
 
-Verified end-to-end against card 46: 11 objects + 4 RSA-2048 keys (9A/9C/9D/9E) import successfully.
+Verified end-to-end against card 46 on a standard-profile CAP: 11 objects + 4 RSA-2048 keys
+(9A/9C/9D/9E) import successfully.
 
-For cards with distinct SCP03 ENC, MAC, and DEK keys, pass the complete split key set:
+## FIPS-profile CAPs: 9A and 9C
+
+FIPS 201-3 Section 4.2.2.1 requires the PIV Authentication key to be "generated on the PIV Card",
+and Section 4.2.2.4 requires the same of the Digital Signature key. A FIPS-profile CAP therefore
+refuses an importable definition of `9A` or `9C` with `6A80` at key creation. A standard-profile
+CAP allows importable `9A` and `9C` for usability, as YubiKey PIV does.
+
+`ConformanceProvisioner` takes a key source:
+
+| Key source       | Behaviour                                                                                      |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `IMPORT`         | Every key is defined importable and imported from the folder's PKCS#12 files.                 |
+| `GENERATE_9A_9C` | `9A` and `9C` are defined non-importable (`ATTR_NONE`) and generated on the card; `9D` and `9E` are imported. |
+
+`KeySource.forBuild(fips)` selects `GENERATE_9A_9C` for FIPS builds and `IMPORT` otherwise. With
+`GENERATE_9A_9C` the folder's `9A` and `9C` certificates do not certify the generated keys; the
+objects still load and read back byte-for-byte, but certificate-to-key checks for `9A` and `9C` do
+not hold. The report counts imported and generated keys separately.
+
+The FIPS-mode repository tests (`GsaIcam46HeadlessSmokeTest`, `OpenFIPS201VciEndToEndTest`) use
+`forBuild`, and the smoke test first asserts that importing the vendored `9A`/`9C` is refused.
+
+The default `ConformanceProvisioner.provision(...)` overload detects the profile from the target
+applet's GET STATUS tag `87` (FIPS mode) and applies `KeySource.forBuild` itself. If the applet does
+not report tag `87`, it fails with an explicit message. The `provision` CLI command and the NIST
+harness use this overload, so they generate `9A`/`9C` on the card for FIPS-profile CAPs, import them
+for standard CAPs, and report how many keys were imported and how many generated.
+
+For cards with distinct SCP03 ENC, MAC, and DEK keys, pass the complete split key set. Literal hex
+keys are accepted for `zmq:` targets only; a `pcsc:` target takes each key from an environment
+variable or an owner-only file:
 
 ```bash
 ant -f build/build.xml openfips201-tool -Dargs='provision \
   --icam /path/to/.../46_Golden_FIPS_201-2_PIV \
   --target pcsc:Reader \
-  --scp-enc-key <enc-hex> \
-  --scp-mac-key <mac-hex> \
-  --scp-dek-key <dek-hex>'
+  --scp-enc-key-env SCP_ENC \
+  --scp-mac-key-env SCP_MAC \
+  --scp-dek-key-env SCP_DEK'
 ```
 
-Use `--scp-key <hex>` when all three SCP03 keys are identical. Do not combine the shared and split
-forms.
+Use `--scp-key`, `--scp-key-env` or `--scp-key-file` when all three SCP03 keys are identical. Do not
+combine the shared and split forms.
+
+## Certification profile
+
+`provision --certification-profile` validates the folder against the frozen SP 800-73-5 Part 1
+certification profile (`CertificationProfileValidator`) before writing anything, provisions it, and
+only after a successful readback performs the one-way personalization transition. `--vci`,
+`--pairing-required` and `--government-email` declare the issuer claims that change which objects
+are required. Without `--certification-profile` the applet is left in the administrative state.
+
+The validator checks, among others:
+
+- the mandatory objects (CCC, CHUID, PIV Authentication and Card Authentication certificates,
+  fingerprints, facial image, Security Object);
+- the CHUID signature (eContentType id-PIV-CHUIDSecurityObject, signer DN, Table 2 digest);
+- the content signing certificate's extKeyUsage (`ContentSigningProfile`): critical and asserting
+  only the purpose of the card type. An all-nines FASC-N (non-federally issued PIV-I) requires
+  id-fpki-pivi-content-signing (`2.16.840.1.101.3.8.7`). Otherwise an FPKI PIV content signing
+  policy requires id-PIV-content-signing (`2.16.840.1.101.3.6.7`), a PIV-I content signing policy
+  requires the PIV-I purpose, and without either policy both purposes are accepted (SP 800-116
+  permits federally issued PIV-I with a real agency code). The same rule applies to the signer of
+  the secure-messaging certificate signer object `5FC122`;
+- the Discovery PIN Usage Policy: only the Part 1 Table 1 first-byte values, no OCC, and a Global
+  PIN bit only when the configuration enables it.
+
+Content signers generated by the repository tooling (`VciProvisioning`, `NativeVciProfile`) assert
+the purpose chosen from the card's FASC-N by the same rule.
 
 ## piv-conformance (OpenPhysical fork)
 
@@ -129,8 +187,8 @@ ant -f build/build.xml \
   test-gsa-icam-smoke
 ```
 
-`GsaIcam46HeadlessSmokeTest` loads the vendored card 46, provisions all 11 objects and four keys,
-then requires successful SELECT, local PIN VERIFY, CCC/CHUID/Card Authentication certificate reads,
+`GsaIcam46HeadlessSmokeTest` loads the vendored card 46, provisions all 11 objects and four keys
+(in FIPS mode with `9A` and `9C` generated on the card), then requires successful SELECT, local PIN VERIFY, CCC/CHUID/Card Authentication certificate reads,
 and an independently verified RSA-2048 Card Authentication operation with key `9E`.
 
 ## Implementation map
@@ -139,7 +197,7 @@ and an independently verified RSA-2048 Card Authentication operation with key `9
 | --------------------------- | -------------------------------------------- |
 | `IcamCardFolder`            | Native ICAM directory → `ConformancePackage` |
 | `ConformancePackage`        | Objects + keys + PIN/PUK/9B model            |
-| `ConformanceProvisioner`    | SCP03 create/import/PUT DATA                 |
+| `ConformanceProvisioner`    | SCP03 create/import/generate/PUT DATA        |
 | `OpenFips201Tool provision` | CLI entry                                    |
 | `tools/provision-icam.sh`   | Convenience wrapper                          |
 
@@ -174,4 +232,5 @@ intermediate from the ICAM AIA URL or from
 - Emulator reset clears personalisation; re-run `provision` after restart.
 - The applet is left in the administrative (pre-personalise) lifecycle state so re-provisioning remains possible under SCP.
 - Provisioning verifies the local PIN and reads every object back through GET DATA, requiring an exact byte match with the source package before reporting success.
-- **FIPS-profile CAP:** the loader maps ICAM objects and keys to the Part 1 contact/contactless ACRs enforced by `FipsPolicy`. GSA card 46 provisions successfully; VCI secure messaging remains a separate profile extension.
+- **FIPS-profile CAP:** the loader maps ICAM objects and keys to the Part 1 contact/contactless ACRs enforced by `FipsPolicy`. GSA card 46 provisions successfully with `9A` and `9C` generated on the card
+  (`KeySource.GENERATE_9A_9C`); VCI secure messaging remains a separate profile extension.

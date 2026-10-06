@@ -56,8 +56,8 @@ actually submitted.
 
 | Capability                                            | Posture                                                          | Notes                                                                                       |
 | ----------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PIV AID `A000000308000010000100`                      | Implemented                                                      | SELECT returns Application Property Template (APT)                                          |
-| Local PIN (`0x80`) / PUK (`0x81`)                     | Implemented                                                      | SP 800-73-5 length and retry caps enforced in config                                        |
+| PIV AID `A000000308000010000100`                      | Implemented                                                      | SELECT returns the APT; tag `AC` lists the SM suite (`27` or `2E`) whenever key `04` and its CVC are present, independent of VCI mode (SP 800-73-5 Part 2 §3.1.1) |
+| Local PIN (`0x80`) / PUK (`0x81`)                     | Implemented                                                      | SP 800-73-5 length and retry caps enforced in config; a disabled PUK returns `6A88` for CHANGE REFERENCE DATA and RESET RETRY COUNTER |
 | Global PIN (`0x00`)                                   | Supported; every defined Discovery policy combination is covered | Document explicitly if listed                                                               |
 | OCC (on-card comparison)                              | Out of scope                                                     | Not implemented and not claimed                                                             |
 | VCI with pairing code                                 | Implemented                                                      | Discovery PIN Usage Policy bits; VERIFY key ref `0x98` over SM                              |
@@ -77,8 +77,13 @@ actually submitted.
 
 ### Coverage evidence boundary
 
-`ant -f build/build.xml coverage` enforces an **80% applet line-coverage floor**, based on the
-measured simulator baseline. The metric records executed source lines. Security boundaries,
+`ant -f build/build.xml coverage` measures three profiles that together compile every
+preprocessor branch (`standard-CS2-attestation`, `standard-CS7-no-attestation`,
+`fips-CS2-attestation`) and enforces JaCoCo line and branch floors per profile, per-class floors for
+the security-critical handlers, and a separate host-tool floor. The floors are ratchets set just
+below the measured values; the current values are the `coverage.rules.*` properties in
+`build/build.xml` (see [FIPS_AND_TEST_GAPS.md](FIPS_AND_TEST_GAPS.md#automated-release-gates)).
+Coverage counts executed lines and branches only. Security boundaries,
 failure paths, cryptographic state transitions, transaction behavior, and platform primitives are
 tracked through the requirement-specific tests and external gates below.
 
@@ -107,7 +112,12 @@ ant -f build/build.xml test-all   # includes slow tests / suite matrix
 
 - Command dispatch, P1/P2 rejection, unprovisioned GET DATA (`6A82`)
 - Local PIN VERIFY / CHANGE REFERENCE DATA / RESET RETRY COUNTER status-word
-  behaviour (including several SP 800-73-5 “either 6A80 or 63Cx” cases)
+  behaviour (including several SP 800-73-5 “either 6A80 or 63Cx” cases), the disabled-PUK `6A88`
+  response, and retry-counter restoration after a PIN-history or platform rejection
+- GET RESPONSE bound to the class family of the initiating command: a GP SCP GET RESPONSE
+  continues only a response started under GP SCP (otherwise `6985`) and never releases a pending
+  PIV secure-messaging response
+- Rejection of non-minimal BER-TLV length encodings on every incoming TLV path
 - Config rejection of non-conformant PIN/PUK retry (>10) and PIN length bounds
 - Management key (9B) GENERAL AUTHENTICATE and CHANGE REFERENCE DATA
 - Selected GENERAL AUTHENTICATE paths (RSA key transport, ECC signature shapes,
@@ -211,7 +221,8 @@ state is preserved or cleared as SP 800-73 requires.
 Exercise every claimed combination of key reference, algorithm, legal role, and operation. This
 includes key `04`, keys `9A` through `9E`, every claimed retired key-management slot `82` through
 `95`, and extension key `F9` in a separate non-NPIVP matrix. Cover generation and import where each
-is supported, plus contact, contactless, and secure-messaging access policy. Sampled algorithms or
+is supported (`F9` is generation-only in every profile; `9A` and `9C` are generation-only in the FIPS
+profile), plus contact, contactless, and secure-messaging access policy. Sampled algorithms or
 one representative slot do not establish the other listing cells.
 
 ### Gate 3: SP 800-85B personalised-card evidence

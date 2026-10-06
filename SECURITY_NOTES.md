@@ -1,7 +1,156 @@
    # Security Notes
    
    This file contains misc security notes.
-   
+
+   ## Attestation Trust Model
+   The attestation chain is Root CA → Issuer SAM → card F9 → leaf
+   ([docs/ATTESTATION.md](docs/ATTESTATION.md), [docs/ISSUER_SAM.md](docs/ISSUER_SAM.md)). A leaf
+   proves that the attested key was generated inside a card whose F9 key the SAM certified, under
+   the OPID in the F9 subject. The guarantees and their limits:
+
+   - **F9 never leaves the card.** F9 is defined non-importable in every build, generated on the
+     card with a pairwise consistency test, and CHANGE REFERENCE DATA refuses F9 key elements `86`
+     and `87` (`6982`). Only keys generated on the card are attestable.
+   - **The card cannot verify the SAM signature.** It checks the F9 certificate profile, the OPID
+     syntax and Luhn digit, that the SubjectPublicKeyInfo is its own F9 key and that the SKI matches,
+     but it holds no trust anchor. Anyone holding the card's GlobalPlatform keys can load a
+     well-formed certificate signed by any key. Such a card chains to no trusted root, but the load
+     is irreversible. The issuance host must therefore run PKIX validation of root → SAM → F9 before
+     loading. Relying parties must always path-validate to the root and must not trust the OPID or
+     the F9 certificate served by the card on their own.
+   - **PROVE is an SCP-only, pre-activation signing oracle.** `84 F9 F9 01` signs
+     `"OPF9POP" ‖ N ‖ F9pub` with F9 for any 16..64-octet nonce N. It requires an encrypted and MACed
+     secure channel, is available only in authority state `GENERATED`, and is permanently disabled
+     once a certificate is accepted. The fixed prefix and the card's own public key make the message
+     unusable as a TBSCertificate (which starts with `0x30`), and F9 signs nothing else before
+     activation except an internal fixed-challenge self-test whose output is discarded. After
+     activation F9 signs only leaf TBSCertificates that the card builds itself.
+   - **F9 is immutable after activation.** Once `ACTIVE`, GENERATE, PROVE and certificate load for F9
+     return `6985`, and F9 cannot be deleted. The OPID and the F9 certificate cannot be changed. Re-rooting a card, or
+     replacing a mistaken certificate, requires deleting the applet instance, which destroys all
+     card state.
+   - **Activation wipes the card.** Loading the F9 certificate clears every other key (including
+     `9B` and `04`) and every data object's contents, so keys and data provisioned before activation
+     cannot be attested or carried over.
+   - **No revocation on the card.** The card has no clock and does not check validity dates or
+     revocation status; that is the relying party's responsibility. Leaf validity equals the F9
+     certificate validity.
+   - **SAM output is not channel-protected.** The SAM does not wrap responses. The authenticity of
+     ledger entries, issued certificates and signed STATUS comes from SAM signatures. Responses are
+     not confidential on the reader link, so no SAM response carries secret material.
+
+   ## Issuer SAM Metering
+   The SAM, not the host, owns OPID allocation and the quota:
+
+   - Issuance advances the LCG value, the issued counter, the event counter and the ledger chain head
+     in one transaction that re-checks the quota. The OPID is burned at that commit; a failure after
+     it returns `6500` and the OPID is never reused.
+   - `issued <= quota <= 10^8` is enforced. Quota increases require a root ECDSA signature over
+     `"OPSAMTOPUP1" ‖ samSki ‖ ts ‖ add`, bound to one SAM, and are accepted only with a timestamp
+     strictly greater than the last accepted one. Replays and older authorizations are rejected, and
+     applying a newer authorization invalidates every unapplied older one.
+   - BEGIN ISSUANCE, ISSUE, DECIPHER, VOID, CLOSE and TERMINATE require the secure channel
+     (C-DECRYPTION and C-MAC) and a verified operator PIN. The PIN has 5 tries and no unblock path; a
+     blocked PIN permanently ends issuance on that SAM. CHANGE OPERATOR PIN needs the secure channel
+     and the old PIN.
+   - CLOSE ends issuance: a CLOSED SAM refuses BEGIN ISSUANCE, ISSUE and TOP UP but still serves
+     STATUS, DECIPHER and VOID. TERMINATE signs its final entry, then clears the SAM key, the FF1
+     key and the LCG secrets.
+   - Every event is a signed, hash-chained ledger entry. The SAM keeps only the last entry and the
+     head; detection of a truncated or altered host ledger depends on comparing the host chain with
+     the SAM's current head.
+   - The SAM does not track F9 public keys. A repeated ISSUE for the same F9 key produces a second
+     certificate with a different OPID; ledger audits should flag duplicate `f9Ski` values.
+
+   ## OPID Sequence Secrecy
+   An OPID is `IIII ‖ E ‖ L` with `E = FF1_K(batch ‖ x_n, ASCII(IIII))` over 12 digits
+   ([docs/ATTESTATION.md](docs/ATTESTATION.md#card-identity-opid)). The two layers have separate
+   jobs:
+
+   - **The LCG provides uniqueness.** Each batch LCG `x' = (a·x + c) mod 10^8` has full period
+     (Hull–Dobell, checked by the SAM), so `x_n` never repeats within a batch, and batch numbers are
+     unique per IIN, so `batch ‖ x_n` never repeats within an IIN. FF1 is a permutation of
+     `[0, 10^12)`, so E, and hence the OPID, never repeats within an IIN.
+   - **The FF1 key provides unpredictability.** An LCG alone is predictable from a few consecutive
+     values (`x₂ − x₁ ≡ a·(x₁ − x₀) (mod 10^8)`). Larger LCG parameters would add nothing, because
+     only `a` and `c` modulo `10^8` affect the sequence. The published digits are FF1 ciphertext, so
+     without the key an observer of any number of OPIDs learns neither the batch, nor the issuance
+     order, nor the next OPID. The LCG parameters are kept secret as defence in depth, not as the
+     source of unpredictability.
+
+   Provisioning and exposure:
+
+   - The root station generates `a`, `c`, `x0` for each SAM and records them only in its owner-only
+     root batch record (`root/batches/IIII-NNNN-<samId>.lcg.json`); a different SAM of the same
+     batch gets a new LCG. The FF1 key lives on the root token and leaves it only wrapped. `sam
+     personalize` sends everything in one PUT PARAMETERS v5 command over the secure channel, with
+     the FF1 key wrapped (ECDH, X9.63 KDF, RFC 3394) to a one-time transport key the SAM generated
+     for that command. The SAM never chooses its parameters.
+   - The production station holds no root key, FF1 key or LCG parameters. It receives the SAM
+     through a root-signed handoff bundle whose only secrets (the handoff SCP keys and the operator
+     PIN) are wrapped to the station's handoff key, then rotates the SAM keys and changes the PIN.
+     Production batch records contain no LCG parameters; DECIPHER on the SAM is the production
+     station's only path from an OPID to its batch.
+   - The SAM never returns `a`, `c`, `x0`, the current `x`, the jump maps or the FF1 key. STATUS and
+     GET DATA PARAMS return only public fields and `paramsDigest`. The digest covers the FF1 key only
+     through a 16-octet check value (`SHA-256("OPSAMFPEKCV1" ‖ AES_K(0^16))`, truncated); the
+     root-signed SAM certificate carries only that digest. The staged PUT PARAMETERS packet is
+     zeroized after use, and TERMINATE clears the FF1 key, the LCG secrets and the jump maps.
+
+   **One FF1 key per IIN.** Every batch and every SAM of an IIN holds the same FF1 key, which is what
+   makes OPIDs unique across batches. The consequences:
+
+   - Compromise of any one SAM of an IIN, or of the root token, exposes the key for the whole IIN.
+     With it an attacker can decipher every OPID of that IIN to its batch number and LCG value,
+     and, with that batch's LCG parameters (on that SAM or in the root batch record), predict its
+     future OPIDs. The LCG parameters of other
+     batches stay unknown, so their future OPIDs are not predictable from the key alone, but their
+     batch numbers and issuance values are readable.
+   - The key cannot be rotated without changing the OPID mapping of the IIN. A new key under the
+     same IIN gives no uniqueness guarantee against OPIDs issued under the old key. Treat key
+     compromise as retiring the IIN for new issuance.
+   - Custody: the FF1 key is a sensitive object on the root token, beside the root signing key.
+     `producer iin import-key` moves a plaintext key file into the token and deletes the file;
+     `producer iin backup-key` exports it only wrapped to a P-256 backup key. Treat the root
+     station's LCG records as key material.
+   - DECIPHER is an operator-PIN and SCP gated oracle on every SAM of the IIN. It returns the batch
+     number of any well-formed OPID of the IIN (including other SAMs' OPIDs) and, for its own batch,
+     the issuance index. It never returns the LCG value or the key, but access to an operational SAM
+     is access to that batch-identification oracle.
+
+   An OPID is an identifier: do not use it as a secret or as proof that someone holds a card.
+
+   ## Power-Loss Atomicity
+   The F9 activation and every SAM event rely on Java Card transactions and on a persistent
+   activation marker:
+
+   - The PIV applet stores the F9 certificate while the visible certificate length is still zero,
+     commits the certificate offsets and `ACTIVATING` in one transaction, and completes the
+     idempotent activation wipe at the next SELECT or F9 command if power is lost.
+   - The SAM demotes, writes and promotes its lifecycle during personalization, and commits each
+     ledger event in one transaction before signing.
+
+   jCardEngine does not roll back persistent writes on `abortTransaction`, so the repository tests
+   cover these paths with white-box ordering tests, not with real tears. Power interruption around
+   SAM ISSUE, SAM TOP UP, SAM personalization and the PIV F9 certificate load must be qualified on
+   every target chip before production use.
+
+   ## PIN and PUK Retry Counters
+   CHANGE REFERENCE DATA and RESET RETRY COUNTER evaluate PIN history only after the current PIN or
+   PUK has matched, so a history match is never reported to a caller that has not proven the
+   reference data. A successful comparison resets the platform retry counter to its maximum. When
+   history or the platform then rejects the update, the applet returns the counter to its
+   pre-command value by presenting a guaranteed-wrong value once per lost decrement, and restores
+   the security status. `OwnerPIN` counter updates do not participate in transactions, so the
+   restore is not atomic: a tear part way through leaves the counter between its prior value and
+   the maximum, which only benefits a caller that already presented the correct value. A disabled
+   PUK returns `6A88` for both commands.
+
+   ## Response Chaining
+   A pending response is bound to the class family of the command that started it. A GP
+   SCP-protected GET RESPONSE continues only a response started under GP SCP and otherwise abandons
+   it with `6985`; it never releases a pending PIV secure-messaging response.
+
    ## ECDH Invalid Point Attack
    When an ECDH key agreement is carried out it is possible to derive a private key by initiating an ECDH using a carefully
    chosen set of points (ECC Public Keys) existing on a low order curve.
