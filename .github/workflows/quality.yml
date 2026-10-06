@@ -58,6 +58,13 @@ jobs:
             build/lib
           key: ivy-${{ runner.os }}-jdk17-${{ hashFiles('build/ivy.xml', 'build/ivysettings.xml') }}
 
+      # test-all ends with test-host, whose softhsm-tagged tests skip by assumption when the
+      # module at /usr/lib/softhsm/libsofthsm2.so is absent.
+      - name: Install SoftHSM2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2
+
       - name: Run CAP verification and complete test matrix
         env:
           SOURCE_DATE_EPOCH: "0"
