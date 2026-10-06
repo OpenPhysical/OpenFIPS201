@@ -296,7 +296,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     } catch (CardRuntimeException cre) {
       // At this point we are in a nondeterministic state so we will
       // clear both the public and private keys if they exist. The original exception is rethrown
-      // so an ISOException (such as the 6A84 consistency failure) keeps its status word: JCRE
+      // so an ISOException (such as the 6F00 consistency failure) keeps its status word: JCRE
       // 3.0.5 Section 3.3 returns ISO7816.SW_UNKNOWN for "any other exception".
       clear();
       throw cre;
