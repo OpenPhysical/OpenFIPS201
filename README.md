@@ -48,8 +48,8 @@ The OpenPhysical fork adds and changes the following applet behavior, tooling, a
   attestation enabled and disabled
 - a unified issuer tool for card discovery, CAP installation, SCP key management, PKCS#11 custody,
   a two-station issuance model (a root station that allocates batches and personalizes SAMs, and a
-  production station that produces cards through the SAM), top-up, receipts, ledger audit, trust
-  export and attestation verification
+  production station that produces cards through the SAM), top-up, receipts bound by hash into
+  the host ledger, ledger audit, trust export and attestation verification
 - Java Card 3.0.5 targeting with maintained build, test, coverage, and dependency tooling
 
 Detailed requirement mappings and residual limits are in
@@ -129,6 +129,14 @@ ant -f build/build.xml compile -Dvci.suite=CS7
 # FIPS profile, CS2, attestation disabled
 ant -f build/build.xml compile-fips -Dvci.suite=CS2 -Dattestation.enabled=false
 ```
+
+Each CAP contains only the code its variant uses. FIPS-only code (the power-up self-tests in
+`FipsPowerUpSelfTests`, the FIPS personalization readiness check, the OPACITY key-derivation
+known-answer test and the FIPS object and key access-mode checks) is compiled only into FIPS CAPs; attestation-only code
+(`PIVAttestation`, `DERWriter`, `DERValidator`, the activation wipe helpers) only into
+attestation-enabled CAPs. Every CAP's `.cap.properties` records `build.sha256`, the build identity
+of its preprocessed sources, which attestation-enabled CAPs also carry in every attestation leaf
+(see [Attestation](docs/ATTESTATION.md#openphysical-attestation-extension)).
 
 The FIPS profile controls applet configuration, required PIV objects, and permitted algorithms.
 Shared APDU syntax, TLV validation, and error handling are the same in both profiles. A FIPS-profile
@@ -228,16 +236,18 @@ other than `6F00`, and SP 800-73-5 codes take precedence where that specificatio
 
 | SW     | Administrative and configuration meaning                                                      |
 | ------ | --------------------------------------------------------------------------------------------- |
-| `6A80` | Malformed or invalid command data: a missing, wrong-length or invalid element in admin `PUT DATA`; an unknown operation; a configuration value that is empty, out of range, inconsistent, FIPS-forbidden or non-canonically encoded; a retired configuration tag; an imported key that fails its pairwise consistency test. |
-| `6A81` | Function not supported: an unimplemented configuration field (OCC policy, PUK restrict-update, restrict-enumeration, RSA CRT) or a mechanism the key object does not support. |
+| `6A80` | Malformed or invalid command data: a missing, wrong-length or invalid element in admin `PUT DATA`; an unknown operation; a configuration value that is empty, out of range, inconsistent, FIPS-forbidden or non-canonically encoded; a retired configuration tag; an imported key that fails its pairwise consistency test; an imported EC public point that is not a valid point on the key's curve (the partial import is cleared). |
+| `6A81` | Function not supported: an unimplemented configuration field (OCC policy, PUK restrict-update, restrict-enumeration, RSA CRT) or a mechanism the key object does not support; PUT DATA (`00/80/84 DB`) or GENERATE ASYMMETRIC KEY PAIR over contactless while contactless card management is not enabled (SP 800-73-5 Part 2 Section 3). |
 | `6A88` | Referenced data object or key not found, including delete of an object that does not exist. |
 | `6A89` | The key or data object being created already exists.                                          |
-| `6982` | Security status not satisfied: no secure channel with C-ENC and no authenticated admin key.    |
+| `6982` | Security status not satisfied: no secure channel with C-ENC and no authenticated admin key; GlobalPlatform secure-channel commands or proprietary `80 24`/`80 25` over contactless while contactless card management is not enabled. |
 | `6985` | Conditions of use not satisfied: wrong lifecycle state, e.g. structural changes after PERSONALIZE. |
 | `6F00` | Internal fault, including an on-card generated key that fails its pairwise consistency test.   |
 
 PIN and PUK commands follow SP 800-73-5 Part 2. For example, a new PIN that appears in the PIN
-history returns `6A80`.
+history returns `6A80`. The PUK is exactly 8 bytes (Part 2 Section 2.4.3). Until the issuer sets
+it, the PUK holds a random install-time value that no command accepts: a matching value fails as a
+mismatch (`63CX`, retry counter decremented).
 
 Give each created data object an explicit capacity. If the platform cannot delete persistent
 objects, the first successful write to a dynamically sized object sets the largest reusable buffer.
@@ -273,9 +283,10 @@ Secure messaging uses class byte `0C` and data objects `87`, `97`, `8E`, and `99
 rejects invalid secure-messaging structure or MACs with `6988`, a pairing-code mismatch with
 `6300`, and an unsatisfied protected-VCI requirement with `6982`.
 
-On-card ECDH point validation uses software multi-precision arithmetic. Qualify P-256 and P-384
-GENERAL AUTHENTICATE latency, reader timeouts, reset behavior, and interrupted transactions on each
-target card platform before deployment.
+On-card EC point validation (ECDH peer points and imported public points) uses software
+multi-precision arithmetic. Qualify CS2 and CS7 session establishment and P-256
+and P-384 GENERAL AUTHENTICATE latency, reader timeouts, reset behavior, and interrupted
+transactions on each target card platform before deployment.
 
 See [VCI Conformance](tools/piv_test_runner/VCI_CONFORMANCE.md) for the clause map and vector runner.
 
@@ -318,7 +329,9 @@ accepted as inactive settings.
 
 Incoming TLV lengths use BER definite form with at most two subsequent length bytes and must use the
 shortest valid encoding; indefinite and non-minimal lengths (for example `81 05` or `82 00 80`) are
-rejected with `6A80` (`6988` for the data objects of a secure-messaging command). The applet also rejects bytes after the declared top-level value. Issuer
+rejected with `6A80` (`6988` for the data objects of a secure-messaging command, including the
+streamed `87` object, which also destroys the session). The applet also rejects bytes after the
+declared top-level value, and always emits the shortest length form in its responses. Issuer
 software must send canonical BER-TLV encodings.
 
 ## Repository Layout

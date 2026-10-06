@@ -39,9 +39,6 @@ abstract class PIVKeyObject extends PIVObject {
   // set at once.
   //
 
-  // Undefined role
-  static final byte ROLE_NONE = (byte) 0x00;
-
   // This key can be used for card/host authentication
   // SYM: Supported for all types
   // RSA: Not supported (RSA authentication is just signing)
@@ -121,6 +118,9 @@ abstract class PIVKeyObject extends PIVObject {
 
   protected static final short LENGTH_EXTENDED_HEADERS = (short) 4;
 
+  // The applet instance's cryptographic engines, which perform every operation with this key.
+  protected final PIVCrypto crypto;
+
   protected PIVKeyObject(
       byte id,
       byte modeContact,
@@ -128,13 +128,15 @@ abstract class PIVKeyObject extends PIVObject {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes) {
+      byte attributes,
+      PIVCrypto crypto) {
 
     super(id, modeContact, modeContactless, adminKey, LENGTH_EXTENDED_HEADERS);
 
     header[HEADER_MECHANISM] = mechanism;
     header[HEADER_ROLE] = role;
     header[HEADER_ATTRIBUTES] = attributes;
+    this.crypto = crypto;
   }
 
   static PIVKeyObject create(
@@ -145,6 +147,7 @@ abstract class PIVKeyObject extends PIVObject {
       byte mechanism,
       byte role,
       byte attributes,
+      PIVCrypto crypto,
       ECCurveRegistry curves)
       throws ISOException {
     switch (mechanism) {
@@ -154,20 +157,28 @@ abstract class PIVKeyObject extends PIVObject {
       case PIV.ID_ALG_AES_192:
       case PIV.ID_ALG_AES_256:
         return PIVKeyObjectSYM.create(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
 
       case PIV.ID_ALG_RSA_1024:
       case PIV.ID_ALG_RSA_2048:
       case PIV.ID_ALG_RSA_3072:
         return PIVKeyObjectRSA.create(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
 
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
       case PIV.ID_ALG_ECC_CS2:
       case PIV.ID_ALG_ECC_CS7:
         return PIVKeyObjectECC.create(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
+            id,
+            modeContact,
+            modeContactless,
+            adminKey,
+            mechanism,
+            role,
+            attributes,
+            crypto,
+            curves);
 
       default:
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
@@ -187,9 +198,11 @@ abstract class PIVKeyObject extends PIVObject {
     return header[HEADER_ROLE];
   }
 
+  // #if ATTESTATION_ENABLED
   final byte getAttributes() {
     return header[HEADER_ATTRIBUTES];
   }
+  // #endif
 
   final boolean hasRole(byte role) {
     return ((header[HEADER_ROLE] & role) == role);

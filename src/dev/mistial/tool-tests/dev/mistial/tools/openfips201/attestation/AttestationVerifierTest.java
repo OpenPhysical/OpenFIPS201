@@ -421,7 +421,118 @@ class AttestationVerifierTest {
     assertThrows(IllegalArgumentException.class, () -> F9SubjectNames.extractOpid(template));
   }
 
+  // ---- build and card measurements ----
+
+  @Test
+  void measurementsAreReportedAndSkippedWithoutExpectations() throws Exception {
+    VerificationReport report =
+        AttestationVerifier.verify(AttestationTestChains.build().request().build());
+    assertValid(report);
+    assertEquals(Status.SKIP, status(report, AttestationVerifier.F9_EXPECT_CAP));
+    assertEquals(Status.SKIP, status(report, AttestationVerifier.F9_EXPECT_CPLC));
+    assertEquals(Status.SKIP, status(report, AttestationVerifier.LEAF_EXPECT_BUILD));
+    String issuance = detail(report, AttestationVerifier.F9_ISSUANCE_EXTENSION);
+    assertTrue(issuance.contains("capSha256 " + hex(AttestationTestChains.CAP_SHA256)), issuance);
+    assertTrue(issuance.contains("cplcSha256 " + hex(AttestationTestChains.CPLC_SHA256)), issuance);
+    String leaf = detail(report, AttestationVerifier.LEAF_EXTENSION);
+    assertTrue(leaf.contains("buildSha256 " + hex(AttestationTestChains.BUILD_SHA256)), leaf);
+  }
+
+  @Test
+  void matchingMeasurementsPass() throws Exception {
+    VerificationReport report =
+        AttestationVerifier.verify(
+            AttestationTestChains.build()
+                .request()
+                .expectCapSha256(AttestationTestChains.CAP_SHA256)
+                .expectCplcSha256(AttestationTestChains.CPLC_SHA256)
+                .expectBuildSha256(AttestationTestChains.BUILD_SHA256)
+                .build());
+    assertValid(report);
+    assertEquals(Status.PASS, status(report, AttestationVerifier.F9_EXPECT_CAP));
+    assertEquals(Status.PASS, status(report, AttestationVerifier.F9_EXPECT_CPLC));
+    assertEquals(Status.PASS, status(report, AttestationVerifier.LEAF_EXPECT_BUILD));
+  }
+
+  @Test
+  void mismatchedCapHashFails() throws Exception {
+    byte[] other = AttestationTestChains.CAP_SHA256.clone();
+    other[31] ^= 1;
+    assertFails(
+        AttestationVerifier.verify(
+            AttestationTestChains.build().request().expectCapSha256(other).build()),
+        AttestationVerifier.F9_EXPECT_CAP);
+  }
+
+  @Test
+  void mismatchedCplcHashFails() throws Exception {
+    byte[] other = AttestationTestChains.CPLC_SHA256.clone();
+    other[0] ^= 1;
+    assertFails(
+        AttestationVerifier.verify(
+            AttestationTestChains.build().request().expectCplcSha256(other).build()),
+        AttestationVerifier.F9_EXPECT_CPLC);
+  }
+
+  @Test
+  void mismatchedBuildHashFails() throws Exception {
+    byte[] other = AttestationTestChains.BUILD_SHA256.clone();
+    other[7] ^= 1;
+    assertFails(
+        AttestationVerifier.verify(
+            AttestationTestChains.build().request().expectBuildSha256(other).build()),
+        AttestationVerifier.LEAF_EXPECT_BUILD);
+  }
+
+  @Test
+  void expectedBuildWithoutLeafFails() throws Exception {
+    Chain chain = AttestationTestChains.build();
+    VerificationReport report =
+        AttestationVerifier.verify(
+            VerificationRequest.builder()
+                .anchor(chain.root)
+                .samCertificate(chain.sam)
+                .f9Certificate(chain.f9)
+                .at(AT)
+                .expectBuildSha256(AttestationTestChains.BUILD_SHA256)
+                .build());
+    assertFails(report, AttestationVerifier.LEAF_EXPECT_BUILD);
+  }
+
+  @Test
+  void versionOneExtensionsAreRejected() throws Exception {
+    Options issuance = new Options();
+    issuance.issuanceVersion = 1;
+    assertFails(build(issuance), AttestationVerifier.F9_ISSUANCE_EXTENSION);
+    Options leaf = new Options();
+    leaf.leafVersion = 1;
+    assertFails(build(leaf), AttestationVerifier.LEAF_EXTENSION);
+    Options shortHash = new Options();
+    shortHash.buildSha256 = new byte[31];
+    assertFails(build(shortHash), AttestationVerifier.LEAF_EXTENSION);
+  }
+
+  @Test
+  void measurementLengthsAreEnforcedByTheRequest() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> VerificationRequest.builder().expectCapSha256(new byte[31]));
+  }
+
   // ---- helpers ----
+
+  private static String detail(VerificationReport report, String id) {
+    for (Entry entry : report.checks()) {
+      if (entry.checkId().equals(id)) {
+        return entry.detail();
+      }
+    }
+    throw new AssertionError("no entry " + id);
+  }
+
+  private static String hex(byte[] value) {
+    return org.bouncycastle.util.encoders.Hex.toHexString(value).toUpperCase(java.util.Locale.ROOT);
+  }
 
   private static VerificationReport build(Options options) throws Exception {
     return AttestationVerifier.verify(AttestationTestChains.build(options).request().build());

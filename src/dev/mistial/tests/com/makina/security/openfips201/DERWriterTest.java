@@ -20,19 +20,17 @@ class DERWriterTest {
 
   private final JavaCardEngine engine = JavaCardEngine.create();
   private AutoCloseable context;
+  private DERWriter writer;
 
   @BeforeEach
   void enterEngine() throws Exception {
     Method asCurrent = engine.getClass().getMethod("asCurrent");
     context = (AutoCloseable) asCurrent.invoke(engine);
-    resetSingletons();
-    DERWriter.initialize();
+    writer = new DERWriter();
   }
 
   @AfterEach
   void leaveEngine() throws Exception {
-    // Later simulator installs allocate fresh writers in their own engine.
-    resetSingletons();
     context.close();
   }
 
@@ -55,7 +53,6 @@ class DERWriterTest {
 
   @Test
   void positiveIntegerRejectsEmptyMagnitude() {
-    DERWriter writer = DERWriter.getInstance();
     byte[] out = new byte[8];
     writer.init(out, (short) 0);
     ISOException thrown =
@@ -67,7 +64,6 @@ class DERWriterTest {
 
   @Test
   void nestedStructuresCompactToShortestLength() {
-    DERWriter writer = DERWriter.getInstance();
     byte[] out = new byte[0x200];
     writer.init(out, (short) 0);
     writer.begin((byte) 0x30);
@@ -92,7 +88,6 @@ class DERWriterTest {
 
   @Test
   void overflowFailsClosed() {
-    DERWriter writer = DERWriter.getInstance();
     byte[] out = new byte[4];
     writer.init(out, (short) 0);
     ISOException thrown =
@@ -102,19 +97,29 @@ class DERWriterTest {
 
   @Test
   void cursorStateIsTransient() throws Exception {
-    for (DERWriter writer :
-        new DERWriter[] {DERWriter.getInstance(), DERWriter.getNestedInstance()}) {
-      assertNotEquals(
-          JCSystem.NOT_A_TRANSIENT_OBJECT, JCSystem.isTransient(field(writer, "state")));
-      assertNotEquals(
-          JCSystem.NOT_A_TRANSIENT_OBJECT, JCSystem.isTransient(field(writer, "bufferRef")));
-    }
+    assertNotEquals(JCSystem.NOT_A_TRANSIENT_OBJECT, JCSystem.isTransient(field(writer, "state")));
+    assertNotEquals(
+        JCSystem.NOT_A_TRANSIENT_OBJECT, JCSystem.isTransient(field(writer, "bufferRef")));
   }
 
-  private static byte[] integer(int... magnitude) {
+  @Test
+  void writersKeepIndependentState() {
+    DERWriter other = new DERWriter();
+    byte[] outer = new byte[0x20];
+    byte[] inner = new byte[0x20];
+    writer.init(outer, (short) 0);
+    writer.begin((byte) 0x30);
+    other.init(inner, (short) 0);
+    other.writeIntegerByte((byte) 0x05);
+    writer.write((byte) 0x05);
+    writer.end();
+    assertArrayEquals(new byte[] {0x30, 0x01, 0x05}, Arrays.copyOf(outer, writer.getOffset()));
+    assertArrayEquals(new byte[] {0x02, 0x01, 0x05}, Arrays.copyOf(inner, other.getOffset()));
+  }
+
+  private byte[] integer(int... magnitude) {
     byte[] in = new byte[magnitude.length];
     for (int i = 0; i < magnitude.length; i++) in[i] = (byte) magnitude[i];
-    DERWriter writer = DERWriter.getInstance();
     byte[] out = new byte[0x20];
     writer.init(out, (short) 0);
     writer.writePositiveInteger(in, (short) 0, (short) in.length);
@@ -125,13 +130,5 @@ class DERWriterTest {
     Field field = target.getClass().getDeclaredField(name);
     field.setAccessible(true);
     return field.get(target);
-  }
-
-  private static void resetSingletons() throws Exception {
-    for (String name : new String[] {"instance", "nestedInstance"}) {
-      Field field = DERWriter.class.getDeclaredField(name);
-      field.setAccessible(true);
-      field.set(null, null);
-    }
   }
 }

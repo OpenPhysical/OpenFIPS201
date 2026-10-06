@@ -19,11 +19,15 @@ import org.globalplatform.GPSystem;
 /** Handles proprietary administration, configuration, deletion, version, and status commands. */
 final class PIVAdministrationCommandHandler {
   private final PIV owner;
+  private final PIVCrypto crypto;
+  private final TLVReader tlvReader;
+  private final TLVWriter tlvWriter;
   private final Config config;
   private final PIVSecurityProvider cspPIV;
   private final PIVDataStore dataStore;
   private final ChainBuffer chainBuffer;
   private final PIVSecureMessaging secureMessaging;
+  private final ECPointValidator ecPointValidator;
   private final byte[] scratch;
   // #if ATTESTATION_ENABLED
   private final PIVAttestation attestation;
@@ -31,11 +35,15 @@ final class PIVAdministrationCommandHandler {
 
   PIVAdministrationCommandHandler(
       PIV owner,
+      PIVCrypto crypto,
+      TLVReader tlvReader,
+      TLVWriter tlvWriter,
       Config config,
       PIVSecurityProvider cspPIV,
       PIVDataStore dataStore,
       ChainBuffer chainBuffer,
       PIVSecureMessaging secureMessaging,
+      ECPointValidator ecPointValidator,
       byte[] scratch
           // #if ATTESTATION_ENABLED
           ,
@@ -43,11 +51,15 @@ final class PIVAdministrationCommandHandler {
       // #endif
       ) {
     this.owner = owner;
+    this.crypto = crypto;
+    this.tlvReader = tlvReader;
+    this.tlvWriter = tlvWriter;
     this.config = config;
     this.cspPIV = cspPIV;
     this.dataStore = dataStore;
     this.chainBuffer = chainBuffer;
     this.secureMessaging = secureMessaging;
+    this.ecPointValidator = ecPointValidator;
     this.scratch = scratch;
     // #if ATTESTATION_ENABLED
     this.attestation = attestation;
@@ -121,9 +133,11 @@ final class PIVAdministrationCommandHandler {
     }
     // The FIPS certification profile may enter its irreversible operational
     // lifecycle only after its SP 800-73-5 Part 1, Table 1 profile is ready.
-    if (FipsPolicy.ENABLED && !owner.isFipsPersonalizationReady()) {
+    // #if FIPS_MODE
+    if (!owner.isFipsPersonalizationReady()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
+    // #endif
     if (!GPSystem.setCardContentState(APP_STATE_PERSONALIZED)) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
@@ -249,7 +263,7 @@ final class PIVAdministrationCommandHandler {
     reader.moveNext();
 
     // PRE-CONDITION 11 - The supplied mechanism must be supported by this instance
-    if (!PIVCrypto.supportsMechanism(keyMechanism)) {
+    if (!crypto.supportsMechanism(keyMechanism)) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
@@ -374,7 +388,8 @@ final class PIVAdministrationCommandHandler {
     // SECURITY PRE-CONDITION
     //
 
-    requireAdministrativeInterface();
+    // Card management must be permitted on the current interface
+    owner.requireAdministrativeInterface(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     // The command must have been sent over SCP with CEnc+CMac
     if (!cspPIV.getIsSecureChannel()) {
@@ -396,7 +411,7 @@ final class PIVAdministrationCommandHandler {
     // the original buffer still contains the APDU header.
 
     // Initialise our TLV reader
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(scratch, ZERO, length);
 
     //
@@ -495,19 +510,6 @@ final class PIVAdministrationCommandHandler {
   }
 
   /**
-   * Refuses a proprietary administrative command on an interface where administration is not
-   * permitted ({@code OPTION_RESTRICT_CONTACTLESS_ADMIN}). {@link #putDataAdmin} and {@link
-   * #changeReferenceDataAdmin} apply it before chaining or authorization, so the rule holds for
-   * every CLA/INS form that reaches them (INS DB, 24 and 25), whether authorized by SCP or by a
-   * prior admin-key authentication.
-   */
-  private void requireAdministrativeInterface() {
-    if (!owner.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-  }
-
-  /**
    * This method is the equivalent of the CHANGE REFERENCE DATA command, however it is intended to
    * operate on key references that are NOT listed in SP 800-73-5. This is the primary method by
    * which administrative key references are updated and is intended to fill in the gap in PIV that
@@ -534,7 +536,10 @@ final class PIVAdministrationCommandHandler {
     // to be changed by the PIV Card Application CHANGE REFERENCE DATA, if PIV Card Application will
     // only perform the command with other key references if the requirements specified in Section
     // 2.9.2 of FIPS 201-2 are satisfied.
-    requireAdministrativeInterface();
+    // The interface rule applies before chaining or authorization, so it holds for every CLA/INS
+    // form that reaches this handler (INS 24 and 25), whether authorized by SCP or by a prior
+    // administrative key authentication.
+    owner.requireAdministrativeInterface(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     //
     // COMMAND CHAIN HANDLING
@@ -605,8 +610,8 @@ final class PIVAdministrationCommandHandler {
         // - No format verification required is for the PUK
 
         // Update the PUK
-        // SP 800-73-5 Part 2 Section 2.4 fixes the PUK wire value to eight bytes.
-        if (length != config.readValue(Config.CONFIG_PUK_LENGTH)) {
+        // SP 800-73-5 Part 2 Section 2.4.3: "The PUK SHALL be 8 bytes in length".
+        if (length != Config.LENGTH_PUK) {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
         cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, (byte) length, ZERO);
@@ -652,7 +657,7 @@ final class PIVAdministrationCommandHandler {
       }
 
       // Set up our TLV reader
-      TLVReader reader = TLVReader.getInstance();
+      TLVReader reader = tlvReader;
       reader.init(scratch, ZERO, length);
 
       // PRE-CONDITION 3 - The parent tag MUST be of type SEQUENCE
@@ -738,8 +743,20 @@ final class PIVAdministrationCommandHandler {
         // clears the key after any transaction has closed, so the cleared state is what persists.
         short failure = ZERO;
         try {
-          key.updateElement(elementTag, scratch, elementOffset, elementLength);
-          if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
+          // An imported public point passes the same canonical validation as a peer point in key
+          // agreement (SP 800-56A Section 5.6.2.3.3). A point that is not on the key's curve is
+          // an "Incorrect parameter in command data field" (SP 800-73-5 Part 2 Section 3.2.2,
+          // '6A80') and clears the import like any other refused key material. A wrong length is
+          // rejected with '6700' before the key is touched.
+          if (elementTag == PIVKeyObjectECC.ELEMENT_ECC_POINT
+              && key instanceof PIVKeyObjectECC
+              && !((PIVKeyObjectECC) key)
+                  .isValidPublicPoint(scratch, elementOffset, elementLength, ecPointValidator)) {
+            failure = ISO7816.SW_WRONG_DATA;
+          } else {
+            key.updateElement(elementTag, scratch, elementOffset, elementLength);
+          }
+          if (failure == ZERO && elementTag != PIVKeyObject.ELEMENT_CLEAR) {
             if (importedKey.isLastImportedPart(elementTag)
                 && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
               // An inconsistent imported pair is incorrect command data: ISO/IEC 7816-4 Table 7
@@ -946,7 +963,7 @@ final class PIVAdministrationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
     Util.arrayCopyNonAtomic(buffer, offset, scratch, ZERO, length);
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(scratch, ZERO, length);
 
     // PRE-CONDITION 1 - The 'TAG' data element must be present
@@ -976,7 +993,7 @@ final class PIVAdministrationCommandHandler {
     // An assumption is made here that all responses can fit within a short length TLV object
     // so we put a sanity check at the end to make sure this is the case.
     //
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     writer.init(scratch, ZERO, TLV.LENGTH_1BYTE_MAX, PIV.CONST_TAG_DATA);
 
     switch (id) {

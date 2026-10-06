@@ -79,32 +79,55 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
       SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC;
+  // #if FIPS_MODE
   private static final byte FIPS_STATE_PASSED = (byte) 1;
   private static final byte FIPS_STATE_FAILED = (byte) 2;
+  // #endif
   private final PIV piv;
+  private final TLVReader tlvReader;
+  // #if FIPS_MODE
   private final byte[] fipsState;
+  // #endif
   // ISO 7816 transport blocks fit 256 bytes. Preserve a prefix when the final receive must
   // reuse the start of CDATA rather than the short remaining tail of the APDU array.
   static final short MAX_SHORT_APDU_RESPONSE_LENGTH = (short) 256;
-  static final short MAX_SHORT_APDU_DATA_LENGTH = (short) (MAX_SHORT_APDU_RESPONSE_LENGTH - 1);
   private final byte[] receivePrefix;
 
   //
   // Persistent state definitions
   //
 
+  /**
+   * Allocates every object the instance uses, including the cryptographic engines and the TLV
+   * codecs it shares among its handlers.
+   *
+   * <p>The shared services belong to this instance and no static field references them. JCRE 3.0.5
+   * Section 11.3.4.2 refuses deleting an applet instance when "An object owned by the applet
+   * instance is referenced from a static field on any package on the card", so instance ownership
+   * keeps deletion possible without any release step in {@link #uninstall()}. JC 3.0.5 API
+   * AppletEvent states "The Java Card runtime environment will not rollback state automatically if
+   * applet deletion fails"; since uninstall() changes nothing, an instance whose deletion fails
+   * keeps working unchanged, and a second instance of the package never shares these objects.
+   */
   public OpenFIPS201() {
 
-    // Create our PIV provider
-    piv = new PIV();
+    // Create the shared services, then our PIV provider
+    PIVCrypto crypto = new PIVCrypto();
+    tlvReader = new TLVReader();
+    piv = new PIV(crypto, tlvReader, new TLVWriter());
+    // #if FIPS_MODE
     fipsState = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_RESET);
+    // #endif
     receivePrefix =
         JCSystem.makeTransientByteArray(MAX_SHORT_APDU_RESPONSE_LENGTH, JCSystem.CLEAR_ON_DESELECT);
+    // #if FIPS_MODE
     ensureFipsOperational();
+    // #endif
   }
 
+  // #if FIPS_MODE
   private void ensureFipsOperational() {
-    if (!FipsPolicy.ENABLED || fipsState[0] == FIPS_STATE_PASSED) return;
+    if (fipsState[0] == FIPS_STATE_PASSED) return;
     if (fipsState[0] == FIPS_STATE_FAILED) {
       ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
@@ -112,28 +135,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     if (!piv.runFipsSelfTests()) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     fipsState[0] = FIPS_STATE_PASSED;
   }
-
-  /**
-   * Recreates the package-wide engines and codec singletons after {@link #uninstall()} released
-   * them.
-   *
-   * <p>JCRE 3.0.5 Section 11.3.4.2 refuses deleting an applet instance when "An object owned by the
-   * applet instance is referenced from a static field on any package on the card", so uninstall()
-   * must release these statics. The deletion can still fail, and JC 3.0.5 API AppletEvent states
-   * "The Java Card runtime environment will not rollback state automatically if applet deletion
-   * fails"; another instance of this package also shares the statics. Either instance therefore
-   * rebuilds them on its next command, and the rebuilt engines repeat the FIPS self-tests before
-   * first use. Command processing allocates only on this path, which follows an uninstall().
-   */
-  private void restoreSharedServices() {
-    if (PIVCrypto.isInitialised()) return;
-    PIVCrypto.init();
-    TLVReader.getInstance();
-    TLVWriter.getInstance();
-    DERWriter.initialize();
-    // A failed self-test stays latched until reset; a passed one is repeated on the new engines.
-    if (fipsState[0] == FIPS_STATE_PASSED) fipsState[0] = (byte) 0;
-  }
+  // #endif
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {
     byte aidLength = (bArray == null || bArray.length == 0) ? (byte) 0 : bArray[bOffset];
@@ -199,15 +201,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
   }
 
+  /**
+   * Prepares for deletion. Nothing is required: every object this instance allocated is referenced
+   * only from the instance itself, never from a static field, so JCRE 3.0.5 Section 11.3.4.2 does
+   * not block the deletion and the objects are released with the instance. Leaving the state
+   * untouched also keeps the instance fully operational if the deletion then fails.
+   */
   @Override
   public void uninstall() {
-    // Release package-level singleton references so cards that enforce object reachability can
-    // delete this applet instance and package cleanly. A surviving instance rebuilds them through
-    // restoreSharedServices().
-    TLVReader.terminate();
-    TLVWriter.terminate();
-    DERWriter.terminate();
-    PIVCrypto.terminate();
+    // Intentionally empty: there is no static reference to release.
   }
 
   /**
@@ -274,8 +276,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   @Override
   public void process(APDU apdu) {
 
-    restoreSharedServices();
+    // #if FIPS_MODE
     ensureFipsOperational();
+    // #endif
 
     //
     // Handle incoming APDUs
@@ -634,7 +637,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   private boolean hasOpacityCase1aTemplate(byte[] buffer, short offset, short length) {
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(buffer, offset, length);
     if (!reader.match(PIV.CONST_TAG_AUTH_TEMPLATE) || !reader.moveInto()) return false;
     if (!reader.match(PIV.CONST_TAG_AUTH_CHALLENGE) || reader.isNull() || !reader.moveNext()) {
@@ -656,10 +659,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      * PRE-CONDITIONS
      */
 
-    // PRE-CONDITION 1 - Secure Channel access must be permitted on the current interface
-    if (!piv.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
+    // PRE-CONDITION 1 - The secure channel is a card management session, so card management must
+    // be permitted on the current interface
+    piv.requireAdministrativeInterface(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     /*
      * EXECUTION STEPS
@@ -786,11 +788,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     final byte CONST_P2 = (byte) 0xFF;
 
     byte[] buffer = apdu.getBuffer();
-    // SP 800-73-5 Part 2, Table 2 specifies 6A81 when PUT DATA is not available on the
-    // contactless interface. Issuer-enabled contactless card management is the stated exception.
-    if (piv.mustRejectContactlessPutData()) {
-      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
-    }
+    // SP 800-73-5 Part 2, Table 2 marks PUT DATA "No" for the contactless interface, which takes
+    // '6A 81'. Issuer-enabled contactless card management is the stated exception. This is the
+    // interface rule for both the interindustry and the proprietary forms.
+    piv.requireAdministrativeInterface(ISO7816.SW_FUNC_NOT_SUPPORTED);
 
     boolean proprietary =
         isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
@@ -810,12 +811,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      * PRE-CONDITIONS
      */
 
-    // PRE-CONDITION 1 - Administrative access must be permitted on the current interface
-    if (!piv.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
-    // PRE-CONDITION 2 - The P1 value must be equal to the constant CONST_P1
+    // PRE-CONDITION 1 - The P1 value must be equal to the constant CONST_P1
     if (buffer[ISO7816.OFFSET_P1] != CONST_P1) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
@@ -1068,9 +1064,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // command can be performed over the contactless interface in support of card management".
     // Contactless card management is an issuer opt-in that the FIPS profile never allows. Under
     // that opt-in GENERATE proceeds to its administrative access check.
-    if (piv.isContactless() && (FipsPolicy.ENABLED || !piv.isInterfacePermittedForAdmin())) {
+    if (FipsPolicy.ENABLED && piv.isContactless()) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
+    piv.requireAdministrativeInterface(ISO7816.SW_FUNC_NOT_SUPPORTED);
 
     // SP 800-73-5 Part 2 Section 3.3.2 limits the interindustry command to these key
     // references. Proprietary administration may generate extension slots such as retired keys.

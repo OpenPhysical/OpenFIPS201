@@ -54,8 +54,18 @@ public interface SamClient {
   /** BEGIN ISSUANCE (84); returns the 32-octet nonce. */
   byte[] beginIssuance();
 
-  /** ISSUE F9 (2A P2=F9) {@code 86 F9pub | 9E PoP | 93 Validity}; returns the raw response. */
-  byte[] issue(byte[] f9Point, byte[] proofOfPossession, byte[] validityDer);
+  /**
+   * ISSUE F9 (2A P2=F9) {@code 86 F9pub | 9E PoP | 93 Validity | 94 20 capSha256 | 95 20
+   * cplcSha256}; returns the raw response. capSha256 is the SHA-256 of the PIV CAP file installed
+   * on the card and cplcSha256 the SHA-256 of the card's CPLC data; the SAM binds both into the F9
+   * issuance extension and the ISSUE ledger entry.
+   */
+  byte[] issue(
+      byte[] f9Point,
+      byte[] proofOfPossession,
+      byte[] validityDer,
+      byte[] capSha256,
+      byte[] cplcSha256);
 
   /** TOP UP (32) {@code 80 ts | 81 add | 9E rootSig}; returns {@code 71 entry 72 sig}. */
   byte[] topUp(long timestamp, long add, byte[] rootSignature);

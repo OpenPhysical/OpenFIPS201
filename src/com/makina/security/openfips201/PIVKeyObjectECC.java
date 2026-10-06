@@ -77,9 +77,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       byte mechanism,
       byte role,
       byte attributes,
+      PIVCrypto crypto,
       ECParams params)
       throws ISOException {
-    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
     this.params = params;
     if (params == null) {
       // No curve is registered for this mechanism: ISO/IEC 7816-4 Table 7 '6A81' (function not
@@ -106,6 +107,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       byte mechanism,
       byte role,
       byte attributes,
+      PIVCrypto crypto,
       ECCurveRegistry curves) {
     validateRoleAttributes(role, attributes);
     return new PIVKeyObjectECC(
@@ -116,7 +118,32 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         mechanism,
         role,
         attributes,
+        crypto,
         curves.forMechanism(mechanism));
+  }
+
+  /**
+   * Validates a public point presented for import as {@link #ELEMENT_ECC_POINT}.
+   *
+   * <p>The point is checked by the same {@link ECPointValidator} rule that GENERAL AUTHENTICATE key
+   * agreement and OPACITY apply to a peer point: the uncompressed encoding {@code 04 || X || Y}
+   * (ANSI X9.62, SEC 1 Section 2.3.3), coordinates in {@code [0, p-1]} and the curve equation (SP
+   * 800-56A Section 5.6.2.3.3 partial public-key validation).
+   *
+   * @param buffer the buffer holding the encoded point
+   * @param offset the first octet of the encoded point
+   * @param length the length of the encoded point
+   * @param validator the canonical point validator
+   * @return true if the point is a valid public key on this key's curve
+   * @throws ISOException {@link ISO7816#SW_WRONG_LENGTH} if {@code length} is not the uncompressed
+   *     encoding length for this key's curve
+   */
+  boolean isValidPublicPoint(
+      byte[] buffer, short offset, short length, ECPointValidator validator) {
+    if (length != marshaledPubKeyLen) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+    return validator.isValid(buffer, offset, length, params);
   }
 
   /**
@@ -127,7 +154,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
    * <ul>
    *   <li>If the card does not support ObjectDeletion, repeatedly calling this method may exhaust
    *       NV RAM.
-   *   <li>The ELEMENT_ECC_POINT element must be formatted as an octet string as per ANSI X9.62.
+   *   <li>The ELEMENT_ECC_POINT element must have been accepted by {@link #isValidPublicPoint}.
    *   <li>The ELEMENT_ECC_SECRET must be formatted as a big-endian, right-aligned big number.
    *   <li>Updating only one element may render the card in a non-deterministic state
    * </ul>
@@ -142,14 +169,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
     switch (element) {
       case ELEMENT_ECC_POINT:
+        // The encoding, coordinate range and curve membership are the caller's precondition,
+        // established by isValidPublicPoint() before the element is written.
         if (length != marshaledPubKeyLen) {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-          return; // Keep static analyser happy
-        }
-
-        // Only uncompressed points are supported
-        if (buffer[offset] != ECPointValidator.POINT_UNCOMPRESSED) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return; // Keep static analyser happy
         }
 
@@ -240,7 +263,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   }
 
   @Override
-  short generate(byte[] scratch, short offset) throws CardRuntimeException {
+  short generate(TLVWriter writer, byte[] scratch, short offset) throws CardRuntimeException {
 
     short length = 0;
     try {
@@ -262,8 +285,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
 
-      TLVWriter writer = TLVWriter.getInstance();
-
       // We know that the worst-case of this will fit into a short-form length.
       writer.init(scratch, offset, TLV.LENGTH_1BYTE_MAX, CONST_TAG_RESPONSE);
       writer.writeTag(ELEMENT_ECC_POINT);
@@ -276,7 +297,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     } catch (CardRuntimeException cre) {
       // At this point we are in a nondeterministic state so we will
       // clear both the public and private keys if they exist. The original exception is rethrown
-      // so an ISOException (such as the 6A84 consistency failure) keeps its status word: JCRE
+      // so an ISOException (such as the 6F00 consistency failure) keeps its status word: JCRE
       // 3.0.5 Section 3.3 returns ISO7816.SW_UNKNOWN for "any other exception".
       clear();
       throw cre;
@@ -288,14 +309,14 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   @Override
   boolean pairwiseConsistencyTest(byte[] scratch, short offset) {
     if ((getRoles() & ROLE_KEY_ESTABLISH) != (byte) 0) {
-      return PIVCrypto.pairwiseAgreementTest(privateKey, publicKey, params, scratch, offset);
+      return crypto.pairwiseAgreementTest(privateKey, publicKey, params, scratch, offset);
     }
     short hashLength = getKeyLengthBytes();
     javacard.framework.Util.arrayFillNonAtomic(scratch, offset, hashLength, (byte) 0x5A);
     short signatureOffset = (short) (offset + hashLength);
     short signatureLength =
-        PIVCrypto.doSign(privateKey, scratch, offset, hashLength, scratch, signatureOffset);
-    return PIVCrypto.doVerify(
+        crypto.doSign(privateKey, scratch, offset, hashLength, scratch, signatureOffset);
+    return crypto.doVerify(
         publicKey, scratch, offset, hashLength, scratch, signatureOffset, signatureLength);
   }
 
@@ -416,7 +437,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       short outOffset,
       ECPointValidator validator)
       throws ISOException {
-    return PIVCrypto.doKeyAgreement(
+    return crypto.doKeyAgreement(
         privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset, validator, params);
   }
 
@@ -433,9 +454,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   @Override
   short sign(byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset)
       throws ISOException {
-    return PIVCrypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return crypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
+  // #if ATTESTATION_ENABLED
   boolean verify(
       byte[] hash,
       short hashOffset,
@@ -444,11 +466,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       short signatureOffset,
       short signatureLength)
       throws ISOException {
-    return PIVCrypto.doVerify(
+    return crypto.doVerify(
         publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
   }
 
-  // #if ATTESTATION_ENABLED
   /**
    * Writes the uncompressed public point {@code 04 || X || Y} (ANSI X9.62).
    *
@@ -464,16 +485,15 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     }
     return publicKey.getW(outBuffer, outOffset);
   }
-  // #endif
 
   @Override
-  short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {
+  short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset)
+      throws ISOException {
     if (publicKey == null || !publicKey.isInitialized()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
       return (short) 0x00;
     }
 
-    DERWriter writer = DERWriter.getNestedInstance();
     writer.init(outBuffer, outOffset);
     writer.begin((byte) 0x30);
     writer.begin((byte) 0x30);
@@ -509,4 +529,5 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   private static final byte[] OID_SECP384R1 = {
     (byte) 0x2B, (byte) 0x81, (byte) 0x04, (byte) 0x00, (byte) 0x22
   };
+  // #endif
 }

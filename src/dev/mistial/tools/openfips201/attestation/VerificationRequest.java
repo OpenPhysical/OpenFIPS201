@@ -38,6 +38,9 @@ public final class VerificationRequest {
   private final byte[] chuidValue;
   private final List<String> registry;
   private final List<SignedVoid> voids;
+  private final byte[] expectBuildSha256;
+  private final byte[] expectCapSha256;
+  private final byte[] expectCplcSha256;
 
   /** A SAM-signed VOID ledger entry ({@code voids.json}). */
   public static final class SignedVoid {
@@ -77,6 +80,24 @@ public final class VerificationRequest {
         builder.voids == null
             ? null
             : Collections.unmodifiableList(new ArrayList<SignedVoid>(builder.voids));
+    this.expectBuildSha256 = builder.expectBuildSha256;
+    this.expectCapSha256 = builder.expectCapSha256;
+    this.expectCplcSha256 = builder.expectCplcSha256;
+  }
+
+  /** Expected leaf buildSha256 (the CAP's {@code build.sha256}), when supplied. */
+  public Optional<byte[]> expectBuildSha256() {
+    return copy(expectBuildSha256);
+  }
+
+  /** Expected F9 issuance capSha256 (SHA-256 of the installed CAP file), when supplied. */
+  public Optional<byte[]> expectCapSha256() {
+    return copy(expectCapSha256);
+  }
+
+  /** Expected F9 issuance cplcSha256 (SHA-256 of the card's CPLC data), when supplied. */
+  public Optional<byte[]> expectCplcSha256() {
+    return copy(expectCplcSha256);
   }
 
   /** The allocation registry lines ({@code allocations.jsonl}), when supplied. */
@@ -152,8 +173,36 @@ public final class VerificationRequest {
     private byte[] chuidValue;
     private List<String> registry;
     private List<SignedVoid> voids;
+    private byte[] expectBuildSha256;
+    private byte[] expectCapSha256;
+    private byte[] expectCplcSha256;
 
     private Builder() {}
+
+    /** Enables the build check: the leaf buildSha256 must equal {@code sha256} (32 octets). */
+    public Builder expectBuildSha256(byte[] sha256) {
+      this.expectBuildSha256 = measurement(sha256, "build");
+      return this;
+    }
+
+    /** Enables the CAP check: the F9 issuance capSha256 must equal {@code sha256} (32 octets). */
+    public Builder expectCapSha256(byte[] sha256) {
+      this.expectCapSha256 = measurement(sha256, "CAP");
+      return this;
+    }
+
+    /** Enables the CPLC check: the F9 issuance cplcSha256 must equal {@code sha256} (32 octets). */
+    public Builder expectCplcSha256(byte[] sha256) {
+      this.expectCplcSha256 = measurement(sha256, "CPLC");
+      return this;
+    }
+
+    private static byte[] measurement(byte[] sha256, String name) {
+      if (sha256 != null && sha256.length != 32) {
+        throw new IllegalArgumentException("the expected " + name + " SHA-256 must be 32 octets");
+      }
+      return clone(sha256);
+    }
 
     /**
      * Enables the registry check: the SAM's (IIN, batch, allocationSeq) must be bound to its samId

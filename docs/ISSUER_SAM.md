@@ -94,7 +94,9 @@ whose data is re-provisioned by repeating the command.
 - The operator PIN is 6 to 16 octets with 5 tries. INITIALIZE UPDATE and deselection reset its
   verified state. CHANGE OPERATOR PIN checks the old PIN against the same retry counter. There is no
   unblock: a blocked PIN permanently disables every PIN-gated command.
-- The chaining bit (CLA `90` / `94`) is accepted only on PUT PARAMETERS and LOAD SAM CERTIFICATE. A
+- The chaining bit (CLA `90` / `94`) is accepted only on PUT PARAMETERS, LOAD SAM CERTIFICATE and
+  ISSUE. Every ISSUE frame requires the lifecycle, secure channel and operator PIN; only the last
+  frame uses the nonce, and a rejected frame abandons the chain. A
   chain is bound to its INS, P1-P2 and the protection of its first frame; a frame with different
   protection abandons the chain with `6982`. A rejected PUT PARAMETERS frame zeroizes the staged
   packet.
@@ -117,7 +119,7 @@ whose data is re-provisioned by repeating the command.
 | VERIFY PIN           | `84`    | 20  | `00 81` | PIN, or empty for status               | —                              | `OPERATIONAL`, `CLOSED`         | `6982`, `6985`, `6A80`, `63Cx`, `6983` |
 | CHANGE OPERATOR PIN  | `84`    | 24  | `00 81` | `80 L oldPIN ‖ 81 L newPIN` (6..16 each) | —                            | `OPERATIONAL`, `CLOSED`         | `6982`, `6985`, `6A80`, `63Cx`, `6983` |
 | BEGIN ISSUANCE       | `84`    | 84  | `00 00` | —                                      | N (32 octets)                  | `OPERATIONAL`                   | `6982`, `6985`, `6A84` |
-| ISSUE                | `84`    | 2A  | `00 F9` | `86 41 F9pub ‖ 9E L PoP ‖ 93 L Validity` | `70 L cert ‖ 71 L entry ‖ 72 L sig` | `OPERATIONAL`              | `6982`, `6985`, `6A80`, `6A84`, `6300`, `6500` |
+| ISSUE                | `84`/`94` | 2A | `00 F9` | `86 41 F9pub ‖ 9E L PoP ‖ 93 L Validity ‖ 94 20 capSha256 ‖ 95 20 cplcSha256` (≤ 275 octets) | `70 L cert ‖ 71 L entry ‖ 72 L sig` | `OPERATIONAL`              | `6982`, `6985`, `6A80`, `6A84`, `6300`, `6500`, `6700` |
 | DECIPHER             | `84`    | 2C  | `00 00` | `80 11 <17 ASCII digits>`              | `81 04 batch ‖ 82 01 sameBatch [‖ 83 04 n ‖ 84 01 issued]` | `OPERATIONAL`, `CLOSED` | `6982`, `6985`, `6A80`, `6A88` |
 | VOID                 | `84`    | 2E  | `00 00` | `80 04 issuanceSeq ‖ 81 01 reason`     | `71 L entry ‖ 72 L sig`        | `OPERATIONAL`, `CLOSED`         | `6982`, `6985`, `6A80` |
 | CLOSE                | `84`    | E8  | `00 00` | —                                      | `71 L entry ‖ 72 L sig`        | `OPERATIONAL`, `CLOSED`         | `6982`, `6985` |
@@ -221,7 +223,7 @@ failure of the unwrap is `6A80` with nothing written. Without a transport key PU
 `6985`.
 
 All INTEGERs are non-negative and fit 32 bits. A violation returns `6A80`. The packet may be
-command-chained and is staged in the upper half of the 1024-octet I/O buffer (at most 512 octets).
+command-chained and is staged at offset 512 of the 1056-octet I/O buffer (at most 512 octets).
 The staged packet and the APDU buffer are zeroized after the command, whether it succeeds or fails.
 
 ## OPID Allocation
@@ -380,7 +382,7 @@ the certificate.
 SAM   84 20 00 81  PIN                          VERIFY PIN
 SAM   84 84 00 00                               → N (32 octets)
 card  84 F9 F9 01  20  N  00                    → PoP
-SAM   84 2A 00 F9  86 41 F9pub 9E L PoP 93 L Validity
+SAM   84 2A 00 F9  86 41 F9pub 9E L PoP 93 L Validity 94 20 capSha256 95 20 cplcSha256 (chained)
                                                 → 70 L cert  71 L entry  72 L sig
 card  84 24 11 F9  30 82 LL LL 70 82 LL LL cert (chained)
 ```
@@ -396,8 +398,14 @@ permits at most one ISSUE attempt.
 
 1. Lifecycle, secure channel and operator PIN.
 2. Require an active nonce (`6985`), copy it into the PoP message, and consume it.
-3. Strict parse: `86 41 F9pub`, `9E L PoP`, `93 L Validity`, each once, in order, nothing trailing
-   (`6A80`). The `93` value is a DER Validity of at most 64 octets.
+3. Strict parse: `86 41 F9pub`, `9E L PoP`, `93 L Validity`, `94 20 capSha256`,
+   `95 20 cplcSha256`, each once, in order, nothing trailing (`6A80`). The `93` value is a DER
+   Validity of at most 64 octets. Both measurements are required: the earlier three-element form,
+   a missing, short, long, swapped or repeated measurement is `6A80`. The request is assembled at
+   the top of the I/O buffer; a chain longer than 275 octets is refused with `6700` while it is
+   assembled. `capSha256` is the host-measured SHA-256 of the PIV CAP file installed on the card and
+   `cplcSha256` the SHA-256 of the card's CPLC data; the SAM cannot measure either and binds both,
+   as supplied, into the F9 issuance extension and the ISSUE ledger entry.
 4. The F9 point is on P-256 and differs from the SAM key and the root key (`6A80`).
 5. Validity: `notBefore < notAfter`, `notBefore >= SAM notBefore`, `notAfter <= SAM notAfter`
    (`6A80`).
@@ -427,7 +435,7 @@ the certificate.
   GET RESPONSE, VERIFY PIN, INITIALIZE UPDATE and EXTERNAL AUTHENTICATE do not clear it; every other
   command and deselection do.
 - **`6500` or no LAST RESULT.** GET DATA LAST ENTRY returns the committed ISSUE entry (OPID, F9 SKI,
-  tbsHash) with a fresh SAM signature over the persistent chain head. The certificate itself is not
+  capSha256, cplcSha256, tbsHash) with a fresh SAM signature over the persistent chain head. The certificate itself is not
   recoverable. The card is issued again with a new BEGIN, PROVE and ISSUE and receives the next OPID.
 - DECIPHER confirms that an OPID belongs to this batch and was issued (`n <= issued`).
 - VOID records a signed VOID entry for a burned issuance, so relying parties can be told the OPID
@@ -463,14 +471,21 @@ Extensions, in order:
 
 ```asn1
 F9IssuanceExtension ::= SEQUENCE {   -- 1.3.6.1.4.1.57923.20.10.10.2
-  version        INTEGER (1),
+  version        INTEGER (2),
   issuanceSeq    INTEGER,                 -- n: this card is the n-th issuance of the batch
   eventSeq       INTEGER,                 -- ledger event number of this ISSUE entry
-  prevChainHead  OCTET STRING (SIZE 32)   -- chain head before this entry
+  prevChainHead  OCTET STRING (SIZE 32),  -- chain head before this entry
+  capSha256      OCTET STRING (SIZE 32),  -- SHA-256 of the installed PIV CAP file (host-measured)
+  cplcSha256     OCTET STRING (SIZE 32)   -- SHA-256 of the card's CPLC data (host-measured)
 }
 ```
 
-The worst case is about 690 octets, inside the card's 736-octet limit. The template is at most 96
+Version 1 (without `capSha256` and `cplcSha256`) is rejected by `attestation verify`. See
+[ATTESTATION.md](ATTESTATION.md#build-cap-and-cplc-identity) for what the measurements prove.
+
+The worst case (128-octet SAM subject, 96-octet template, GeneralizedTime validity, five-octet
+`eventSeq` INTEGER, 72-octet signature) is 756 octets, inside the card's 760-octet (`0x2F8`) limit;
+`F9CertificateSizeTest` checks it. The template is at most 96
 octets of RDN content, so the subject with the OPID stays within the card's 128-octet limit. The PIV
 card checks the profile as described in [ATTESTATION.md](ATTESTATION.md#f9-certificate-profile).
 
@@ -482,7 +497,8 @@ card checks the profile as described in [ATTESTATION.md](ATTESTATION.md#f9-certi
 "OPSAMLE1"(8) ‖ type(1) ‖ samSki(20) ‖ eventSeq(4) ‖ prevHead(32) ‖ payload
 
 GENESIS 01: sha256(samCert)(32) ‖ paramsDigest(32) ‖ quota(4) ‖ lastTs(8)
-ISSUE   02: issuanceSeq(4) ‖ opidLen(1) = 17 ‖ opid(17) ‖ f9Ski(20) ‖ tbsHash(32)
+ISSUE   02: issuanceSeq(4) ‖ opidLen(1) = 17 ‖ opid(17) ‖ f9Ski(20) ‖ capSha256(32)
+            ‖ cplcSha256(32) ‖ tbsHash(32)
 TOPUP   03: ts(8) ‖ added(4) ‖ newQuota(4)
 TERM    04: issued(4) ‖ quota(4)
 VOID    05: issuanceSeq(4) ‖ opidLen(1) = 17 ‖ opid(17) ‖ reason(1)
@@ -499,8 +515,11 @@ CLOSE   06: issued(4) ‖ quota(4)
 - All integers are unsigned big-endian.
 - GENESIS is event 1 with `prevHead = 0^32`. Every later entry has `eventSeq = previous + 1` and
   `prevHead = SHA-256(previous entry)`.
-- `head_n = SHA-256(entry_n)`. The SAM persists the current head and the last entry (at most 160
-  octets).
+- `head_n = SHA-256(entry_n)`. The SAM persists the current head and the last entry (at most 203
+  octets: an ISSUE entry is the 65-octet header and a 138-octet payload).
+- `capSha256` and `cplcSha256` in an ISSUE entry are the values received in ISSUE, identical to
+  those in the F9 issuance extension. The host refuses an entry that binds other values than it
+  sent.
 - The SAM signs each entry with `signPreComputedHash(SHA-256(entry))`, so a verifier uses plain
   SHA256withECDSA over the entry bytes.
 - The domain prefix never starts with `0x30`, so an entry cannot be parsed as a certificate.
@@ -537,10 +556,13 @@ unapplied older one permanently invalid.
 
 ## Memory
 
-- **Transient (`CLEAR_ON_DESELECT`), allocated at install:** 1024-octet I/O buffer (also the EC point
-  validator workspace), 320-octet scratch (also the FF1 work area), 33-octet nonce and state, plus
-  small chaining, DER writer and TLV reader contexts. About 1.4 KB. There is no persistent fallback.
-- **Persistent:** about 1.75 KB of state (SAM certificate up to 1024 octets, last entry 160, F9
+- **Transient (`CLEAR_ON_DESELECT`), allocated at install:** 1056-octet I/O buffer (also the EC
+  point validator workspace and the staging area for chained commands), 320-octet scratch (also the
+  FF1 work area), 33-octet nonce and state, plus small chaining, DER writer and TLV reader contexts.
+  About 1.45 KB. There is no persistent fallback. The I/O buffer holds the largest response, ISSUE:
+  `70 82 LL LL` and a 756-octet F9 certificate, `71 81 CB` and the 203-octet entry, and `72 L` with
+  a signature of at most 72 octets, 1040 octets in all.
+- **Persistent:** about 1.8 KB of state (SAM certificate up to 1024 octets, last entry 203, F9
   subject template 96, expected SAM subject 128, LCG digits, 128 octets of jump maps, paramsDigest,
   counters, chain head, SKI, validity bounds, allocationSeq, registryHead, CLOSE entry), the
   operator PIN, six P-256 key objects (SAM private and public, root public, the F9 public key of the

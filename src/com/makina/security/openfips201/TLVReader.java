@@ -58,25 +58,14 @@ final class TLVReader {
 
   private final short[] context;
 
-  private static TLVReader instance;
-
-  private TLVReader() {
+  /**
+   * Allocates the reader state. The applet constructor creates the reader once at install and
+   * passes it to its users; no static field references it, so it is released with the applet
+   * instance.
+   */
+  TLVReader() {
     dataPtr = JCSystem.makeTransientObjectArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
     context = JCSystem.makeTransientShortArray(LENGTH_CONTEXT, JCSystem.CLEAR_ON_DESELECT);
-  }
-
-  static TLVReader getInstance() {
-
-    if (instance == null) {
-      instance = new TLVReader();
-    }
-
-    return instance;
-  }
-
-  static void terminate() {
-    instance = null;
-    JCSystem.requestObjectDeletion();
   }
 
   /**

@@ -22,7 +22,7 @@ import java.util.Arrays;
  *
  * <p>Over a GlobalPlatform secure-channel session every command is sent with CLA 84 and wrapped by
  * the session; over a plain session CLA 80 is used and only the plaintext commands (STATUS, SAM
- * CERT, LAST ENTRY, TOP UP) succeed. PUT PARAMETERS and LOAD SAM CERTIFICATE use ISO command
+ * CERT, LAST ENTRY, TOP UP) succeed. PUT PARAMETERS, LOAD SAM CERTIFICATE and ISSUE use ISO command
  * chaining (CLA bit 10). Outgoing responses longer than Le are collected with GET RESPONSE.
  */
 public final class ApduSamClient implements SamClient {
@@ -134,13 +134,27 @@ public final class ApduSamClient implements SamClient {
   }
 
   @Override
-  public byte[] issue(byte[] f9Point, byte[] proofOfPossession, byte[] validityDer) {
+  public byte[] issue(
+      byte[] f9Point,
+      byte[] proofOfPossession,
+      byte[] validityDer,
+      byte[] capSha256,
+      byte[] cplcSha256) {
+    if (capSha256 == null || capSha256.length != 32) {
+      throw new IllegalArgumentException("ISSUE needs the 32-octet CAP SHA-256");
+    }
+    if (cplcSha256 == null || cplcSha256.length != 32) {
+      throw new IllegalArgumentException("ISSUE needs the 32-octet CPLC SHA-256");
+    }
     byte[] data =
         ByteArrays.concat(
             BerTlvWriter.encode(0x86, f9Point),
             BerTlvWriter.encode(0x9E, proofOfPossession),
-            BerTlvWriter.encode(0x93, validityDer));
-    return send(0x2A, 0x00, 0xF9, data, "ISSUE");
+            BerTlvWriter.encode(0x93, validityDer),
+            BerTlvWriter.encode(0x94, capSha256),
+            BerTlvWriter.encode(0x95, cplcSha256));
+    // About 245 octets: chained, so every frame still fits a short APDU after SCP03 wrapping.
+    return sendChained(0x2A, 0x00, 0xF9, data, "ISSUE");
   }
 
   @Override

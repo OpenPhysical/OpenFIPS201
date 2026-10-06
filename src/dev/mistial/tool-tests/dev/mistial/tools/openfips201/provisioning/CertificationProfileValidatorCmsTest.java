@@ -249,6 +249,15 @@ class CertificationProfileValidatorCmsTest {
   }
 
   @Test
+  void rejectsSecurityObjectWithIcao9303LdsContentType() throws Exception {
+    // ICAO 9303 Part 10's id-icao-ldsSecurityObject; SP 800-85B AS06.04.06 and SP 800-166
+    // DTR-07.02.01.06 require 1.3.27.1.1.1 instead.
+    Profile profile = new Profile();
+    profile.securityObjectType = new ASN1ObjectIdentifier("2.23.136.1.1.1");
+    assertRejected(profile, "eContentType must be id-icao-ldsSecurityObject, not 2.23.136.1.1.1");
+  }
+
+  @Test
   void rejectsLdsHashesOtherThanTheSignatureHash() throws Exception {
     Profile profile = new Profile();
     profile.ldsDigest = NISTObjectIdentifiers.id_sha384;

@@ -383,6 +383,61 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         "C3: CB_H & 'F0' other than 0x00 is rejected");
   }
 
+  /**
+   * Step C11 response lengths take the shortest BER-TLV form (ISO/IEC 7816-4 Section 6.3) on both
+   * sides of the one-octet and '81' boundaries. The CVC length sets the Response '82' length to 7E
+   * (template 80), 80, F7 (the template size of a typical CS2 CVC, answered as '7C 81 FA') and FF.
+   */
+  @Test
+  void opacityResponseLengthsUseShortestFormAcrossBoundaries() {
+    configureVciMode((byte) 0x02);
+    createVciKeyOverScp(ATTR_NONE);
+    generateVciKeyOverScpReturningPoint();
+    int nonceLength = (isCs2Build() ? 32 : 48) / 2;
+    int fixedLength = 1 + nonceLength + 16;
+    byte[] hostPoint = activeBasePoint();
+
+    for (int responseLength : new int[] {0x7E, 0x80, 0xF7, 0xFF}) {
+      byte[] cvc = new byte[responseLength - fixedLength];
+      for (int i = 0; i < cvc.length; i++) cvc[i] = (byte) (i + 1);
+      loadVciCvcOverScp(cvc);
+
+      byte[] data =
+          collectResponse(
+              transmit(
+                  0x00,
+                  0x87,
+                  activeAlgorithm() & 0xFF,
+                  KEY_REF_SECURE_MESSAGING & 0xFF,
+                  tlv(
+                      (byte) 0x7C,
+                      concat(
+                          tlv(
+                              (byte) 0x81,
+                              concat(new byte[] {0x00}, hex("0102030405060708"), hostPoint)),
+                          hex("8200"))),
+                  256),
+              "OPACITY with response length " + responseLength);
+
+      byte[] responseHeader = concat(new byte[] {(byte) 0x82}, derLength(responseLength));
+      int templateLength = responseHeader.length + responseLength;
+      byte[] expectedHeader =
+          concat(new byte[] {(byte) 0x7C}, derLength(templateLength), responseHeader);
+      assertArrayEquals(
+          expectedHeader,
+          java.util.Arrays.copyOf(data, expectedHeader.length),
+          "Shortest lengths for response length " + responseLength);
+      assertEquals(
+          expectedHeader.length + responseLength,
+          data.length,
+          "Template size for response length " + responseLength);
+      assertArrayEquals(
+          cvc,
+          java.util.Arrays.copyOfRange(data, data.length - cvc.length, data.length),
+          "C_ICC ends the response");
+    }
+  }
+
   private byte[] generateVciKeyOverScpReturningPoint() {
     return withMockedScp(
         () -> {

@@ -19,7 +19,10 @@ final class PIVPinCommandHandler {
   // SP 800-73-5 Part 2 Sections 3.2.2 and 3.2.3 fix Lc at '10' for CHANGE REFERENCE DATA and RESET
   // RETRY COUNTER: two eight-byte fields for the PIN, PUK and new reference data. Configured PIN
   // length limits constrain the significant value before 'FF' padding, never the field width.
-  private static final byte LENGTH_REFERENCE_FIELD = Config.LIMIT_PIN_MAX_LENGTH;
+  // Section 2.4.3: a PIN "SHALL be padded to 8 bytes with 'FF' when presented to the card command
+  // interface" and "The PUK SHALL be 8 bytes in length".
+  private static final byte LENGTH_PIN_FIELD = Config.LIMIT_PIN_MAX_LENGTH;
+  private static final byte LENGTH_PUK_FIELD = Config.LENGTH_PUK;
 
   private static final byte ID_CVM_GLOBAL_PIN = PIV.ID_CVM_GLOBAL_PIN;
   private static final byte ID_CVM_LOCAL_PIN = PIV.ID_CVM_LOCAL_PIN;
@@ -209,6 +212,9 @@ final class PIVPinCommandHandler {
    * state, shall not participate in the transaction." The restore is therefore not atomic: a tear
    * part way through leaves the counter between {@code triesBefore} and the maximum, which only
    * benefits a caller that has already presented the correct reference data.
+   *
+   * <p>{@code authLength} is the length of the authentication data at {@code authOffset}, and
+   * {@code newLength} the length of the new reference data at {@code offset}.
    */
   private void commitReferenceData(
       byte id,
@@ -217,22 +223,47 @@ final class PIVPinCommandHandler {
       byte triesBefore,
       byte[] buffer,
       short authOffset,
-      short offset) {
+      byte authLength,
+      short offset,
+      byte newLength) {
     try {
-      cspPIV.updatePIN(
-          id, buffer, offset, LENGTH_REFERENCE_FIELD, config.readValue(Config.CONFIG_PIN_HISTORY));
+      cspPIV.updatePIN(id, buffer, offset, newLength, config.readValue(Config.CONFIG_PIN_HISTORY));
     } catch (ISOException e) {
-      byte excess = (byte) (authenticator.getTriesRemaining() - triesBefore);
-      if (excess > (byte) 0) {
-        buffer[authOffset] = (byte) ~buffer[authOffset];
-        for (; excess > (byte) 0; excess--) {
-          authenticator.check(buffer, authOffset, LENGTH_REFERENCE_FIELD);
-        }
-        buffer[authOffset] = (byte) ~buffer[authOffset];
-      }
+      restoreRetries(authenticator, triesBefore, buffer, authOffset, authLength);
       if (!wasValidated) authenticator.reset();
       ISOException.throwIt(e.getReason());
     }
+  }
+
+  /**
+   * Lowers the retry counter of {@code authenticator} to {@code target} after a comparison that
+   * matched the {@code authLength} bytes at {@code authOffset}. Each excess retry is removed by
+   * presenting that data with its first byte inverted, which cannot match; the data is restored
+   * afterwards. The same non-atomicity as in {@link #commitReferenceData} applies.
+   */
+  private static void restoreRetries(
+      PIN authenticator, byte target, byte[] buffer, short authOffset, byte authLength) {
+    byte excess = (byte) (authenticator.getTriesRemaining() - target);
+    if (excess > (byte) 0) {
+      buffer[authOffset] = (byte) ~buffer[authOffset];
+      for (; excess > (byte) 0; excess--) {
+        authenticator.check(buffer, authOffset, authLength);
+      }
+      buffer[authOffset] = (byte) ~buffer[authOffset];
+    }
+  }
+
+  /**
+   * Fails a PUK comparison that matched while the PUK is unprovisioned. Until the issuer sets it,
+   * the PUK holds only the random value written at install, and no value presented by a caller is
+   * reset retry counter authentication data. The command ends as for a mismatch (SP 800-73-5 Part 2
+   * Sections 3.2.2 and 3.2.3): '63 CX', the PUK security status FALSE, and the PUK retry counter
+   * one below {@code triesBefore}.
+   */
+  private void rejectUnprovisionedPuk(PIN puk, byte triesBefore, byte[] buffer, short offset) {
+    restoreRetries(puk, (byte) (triesBefore - 1), buffer, offset, LENGTH_PUK_FIELD);
+    puk.reset();
+    throwRetriesRemaining(puk, config.getIntermediatePUKRetries());
   }
 
   /**
@@ -472,34 +503,39 @@ final class PIVPinCommandHandler {
     // criteria in Section 2.4.3, then the PIV Card Application shall return the status word '6A
     // 80'.
 
-    if (length != (short) (LENGTH_REFERENCE_FIELD + LENGTH_REFERENCE_FIELD)) {
+    // Both fields carry the same kind of reference data: two PINs, or two PUKs.
+    byte fieldLength = puk ? LENGTH_PUK_FIELD : LENGTH_PIN_FIELD;
+    if (length != (short) (fieldLength + fieldLength)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // SP 800-73-5 Part 2 Section 3.2.2 requires a 6A80 format/policy failure for the new
     // reference data to leave both security status and retry state unchanged. Validate the new
     // PIN before pin.check(), because a successful OwnerPIN check changes both states.
-    short newReferenceOffset = (short) (offset + LENGTH_REFERENCE_FIELD);
+    short newReferenceOffset = (short) (offset + fieldLength);
     if (!puk) {
-      if (!verifyPinFormat(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+      if (!verifyPinFormat(buffer, newReferenceOffset, fieldLength)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
-      if (!verifyPinRules(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+      if (!verifyPinRules(buffer, newReferenceOffset, fieldLength)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
     }
 
     // Verify the authentication reference data (old PIN/PUK) format
-    if (!puk && !verifyPinFormat(buffer, offset, LENGTH_REFERENCE_FIELD)) {
+    if (!puk && !verifyPinFormat(buffer, offset, fieldLength)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // Verify the authentication reference data (old PIN/PUK) value
     boolean wasValidated = pin.isValidated();
     byte triesBefore = pin.getTriesRemaining();
-    if (!pin.check(buffer, offset, LENGTH_REFERENCE_FIELD)) {
+    if (!pin.check(buffer, offset, fieldLength)) {
       throwRetriesRemaining(pin, intermediateRetries);
+    }
+    if (puk && !cspPIV.isPukProvisioned()) {
+      rejectUnprovisionedPuk(pin, triesBefore, buffer, offset);
     }
 
     //
@@ -511,11 +547,20 @@ final class PIVPinCommandHandler {
     // value associated with the key reference.
 
     // STEP 1 - Update the reference data
-    commitReferenceData(id, pin, wasValidated, triesBefore, buffer, offset, newReferenceOffset);
+    commitReferenceData(
+        id,
+        pin,
+        wasValidated,
+        triesBefore,
+        buffer,
+        offset,
+        fieldLength,
+        newReferenceOffset,
+        fieldLength);
 
     // STEP 2 - Verify the new reference data, which sets the security status to TRUE and resets the
     // retry counter. The update succeeded, so a mismatch is an internal failure.
-    if (!pin.check(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+    if (!pin.check(buffer, newReferenceOffset, fieldLength)) {
       ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
 
@@ -584,7 +629,7 @@ final class PIVPinCommandHandler {
 
     // The command dispatcher rejects any other Lc with 6A80 before this handler runs; the same
     // status word applies to a direct call.
-    if (length != (short) (LENGTH_REFERENCE_FIELD + LENGTH_REFERENCE_FIELD)) {
+    if (length != (short) (LENGTH_PUK_FIELD + LENGTH_PIN_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -609,13 +654,13 @@ final class PIVPinCommandHandler {
     // A successful OwnerPIN check resets the PUK retry counter, so these checks precede it. When
     // the PUK is also wrong, the specification permits either '6A 80' or '63 CX'; this card
     // returns '6A 80'.
-    short newReferenceOffset = (short) (offset + LENGTH_REFERENCE_FIELD);
-    if (!verifyPinFormat(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+    short newReferenceOffset = (short) (offset + LENGTH_PUK_FIELD);
+    if (!verifyPinFormat(buffer, newReferenceOffset, LENGTH_PIN_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // Since this will be the new value, apply our PIN complexity rules
-    if (!verifyPinRules(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+    if (!verifyPinRules(buffer, newReferenceOffset, LENGTH_PIN_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -628,9 +673,13 @@ final class PIVPinCommandHandler {
     // by one.
     boolean pukWasValidated = puk.isValidated();
     byte pukTriesBefore = puk.getTriesRemaining();
-    if (!puk.check(buffer, offset, LENGTH_REFERENCE_FIELD)) {
+    if (!puk.check(buffer, offset, LENGTH_PUK_FIELD)) {
       pin.reset();
       throwRetriesRemaining(puk, intermediateRetries);
+    }
+    if (!cspPIV.isPukProvisioned()) {
+      pin.reset();
+      rejectUnprovisionedPuk(puk, pukTriesBefore, buffer, offset);
     }
 
     //
@@ -648,11 +697,19 @@ final class PIVPinCommandHandler {
 
     // Update, reset and unblock the PIN.
     commitReferenceData(
-        id, puk, pukWasValidated, pukTriesBefore, buffer, offset, newReferenceOffset);
+        id,
+        puk,
+        pukWasValidated,
+        pukTriesBefore,
+        buffer,
+        offset,
+        LENGTH_PUK_FIELD,
+        newReferenceOffset,
+        LENGTH_PIN_FIELD);
 
     // SP 800-73-5 Part 2 Section 3.2.3 requires successful RESET RETRY COUNTER to
     // leave the PIN security status unchanged. OwnerPIN.update clears validation.
-    if (wasValidated && !pin.check(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+    if (wasValidated && !pin.check(buffer, newReferenceOffset, LENGTH_PIN_FIELD)) {
       ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
   }

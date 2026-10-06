@@ -130,6 +130,7 @@ class PIVKeyObjectECCTest {
             mechanism,
             PIVKeyObject.ROLE_KEY_ESTABLISH,
             (byte) 0x00,
+            new PIVCrypto(),
             new ECCurveRegistry());
   }
 

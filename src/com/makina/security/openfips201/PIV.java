@@ -194,9 +194,17 @@ final class PIV {
   private final byte[] smCommand;
   // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
   private final byte[] secureMessagingCommand;
+  // #if FIPS_MODE
   private final FipsPowerUpSelfTests fipsSelfTest;
-  /** Constructor */
-  PIV() {
+  // #endif
+  /**
+   * Allocates the PIV state and composes the command handlers.
+   *
+   * @param crypto the applet instance's cryptographic engines
+   * @param tlvReader the applet instance's BER-TLV reader
+   * @param tlvWriter the applet instance's BER-TLV writer
+   */
+  PIV(PIVCrypto crypto, TLVReader tlvReader, TLVWriter tlvWriter) {
 
     //
     // Data Allocation
@@ -210,7 +218,9 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests(curves, ecPointValidator) : null;
+    // #if FIPS_MODE
+    fipsSelfTest = new FipsPowerUpSelfTests(crypto, curves, ecPointValidator);
+    // #endif
 
     // Create our configuration provider
     config = new Config();
@@ -222,23 +232,26 @@ final class PIV {
     chainBuffer = new ChainBuffer();
 
     // Create our PIV Security Provider
-    cspPIV = new PIVSecurityProvider(curves);
+    cspPIV = new PIVSecurityProvider(crypto, curves);
     dataCommands = new PIVDataCommandHandler(config, cspPIV, dataStore, chainBuffer, scratch);
 
     // #if ATTESTATION_ENABLED
     // Attestation authority state, certificate container, and response buffer are allocated at
     // install time; strict JavaCard platforms may reject transient allocations during APDU
     // processing.
-    attestation = new PIVAttestation();
+    attestation = new PIVAttestation(crypto);
     // #endif
 
-    secureMessaging = new PIVSecureMessaging();
-    opacity = new PIVOpacity(scratch, smResponse);
+    secureMessaging = new PIVSecureMessaging(crypto);
+    opacity = new PIVOpacity(crypto, scratch, smResponse);
     pinCommands =
         new PIVPinCommandHandler(this, config, cspPIV, dataStore, secureMessaging, scratch);
     authenticationCommands =
         new PIVAuthenticationCommandHandler(
             this,
+            crypto,
+            tlvReader,
+            tlvWriter,
             cspPIV,
             chainBuffer,
             secureMessaging,
@@ -255,36 +268,37 @@ final class PIV {
     administrationCommands =
         new PIVAdministrationCommandHandler(
             this,
+            crypto,
+            tlvReader,
+            tlvWriter,
             config,
             cspPIV,
             dataStore,
             chainBuffer,
             secureMessaging,
+            ecPointValidator,
             scratch
             // #if ATTESTATION_ENABLED
             ,
             attestation
             // #endif
             );
-    // Create our TLV objects (we don't care about the result, this is just to allocate)
-    TLVReader.getInstance();
-    TLVWriter.getInstance();
-    DERWriter.initialize();
-
     // NOTE:
     // - Javacard does not specify the behaviour of an OwnerPIN that has not ever been
     //   initialised with a value, so we explicitly set one to prevent usage.
     //
 
     // Generate a random PIN value to initialise it
-    PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
+    crypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
     cspPIV.updatePIN(ID_CVM_LOCAL_PIN, scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH, ZERO);
     PIVSecurityProvider.zeroise(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
 
-    // Generate a random PUK value to initialise it
-    PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH);
-    cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH, ZERO);
-    PIVSecurityProvider.zeroise(scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH);
+    // Generate a random PUK value to initialise it. The PUK stays unprovisioned until the issuer
+    // sets it, and RESET RETRY COUNTER and CHANGE REFERENCE DATA '81' refuse it in that state even
+    // if the random value were presented (PIVSecurityProvider.isPukProvisioned()).
+    crypto.doGenerateRandom(scratch, ZERO, Config.LENGTH_PUK);
+    cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, Config.LENGTH_PUK, ZERO);
+    PIVSecurityProvider.zeroise(scratch, ZERO, Config.LENGTH_PUK);
     cspPIV.clearBootstrapCvmProvisioningState();
 
     //
@@ -292,14 +306,15 @@ final class PIV {
     //
   }
 
+  // #if FIPS_MODE
   boolean runFipsSelfTests() {
-    if (!FipsPolicy.ENABLED) return true;
     try {
       return fipsSelfTest.run(scratch) && opacity.runCryptographicAlgorithmSelfTest();
     } finally {
       PIVSecurityProvider.zeroise(scratch, ZERO, FipsPowerUpSelfTests.LENGTH_SCRATCH);
     }
   }
+  // #endif
 
   /**
    * Starts or continues processing of an incoming data stream, which will be written directly to a
@@ -425,7 +440,7 @@ final class PIV {
 
     boolean streamRejectedPutData =
         secureMessaging.isRejectedCommandStreamActive()
-            || (mustRejectContactlessPutData()
+            || (!isInterfacePermittedForAdmin()
                 && commandChaining
                 && buffer[ISO7816.OFFSET_INS] == OpenFIPS201.INS_PIV_PUT_DATA);
     if (streamRejectedPutData) {
@@ -702,9 +717,11 @@ final class PIV {
   }
   // #endif
 
+  // #if FIPS_MODE
   private boolean isVciConfigured() {
     return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
   }
+  // #endif
 
   boolean isVciSatisfied() {
     return PIVDataCommandHandler.hasPolicyBits(
@@ -738,6 +755,7 @@ final class PIV {
     return dataCommands.isGlobalPinAdvertised();
   }
 
+  // #if FIPS_MODE
   boolean isFipsPersonalizationReady() {
     // SP 800-73-5 Part 1, Table 1 requires these seven data objects. The
     // certification profile also requires its PIN, PUK, 9A, and 9E material
@@ -824,6 +842,15 @@ final class PIV {
     return false;
   }
 
+  private boolean hasStructurallyValidMandatoryObject(byte suffix) {
+    scratch[ZERO] = (byte) 0x5F;
+    scratch[(short) 1] = (byte) 0xC1;
+    scratch[(short) 2] = suffix;
+    PIVDataObject object = dataStore.find(scratch, ZERO, (short) 3);
+    return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
+  }
+  // #endif
+
   /**
    * Returns whether {@code id} is one of the SP 800-73-5 Part 1 Table 5 cardholder asymmetric key
    * references: '9A' PIV Authentication, '9C' Digital Signature, '9D' Key Management or '9E' Card
@@ -836,14 +863,6 @@ final class PIV {
   /** Returns whether {@code id} is a Table 5 retired key management reference '82' to '95'. */
   static boolean isRetiredKeyManagementKey(byte id) {
     return id >= ID_KEY_RETIRED_FIRST && id <= ID_KEY_RETIRED_LAST;
-  }
-
-  private boolean hasStructurallyValidMandatoryObject(byte suffix) {
-    scratch[ZERO] = (byte) 0x5F;
-    scratch[(short) 1] = (byte) 0xC1;
-    scratch[(short) 2] = suffix;
-    PIVDataObject object = dataStore.find(scratch, ZERO, (short) 3);
-    return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
   }
 
   void rejectUnsupportedOccAccessMode(byte mode) {
@@ -986,29 +1005,42 @@ final class PIV {
     return !isContactless() || !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL);
   }
 
-  /***
-   * Indicates whether administration is allowed over the current communications media.
-   * Note that this DOES NOT mean there is a valid administrative session!
-   * @return True if administrative commands are permitted in the current context.
+  /**
+   * Indicates whether card management is permitted over the current communications media. This does
+   * not mean that an administrative session exists; the caller still applies the PIV Card
+   * Application Administrator security condition.
+   *
+   * <p>Card management is always permitted over the contact interface. Over the contactless
+   * interface it is permitted only when the issuer has cleared {@code
+   * OPTION_RESTRICT_CONTACTLESS_ADMIN}, which the FIPS profile refuses.
    */
-  boolean isInterfacePermittedForAdmin() {
-
-    // Administration is always permitted over the contact interface
-    if (!cspPIV.getIsContactless()) return true;
-
-    // Administration is only allowed over the contactless interface if the
-    // OPTION_RESTRICT_CONTACTLESS_ADMIN flag is NOT SET
-    return !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_ADMIN);
+  private boolean isInterfacePermittedForAdmin() {
+    return !cspPIV.getIsContactless() || !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_ADMIN);
   }
 
   /**
-   * Returns true when Table 2 requires PUT DATA to fail on the contactless interface.
+   * Refuses a card management command on an interface where card management is not permitted. This
+   * is the single interface rule for every administrative entry point: the GlobalPlatform secure
+   * channel, PUT DATA, GENERATE ASYMMETRIC KEY PAIR and the proprietary administrative commands.
    *
-   * <p>Contactless card management is an issuer configuration. Secure-messaging parsing does not
-   * depend on the build profile.
+   * <p>SP 800-73-5 Part 2 Section 3, following Table 2: "The PIV Card Application shall return the
+   * status word of '6A 81' (Function not supported) when it receives a card command on the
+   * contactless interface marked "No" in the Contactless Interface column in Table 2. The PIV Card
+   * Application may return a different status word (e.g., '69 82') if the card command can be
+   * performed over the contactless interface in support of card management. The PIV Card
+   * Application will only perform the command in support of card management if the requirements
+   * specified in Section 2.9.2 of FIPS 201-2 are satisfied." FIPS 201-3 Section 2.9.2 requires that
+   * communication for a remote post-issuance update "SHALL occur only over mutually authenticated
+   * secure sessions", so contactless card management is an issuer opt-in.
+   *
+   * @param sw the status word of the caller's command contract: '6A 81' for a Table 2 command
+   *     marked "No" for the contactless interface, '69 82' for the GlobalPlatform secure channel
+   *     and the proprietary administrative commands
    */
-  boolean mustRejectContactlessPutData() {
-    return isContactless() && !isInterfacePermittedForAdmin();
+  void requireAdministrativeInterface(short sw) {
+    if (!isInterfacePermittedForAdmin()) {
+      ISOException.throwIt(sw);
+    }
   }
 
   /**

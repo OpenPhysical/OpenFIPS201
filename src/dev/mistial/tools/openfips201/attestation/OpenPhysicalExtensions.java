@@ -25,7 +25,8 @@ import org.bouncycastle.asn1.x509.Extensions;
  *
  * <p>Every parser takes the extnValue contents (the octets inside the extension OCTET STRING),
  * requires them to be strict DER (see {@link StrictDer#parse}), requires the exact element count
- * and types listed on each class, and requires {@code version == 1}.
+ * and types listed on each class, and requires the version listed there; no other version is
+ * accepted.
  */
 public final class OpenPhysicalExtensions {
   /** Private enterprise arc {@code 1.3.6.1.4.1.57923}. */
@@ -43,8 +44,14 @@ public final class OpenPhysicalExtensions {
   /** PIV leaf attestation extension, {@code 1.3.6.1.4.1.57923.20.10.20.1}, non-critical. */
   public static final ASN1ObjectIdentifier PIV_LEAF = ARC.branch("20.10.20.1");
 
-  /** The only extension version defined by the wire contract. */
-  public static final int VERSION = 1;
+  /** Version of the F9 issuance extension (v2: adds capSha256 and cplcSha256). */
+  public static final int F9_ISSUANCE_VERSION = 2;
+
+  /** Version of the PIV leaf extension (v2: adds buildSha256). */
+  public static final int PIV_LEAF_VERSION = 2;
+
+  /** Length of the measurement hashes capSha256, cplcSha256 and buildSha256. */
+  public static final int MEASUREMENT_LENGTH = 32;
 
   /** Version of the SAM batch extension (v2: no OPID format or CIN width). */
   public static final int SAM_BATCH_VERSION = 3;
@@ -66,22 +73,41 @@ public final class OpenPhysicalExtensions {
   private OpenPhysicalExtensions() {}
 
   /**
-   * F9 issuance extension: {@code SEQUENCE{version INTEGER 1, issuanceSeq INTEGER, eventSeq
-   * INTEGER, prevChainHead OCTET STRING(32)}}.
+   * F9 issuance extension: {@code SEQUENCE{version INTEGER 2, issuanceSeq INTEGER, eventSeq
+   * INTEGER, prevChainHead OCTET STRING(32), capSha256 OCTET STRING(32), cplcSha256 OCTET
+   * STRING(32)}}. capSha256 and cplcSha256 are the issuance host's measurements of the installed
+   * PIV CAP file and of the card's CPLC data, as the SAM received them in ISSUE.
    */
   public static final class F9Issuance {
     public final long issuanceSeq;
     public final long eventSeq;
     private final byte[] prevChainHead;
+    private final byte[] capSha256;
+    private final byte[] cplcSha256;
 
-    F9Issuance(long issuanceSeq, long eventSeq, byte[] prevChainHead) {
+    F9Issuance(
+        long issuanceSeq,
+        long eventSeq,
+        byte[] prevChainHead,
+        byte[] capSha256,
+        byte[] cplcSha256) {
       this.issuanceSeq = issuanceSeq;
       this.eventSeq = eventSeq;
       this.prevChainHead = prevChainHead.clone();
+      this.capSha256 = capSha256.clone();
+      this.cplcSha256 = cplcSha256.clone();
     }
 
     public byte[] prevChainHead() {
       return prevChainHead.clone();
+    }
+
+    public byte[] capSha256() {
+      return capSha256.clone();
+    }
+
+    public byte[] cplcSha256() {
+      return cplcSha256.clone();
     }
   }
 
@@ -134,10 +160,12 @@ public final class OpenPhysicalExtensions {
   }
 
   /**
-   * PIV leaf extension: {@code SEQUENCE{version INTEGER 1, appletVersion OCTET STRING(4),
+   * PIV leaf extension: {@code SEQUENCE{version INTEGER 2, appletVersion OCTET STRING(4),
    * buildFlags OCTET STRING(1), vciSuite OCTET STRING(1), platformId OCTET STRING, keyReference
    * OCTET STRING(1), mechanism OCTET STRING(1), role OCTET STRING(1), attributes OCTET STRING(1),
-   * origin ENUMERATED, contactMode OCTET STRING(1), contactlessMode OCTET STRING(1)}}.
+   * origin ENUMERATED, contactMode OCTET STRING(1), contactlessMode OCTET STRING(1), buildSha256
+   * OCTET STRING(32)}}. buildSha256 is the {@code build.sha256} identity of the applet build, as
+   * recorded in the CAP's {@code .cap.properties}.
    *
    * <p>One-octet fields are exposed as unsigned values {@code 0..255}.
    */
@@ -153,6 +181,7 @@ public final class OpenPhysicalExtensions {
     public final int origin;
     public final int contactMode;
     public final int contactlessMode;
+    private final byte[] buildSha256;
 
     PivLeaf(
         byte[] appletVersion,
@@ -165,7 +194,8 @@ public final class OpenPhysicalExtensions {
         int attributes,
         int origin,
         int contactMode,
-        int contactlessMode) {
+        int contactlessMode,
+        byte[] buildSha256) {
       this.appletVersion = appletVersion.clone();
       this.buildFlags = buildFlags;
       this.vciSuite = vciSuite;
@@ -177,6 +207,7 @@ public final class OpenPhysicalExtensions {
       this.origin = origin;
       this.contactMode = contactMode;
       this.contactlessMode = contactlessMode;
+      this.buildSha256 = buildSha256.clone();
     }
 
     public byte[] appletVersion() {
@@ -185,6 +216,10 @@ public final class OpenPhysicalExtensions {
 
     public byte[] platformId() {
       return platformId.clone();
+    }
+
+    public byte[] buildSha256() {
+      return buildSha256.clone();
     }
   }
 
@@ -207,12 +242,14 @@ public final class OpenPhysicalExtensions {
 
   /** Parses the F9 issuance extension value. */
   public static F9Issuance parseF9Issuance(byte[] value) {
-    ASN1Sequence seq = sequence(value, 4, "F9 issuance");
-    requireVersion(seq.getObjectAt(0), "F9 issuance");
+    ASN1Sequence seq = sequence(value, 6, "F9 issuance");
+    requireVersion(seq.getObjectAt(0), F9_ISSUANCE_VERSION, "F9 issuance");
     long issuanceSeq = nonNegativeLong(seq.getObjectAt(1), "issuanceSeq");
     long eventSeq = nonNegativeLong(seq.getObjectAt(2), "eventSeq");
     byte[] head = octets(seq.getObjectAt(3), CHAIN_HEAD_LENGTH, "prevChainHead");
-    return new F9Issuance(issuanceSeq, eventSeq, head);
+    byte[] cap = octets(seq.getObjectAt(4), MEASUREMENT_LENGTH, "capSha256");
+    byte[] cplc = octets(seq.getObjectAt(5), MEASUREMENT_LENGTH, "cplcSha256");
+    return new F9Issuance(issuanceSeq, eventSeq, head, cap, cplc);
   }
 
   /** Parses the SAM batch extension value. */
@@ -235,8 +272,8 @@ public final class OpenPhysicalExtensions {
 
   /** Parses the PIV leaf extension value. */
   public static PivLeaf parsePivLeaf(byte[] value) {
-    ASN1Sequence seq = sequence(value, 12, "PIV leaf");
-    requireVersion(seq.getObjectAt(0), "PIV leaf");
+    ASN1Sequence seq = sequence(value, 13, "PIV leaf");
+    requireVersion(seq.getObjectAt(0), PIV_LEAF_VERSION, "PIV leaf");
     byte[] appletVersion = octets(seq.getObjectAt(1), APPLET_VERSION_LENGTH, "appletVersion");
     int buildFlags = octet(seq.getObjectAt(2), "buildFlags");
     int vciSuite = octet(seq.getObjectAt(3), "vciSuite");
@@ -256,6 +293,7 @@ public final class OpenPhysicalExtensions {
     int origin = originValue.intValue();
     int contactMode = octet(seq.getObjectAt(10), "contactMode");
     int contactlessMode = octet(seq.getObjectAt(11), "contactlessMode");
+    byte[] buildSha256 = octets(seq.getObjectAt(12), MEASUREMENT_LENGTH, "buildSha256");
     return new PivLeaf(
         appletVersion,
         buildFlags,
@@ -267,7 +305,8 @@ public final class OpenPhysicalExtensions {
         attributes,
         origin,
         contactMode,
-        contactlessMode);
+        contactlessMode,
+        buildSha256);
   }
 
   private static ASN1Sequence sequence(byte[] value, int elements, String name) {
@@ -283,9 +322,9 @@ public final class OpenPhysicalExtensions {
     return seq;
   }
 
-  private static void requireVersion(ASN1Encodable element, String name) {
-    if (!BigInteger.valueOf(VERSION).equals(integer(element, "version"))) {
-      throw new IllegalArgumentException(name + " extension version must be " + VERSION);
+  private static void requireVersion(ASN1Encodable element, int version, String name) {
+    if (!BigInteger.valueOf(version).equals(integer(element, "version"))) {
+      throw new IllegalArgumentException(name + " extension version must be " + version);
     }
   }
 

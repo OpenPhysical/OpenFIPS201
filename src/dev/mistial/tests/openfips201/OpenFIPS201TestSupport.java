@@ -7,6 +7,7 @@ import apdu4j.core.BIBO;
 import com.makina.security.openfips201.OpenFIPS201;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
 import java.util.function.Supplier;
 import javacard.framework.AID;
 import javacard.framework.APDU;
@@ -247,6 +248,27 @@ abstract class OpenFIPS201TestSupport {
 
   protected ResponseAPDU transmit(int cla, int ins, int p1, int p2, byte[] data, int le) {
     return transmit(new CommandAPDU(cla, ins, p1, p2, data, le));
+  }
+
+  /**
+   * Sends {@code payload} as an ISO/IEC 7816-4 Section 5.3.3 command chain of 192-byte fragments:
+   * every fragment but the last sets the chaining bit (b5 of CLA). Stops at the first intermediate
+   * fragment that is not answered with '90 00' and returns that response; otherwise returns the
+   * response to the last fragment.
+   */
+  protected ResponseAPDU transmitChained(int cla, int ins, int p1, int p2, byte[] payload) {
+    final int chunkLength = 0xC0;
+    int offset = 0;
+    ResponseAPDU response = null;
+    while (offset < payload.length) {
+      int length = Math.min(chunkLength, payload.length - offset);
+      byte[] chunk = Arrays.copyOfRange(payload, offset, offset + length);
+      offset += length;
+      boolean last = offset >= payload.length;
+      response = transmit(last ? cla : (cla | 0x10), ins, p1, p2, chunk);
+      if (!last && response.getSW() != 0x9000) return response;
+    }
+    return response;
   }
 
   /** Collects an ISO 7816 response chain using plaintext GET RESPONSE commands. */

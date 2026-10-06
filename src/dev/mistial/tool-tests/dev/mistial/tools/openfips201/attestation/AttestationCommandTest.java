@@ -97,6 +97,51 @@ class AttestationCommandTest {
   }
 
   @Test
+  void expectedBuildIsChecked() {
+    String build = hex(AttestationTestChains.BUILD_SHA256);
+    assertEquals(AttestationCommand.EXIT_VALID, run(fullChain("--expect-build", build)));
+    assertTrue(out.toString().contains("leaf.expect-build"), out.toString());
+    String other = (build.charAt(0) == '0' ? "1" : "0") + build.substring(1);
+    assertEquals(AttestationCommand.EXIT_INVALID, run(fullChain("--expect-build", other)));
+    assertEquals(AttestationCommand.EXIT_USAGE, run(fullChain("--expect-build", "00")));
+  }
+
+  @Test
+  void receiptSuppliesTheExpectedMeasurements() throws Exception {
+    Path receipt = receipt(hex(AttestationTestChains.CAP_SHA256));
+    assertEquals(AttestationCommand.EXIT_VALID, run(fullChain("--receipt", receipt.toString())));
+    for (String id : new String[] {"f9.expect-cap", "f9.expect-cplc", "leaf.expect-build"}) {
+      assertTrue(out.toString().matches("(?s).*PASS\\s+" + id.replace(".", "\\.") + "\\s.*"), id);
+    }
+
+    byte[] otherCap = AttestationTestChains.CAP_SHA256.clone();
+    otherCap[0] ^= 1;
+    Path tampered = receipt(hex(otherCap));
+    assertEquals(AttestationCommand.EXIT_INVALID, run(fullChain("--receipt", tampered.toString())));
+    assertEquals(
+        AttestationCommand.EXIT_USAGE,
+        run(fullChain("--receipt", receipt.toString(), "--expect-cap", hex(otherCap))));
+  }
+
+  private Path receipt(String capSha256) throws Exception {
+    String json =
+        "{\"schema\":\""
+            + dev.mistial.tools.openfips201.issuance.IssuanceReceipt.SCHEMA
+            + "\",\"cap\":{\"sha256\":\""
+            + capSha256
+            + "\",\"properties\":{\"build.sha256\":\""
+            + hex(AttestationTestChains.BUILD_SHA256).toLowerCase(java.util.Locale.ROOT)
+            + "\"}},\"card\":{\"cplcSha256\":\""
+            + hex(AttestationTestChains.CPLC_SHA256)
+            + "\"}}";
+    return write("receipt-" + capSha256.substring(0, 8) + ".json", json);
+  }
+
+  private static String hex(byte[] value) {
+    return dev.mistial.tools.openfips201.common.HexUtil.format(value);
+  }
+
+  @Test
   void dateOnlyEvaluationTimeIsAccepted() {
     List<String> args = new ArrayList<String>(Arrays.asList(fullChain()));
     args.set(args.indexOf(AT), "2026-06-01");

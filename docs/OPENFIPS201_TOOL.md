@@ -25,8 +25,8 @@ zmq:<endpoint>
 A reader fragment must match exactly one reader name, or one reader name exactly; an ambiguous
 fragment is refused.
 
-Exit status: `0` success, `1` failure (any error), `2` usage error. `card produce`, `ledger verify`
-and `attestation verify` define more specific codes below.
+Exit status: `0` success, `1` failure (any error), `2` usage error. `card produce`, `ledger verify`,
+`root audit-ledger` and `attestation verify` define more specific codes below.
 
 ## Issuance Overview
 
@@ -468,7 +468,7 @@ never computes an OPID.
 | ---------------------- | ---------------------------------------------------------------------- |
 | `--target`             | card reader (required)                                                 |
 | `--sam`                | Issuer SAM reader; must differ from `--target`                         |
-| `--cap`                | PIV CAP (default `build/bin/OpenFIPS201-standard-CS2-attestation-true.cap`); `<cap>.properties` must say `attestation.enabled=true` |
+| `--cap`                | PIV CAP (default `build/bin/OpenFIPS201-standard-CS2-attestation-true.cap`); `<cap>.properties` must say `attestation.enabled=true` and carry `build.sha256` (64 hex digits). Its file SHA-256 is sent to the SAM as `capSha256` |
 | `--stock-scp-key*`     | the batch stock key; its KCV is checked before any reader is opened    |
 | `--operator-pin-*`     | SAM operator PIN                                                       |
 | `--yes`                | required for a `pcsc:` card                                            |
@@ -484,16 +484,16 @@ Stages, recorded in the receipt as they are entered:
 
 | Stage              | Work                                                                                   |
 | ------------------ | -------------------------------------------------------------------------------------- |
-| `PREFLIGHT`        | CAP carries attestation; SAM signed STATUS: OPERATIONAL, this batch's SAM, quota left, and equal to the ledger (issued count, event, head); a card that already has a PIV instance is refused unless a burned receipt of this batch names it (CPLC, KDD) and `--reissue` is given; receipt created with `CREATE_NEW` |
-| `APPLET_INSTALLED` | CPLC and KDD read; for a reissue the SAM VOIDs the burned OPID (ledger `void` line), the old instance is deleted and stock keys restored if they were rotated; applet loaded (`pcsc:`) and installed over the stock channel |
+| `PREFLIGHT`        | CAP carries attestation and a `build.sha256` build identity (refused otherwise, before the receipt exists); SAM signed STATUS: OPERATIONAL, this batch's SAM, quota left, and equal to the ledger (issued count, event, head); a card that already has a PIV instance is refused unless a burned receipt of this batch names it (CPLC, KDD) and `--reissue` is given; receipt created with `CREATE_NEW` |
+| `APPLET_INSTALLED` | CPLC and KDD read; a card that serves no CPLC data is refused (its SHA-256 is bound into the F9 certificate); for a reissue the SAM VOIDs the burned OPID (ledger `void` line), the old instance is deleted and stock keys restored if they were rotated; applet loaded (`pcsc:`) and installed over the stock channel |
 | `F9_GENERATED`     | F9 defined and generated on the card                                                   |
 | `SAM_NONCE`        | BEGIN ISSUANCE                                                                         |
 | `F9_PROVED`        | card PROVE; the host pre-verifies the proof                                            |
-| `ISSUE_REQUESTED`  | SAM ISSUE with the F9 point, proof and validity                                        |
+| `ISSUE_REQUESTED`  | SAM ISSUE (command-chained) with the F9 point, proof, validity, the CAP file SHA-256 and the CPLC SHA-256 |
 | `ISSUED`           | raw response saved in the receipt (`burned: true`) and the ledger `issue` line appended before parsing |
-| `F9_VERIFIED`      | entry signature and chain position, OPID syntax (17 digits, Luhn, batch IIN), SPKI, certificate OPID equals entry OPID, SKI, TBS hash, PKIX root → SAM → F9, and SAM DECIPHER of the OPID equals (this batch, issuance number, issued); a failure is recorded as stage `VERIFY_FAILED` and nothing is loaded |
+| `F9_VERIFIED`      | entry signature and chain position, OPID syntax (17 digits, Luhn, batch IIN), SPKI, certificate OPID equals entry OPID, SKI, TBS hash, entry and F9 issuance extension `capSha256`/`cplcSha256` equal the values sent, PKIX root → SAM → F9, and SAM DECIPHER of the OPID equals (this batch, issuance number, issued); a failure is recorded as stage `VERIFY_FAILED` and nothing is loaded |
 | `F9_LOADED`        | certificate loaded; the card's read-back must be byte-identical                         |
-| `PROOF_VERIFIED`   | proof key generated in `9A` under a temporary local PIN, attested, verified root → leaf, deleted; the local PIN is then set to 8 random digits that are not recorded |
+| `PROOF_VERIFIED`   | proof key generated in `9A` under a temporary local PIN, attested, verified root → leaf (including CAP, CPLC and leaf `buildSha256` against `build.sha256`), deleted; the local PIN is then set to 8 random digits that are not recorded |
 | `APPLET_READBACK`  | GET VERSION; GET STATUS must report the authority ACTIVE with this OPID and F9 SKI      |
 | `KEYS_ROTATED`     | CPLC and KDD re-read (a different card fails); SCP03 keys rotated to KDF3 keys derived from the KDD |
 | `COMPLETED`        | identifiers (OPID, GUID, UUID OID, FASC-N, CCC) recorded; ledger `outcome`; CSV row     |
@@ -522,11 +522,16 @@ the applet is deleted and reinstalled, and the card receives the next OPID; the 
 Receipts (`openfips201.receipt/2`) are created owner-only and replaced atomically at every stage,
 so a crash leaves the last stage on disk. They record: producer, batch, readers, custody, stage
 history with times, `status` (`IN_PROGRESS`, `COMPLETED`, `FAILED`), `burned`, a redacted failure;
-the CAP path, SHA-256, load-file hash, whether it was loaded and its `.properties`; CPLC and parsed
-fields, initial and final KDD, GET VERSION and GET STATUS responses; the SAM SKI, nonce, issuance
-and event sequence, OPID, raw ISSUE response, entry and signature; the F9 point, SKI, subject,
+the CAP path, SHA-256, load-file hash, whether it was loaded and its `.properties` (including
+`build.sha256`); CPLC, its SHA-256 (`card.cplcSha256`) and parsed fields, initial and final KDD,
+GET VERSION and GET STATUS responses; the SAM SKI, nonce, issuance and event sequence, OPID, raw ISSUE response, entry and signature; the F9 point, SKI, subject,
 certificate and hash, read-back result; the proof slot, point, leaf and deletion; the verifier
 reports; identifiers; and the new key version and KCVs. Receipts never contain raw keys.
+
+From the ledger `issue` line on, and for every rewrite on the failure path or of a superseded
+receipt, each receipt rewrite is immediately followed by a ledger line carrying the SHA-256 of the
+octets written (see [Ledger](#ledger)), so a later edit or deletion of a receipt fails `ledger
+verify`.
 
 `receipts.csv` columns: timestamp, producer, batch, target, status, stage, opid, issuance_seq,
 cplc, kdd_initial, kdd_final, new_key_version, enc_kcv, mac_kcv, dek_kcv, f9_ski, f9_cert_sha256,
@@ -538,21 +543,42 @@ options.
 
 ## Ledger
 
-`batches/IIII-NNNN/ledger.jsonl` holds one compact JSON object per line: `v` (1), `type`, `at`, and
-`prev` (SHA-256 of the previous line's text; 64 zeros on the first line). Types:
+`batches/IIII-NNNN/ledger.jsonl` holds one compact JSON object per line: `v` (format version),
+`type`, `at`, and `prev` (SHA-256 of the previous line's text; 64 zeros on the first line). Types:
 
 | Type      | Content                                                        |
 | --------- | -------------------------------------------------------------- |
 | `genesis` | SAM genesis entry and signature                                |
 | `topup`   | SAM TOPUP entry and signature                                  |
-| `issue`   | SAM ISSUE entry and signature, seq, OPID, F9 SKI, certificate hash, receipt, `recovered` |
-| `void`    | SAM VOID entry and signature for an issued OPID                |
+| `issue`   | SAM ISSUE entry and signature, seq, OPID, F9 SKI, certificate hash, receipt (optional `receiptSha256`), `recovered` |
+| `void`    | SAM VOID entry and signature for an issued OPID, receipt (optional `receiptSha256`) |
 | `close`   | SAM CLOSE entry and signature; the batch produces no further cards |
 | `term`    | SAM TERM entry and signature, written by `sam terminate`       |
-| `outcome` | final status and stage of an issued OPID's card, optionally linked by `reissueOf` / `supersededBy` |
+| `outcome` | final status and stage of an issued OPID's card, receipt (optional `receiptSha256`), optionally linked by `reissueOf` / `supersededBy` |
 | `lost`    | an issued OPID whose card will never carry it                  |
+| `receipt` | (v2) `receipt` (file name), `sha256`, `reason`: binds a receipt rewrite no other line binds |
 
 Every SAM line carries the SAM's ledger `entry`, its `sig`, `eventSeq` and `head`.
+
+The genesis line fixes the format version of the whole ledger; every later line carries the same
+`v`. A new ledger is written in format 2:
+
+- `receiptSha256` on an `issue`, `outcome` or `void` line is the hex SHA-256 of the receipt file's
+  octets as written by the rewrite that line follows. It is present only when the receipt was just
+  rewritten: a recovered `issue`, a `void` and the `VOIDED` outcome of a reissue name the receipt
+  without a hash, and any rewrite that follows is bound by its own line.
+- A `receipt` line binds every other rewrite: stage advances after the `issue` line (`reason`
+  `stage <STAGE>`), failure records (`failed <stage>`) and the `supersededBy` edit of a burned
+  receipt on reissue.
+
+A format 1 ledger names receipts but does not bind them. It keeps format 1 when appended to (no
+hashes, no `receipt` lines) and verifies only with the warning `ledger format v1 (legacy): receipts
+not bound; their contents are not tamper-evident`. Any other format version fails verification.
+
+A receipt rewrite and its ledger line are two file writes. A host crash between them leaves a
+receipt that no longer matches its last binding, and `ledger verify` fails closed for that receipt;
+see [Production Qualification](PRODUCTION_QUALIFICATION.md#ledger-and-receipt-integrity) for the
+operator procedure.
 
 ### ledger verify
 
@@ -573,13 +599,21 @@ Offline checks:
 - issuance numbers 1, 2, …, each OPID a canonical 17-digit OPID of the batch IIN, no repeated OPID or
   F9 key identifier;
 - every `outcome`, `lost` and `void` line names an issued (seq, OPID) pair;
-- `close` records the final issued count; no `issue` or `topup` follows it; nothing follows `term`.
+- `close` records the final issued count; no `issue` or `topup` follows it; nothing follows `term`;
+- every line has the genesis line's format version;
+- (format 2) every receipt name is a plain file name and every receipt hash is 64 hex digits; every
+  receipt any line names exists in `receipts/` as a regular file, has at least one hash binding, and
+  its octets hash to the last value the ledger recorded for it. An edited receipt (for example its
+  CPLC, KDD or OPID) fails as `differs from its last ledger binding (edited)`.
 
 The production station never recomputes an OPID. With `--sam`, the live SAM's signed STATUS must be
 at the ledger's last entry (event, chain head, issued count) and CLOSED exactly when the ledger is
 closed, which detects a truncated or diverged ledger. With an operator PIN as well, up to
 `--decipher-sample` issued OPIDs (default 8; first, last and evenly spaced; `0` disables) are
-DECIPHERed and must return their issuance numbers. Exit `0` valid, `1` invalid.
+DECIPHERed and must return their issuance numbers.
+
+Exit `0` valid, `1` invalid, `4` valid with warnings (a format 1 ledger, whose receipts are not
+bound). Exit `4` is not a clean pass; problems print as `FAIL`, warnings as `WARN`.
 
 ### ledger reconcile
 
@@ -602,8 +636,10 @@ ant -f build/build.xml openfips201-tool -Dargs='root audit-ledger --producer big
 
 Verifies the ledger's hash chain and SAM entries under the bound SAM's certificate from the root's
 SAM record (genesis commitment to that certificate, the recorded `paramsDigest` and quota), then
-replays every issued OPID from the root's LCG record and the IIN FF1 key on the root token. Exit `0` valid, `1`
-invalid.
+replays every issued OPID from the root's LCG record and the IIN FF1 key on the root token. The
+exported ledger travels without the receipt files, so receipt bindings are checked for form only
+(plain file names, 64-digit hashes); their contents are checked at the production station by `ledger
+verify`. Exit `0` valid, `1` invalid, `4` valid with warnings (a format 1 ledger).
 
 ## Closing a Batch
 
@@ -637,7 +673,9 @@ From files (a relying party with the exported trust material):
 ant -f build/build.xml openfips201-tool -Dargs='attestation verify \
   --anchor root.pem --chain sam-1234-0042.pem --chain f9.pem --leaf leaf.pem \
   [--registry allocations.jsonl] [--voids voids.json] \
-  [--slot-cert 9a.pem] [--expect-opid <17-digit OPID>] [--at 2026-10-05] [--json]'
+  [--slot-cert 9a.pem] [--expect-opid <17-digit OPID>] \
+  [--expect-build <hex>] [--expect-cap <hex>] [--expect-cplc <hex>] [--receipt receipt.json] \
+  [--at 2026-10-05] [--json]'
 ```
 
 From a card:
@@ -663,11 +701,25 @@ ant -f build/build.xml openfips201-tool -Dargs='attestation verify --from-card \
   registry head.
 - `--voids` (from the production station's `export-trust`): the F9 OPID must not appear among the
   VOID entries signed by the SAM key.
+- `--expect-build <hex>` (check `leaf.expect-build`): the leaf `buildSha256` must equal this value,
+  the `build.sha256` of the released CAP's `.cap.properties`. The value is asserted by the applet
+  build itself.
+- `--expect-cap <hex>` (check `f9.expect-cap`) and `--expect-cplc <hex>` (check `f9.expect-cplc`):
+  the F9 issuance extension `capSha256` / `cplcSha256` must equal these values, the SHA-256 of the
+  CAP file and of the card's CPLC data. They are host-measured at issuance and SAM-signed.
+- Each value is 64 hex digits; any other form is a usage error. A check without its option is
+  skipped.
+- `--receipt <receipt.json>` takes the three values from an `openfips201.receipt/2` receipt
+  (`cap.sha256`, `card.cplcSha256`, `cap.properties` `build.sha256`). An explicit `--expect-*`
+  value that differs from the receipt's is a usage error (exit `2`).
+- Version 1 F9 issuance and leaf extensions (without these hashes) fail verification. See
+  [Attestation](ATTESTATION.md#build-cap-and-cplc-identity) for what each value proves.
 
 Checks: strict DER, signature algorithms, PKIX path at `--at` (default now), name chaining and
 AKI/SKI linkage, the SAM batch extension and pathLen, the F9 profile and OPID, the leaf profile and
 OpenPhysical extension, and optionally the registry binding, the void list, the slot certificate
-SPKI and the expected OPID. Exit `0` valid, `1` invalid, `2` usage or input error.
+SPKI, the expected OPID and the expected build, CAP and CPLC hashes. Exit `0` valid, `1` invalid,
+`2` usage or input error.
 
 ## Emulator
 

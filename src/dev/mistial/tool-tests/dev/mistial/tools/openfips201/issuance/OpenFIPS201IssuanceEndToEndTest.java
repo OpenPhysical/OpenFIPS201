@@ -7,6 +7,7 @@
 
 package dev.mistial.tools.openfips201.issuance;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -15,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.mistial.tools.openfips201.OpenFips201Tool;
+import dev.mistial.tools.openfips201.attestation.OpenPhysicalExtensions;
 import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.HexUtil;
@@ -33,6 +35,7 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -194,6 +197,7 @@ class OpenFIPS201IssuanceEndToEndTest {
     assertEquals(expected.get(0), first.record.sam.opid);
     assertEquals(IssuanceReceipt.STATUS_COMPLETED, first.record.status);
     assertEquals("softhsm-dev", first.record.custody);
+    assertMeasurementsBound(first);
 
     // The card now answers only to keys derived from its KDD under the production master key.
     try (ProductionContext context = ProductionContext.load(producer);
@@ -268,6 +272,94 @@ class OpenFIPS201IssuanceEndToEndTest {
             bed.batch),
         lastError);
     bed.useProduction();
+  }
+
+  /**
+   * The CAP, CPLC and build hashes flow from the produce run into the receipt, the SAM-signed ISSUE
+   * entry, the F9 issuance extension and the attestation leaf, and {@code attestation verify
+   * --receipt} checks them; a different expected CAP hash fails.
+   */
+  private void assertMeasurementsBound(CardIssuanceOrchestrator.Result result) throws Exception {
+    IssuanceReceipt record = result.record;
+    byte[] capSha256 = HexUtil.parse(record.cap.sha256);
+    assertArrayEquals(
+        IssuanceCrypto.sha256(Files.readAllBytes(bed.cap)), capSha256, "receipt CAP SHA-256");
+    byte[] cplcSha256 = IssuanceCrypto.sha256(HexUtil.parse(record.card.cplc));
+    assertEquals(HexUtil.format(cplcSha256), record.card.cplcSha256, "receipt CPLC SHA-256");
+    java.util.Properties properties = new java.util.Properties();
+    try (java.io.InputStream in = Files.newInputStream(Paths.get(bed.cap + ".properties"))) {
+      properties.load(in);
+    }
+    byte[] buildSha256 = HexUtil.parse(properties.getProperty("build.sha256"));
+
+    SamLedgerEntry entry =
+        IssueResponse.parse(HexUtil.parse(record.sam.issueResponse)).signedEntry.entry;
+    assertArrayEquals(capSha256, entry.capSha256(), "SAM entry capSha256");
+    assertArrayEquals(cplcSha256, entry.cplcSha256(), "SAM entry cplcSha256");
+    SamLedgerEntry logged =
+        new IssuanceLedger(batch().directory().resolve(batch().ledger))
+            .issueLine(entry.issuanceSeq)
+            .samEntry()
+            .entry;
+    assertArrayEquals(entry.encoded(), logged.encoded(), "ledger issue line carries the entry");
+
+    byte[] f9 = java.util.Base64.getDecoder().decode(record.f9.certificateBase64);
+    OpenPhysicalExtensions.F9Issuance issuance =
+        OpenPhysicalExtensions.parseF9Issuance(
+            OpenPhysicalExtensions.requireNonCritical(
+                org.bouncycastle.asn1.x509.Certificate.getInstance(f9)
+                    .getTBSCertificate()
+                    .getExtensions(),
+                OpenPhysicalExtensions.F9_ISSUANCE));
+    assertArrayEquals(capSha256, issuance.capSha256(), "F9 capSha256");
+    assertArrayEquals(cplcSha256, issuance.cplcSha256(), "F9 cplcSha256");
+    byte[] leaf = java.util.Base64.getDecoder().decode(record.proof.leafBase64);
+    OpenPhysicalExtensions.PivLeaf pivLeaf =
+        OpenPhysicalExtensions.parsePivLeaf(
+            OpenPhysicalExtensions.requireNonCritical(
+                org.bouncycastle.asn1.x509.Certificate.getInstance(leaf)
+                    .getTBSCertificate()
+                    .getExtensions(),
+                OpenPhysicalExtensions.PIV_LEAF));
+    assertArrayEquals(buildSha256, pivLeaf.buildSha256(), "leaf buildSha256 = CAP build.sha256");
+
+    Path samPem = pem("sam.pem", IssuanceService.samCertificate(batch()));
+    Path f9Pem = pem("f9.pem", f9);
+    Path leafPem = pem("leaf.pem", leaf);
+    String[] verify = {
+      "attestation",
+      "verify",
+      "--producer",
+      producer,
+      "--chain",
+      samPem.toString(),
+      "--chain",
+      f9Pem.toString(),
+      "--leaf",
+      leafPem.toString(),
+      "--receipt",
+      result.receipt.toString()
+    };
+    assertEquals(
+        dev.mistial.tools.openfips201.attestation.AttestationCommand.EXIT_VALID,
+        cli(verify),
+        lastError);
+    byte[] otherCap = capSha256.clone();
+    otherCap[0] ^= 1;
+    String[] mismatched = java.util.Arrays.copyOf(verify, verify.length);
+    mismatched[verify.length - 2] = "--expect-cap";
+    mismatched[verify.length - 1] = HexUtil.format(otherCap);
+    assertEquals(
+        dev.mistial.tools.openfips201.attestation.AttestationCommand.EXIT_INVALID,
+        cli(mismatched),
+        lastError);
+    assertTrue(lastError.isEmpty(), lastError);
+  }
+
+  private Path pem(String name, byte[] der) throws Exception {
+    String body = java.util.Base64.getMimeEncoder(64, new byte[] {'\n'}).encodeToString(der);
+    String text = "-----BEGIN CERTIFICATE-----\n" + body + "\n-----END CERTIFICATE-----\n";
+    return Files.write(temp.resolve(name), text.getBytes(StandardCharsets.US_ASCII));
   }
 
   @Test

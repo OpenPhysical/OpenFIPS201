@@ -87,11 +87,12 @@ final class WhiteBox {
     final SamState state;
     final SamCrypto crypto;
     final SamLedger ledger;
+    final DERWriter writer;
     final KeyPair f9 = newP256();
     byte[] request;
 
     Fixture() throws Exception {
-      DERWriter.initialize();
+      writer = new DERWriter();
       state = new SamState();
       crypto = new SamCrypto(io);
       ledger = new SamLedger(state, crypto, io, scratch, nonce);
@@ -140,11 +141,19 @@ final class WhiteBox {
                     new Time(new Date(now)), new Time(new Date(now + 86_400_000L))
                   })
               .getEncoded("DER");
-      request = concat(tlv(0x86, point), tlv(0x9E, pop), tlv(0x93, validity));
+      request =
+          concat(
+              tlv(0x86, point),
+              tlv(0x9E, pop),
+              tlv(0x93, validity),
+              tlv(0x94, new byte[32]),
+              tlv(0x95, new byte[32]));
     }
 
+    /** Stages the request where IssuerSam assembles it, at the top of the I/O buffer. */
     short issue() {
-      return ledger.issue(DERWriter.getInstance(), request, (short) 0, (short) request.length);
+      System.arraycopy(request, 0, io, SamConst.STAGE_ISSUE, request.length);
+      return ledger.issue(writer, io, SamConst.STAGE_ISSUE, (short) request.length);
     }
   }
 

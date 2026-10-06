@@ -119,7 +119,9 @@ final class RootCommand implements Callable<Integer> {
       mixinStandardHelpOptions = true,
       description =
           "Verify an exported production ledger and replay every issued OPID from the root's LCG"
-              + " record and IIN FF1 key. Exit 0 valid, 1 invalid.")
+              + " record and IIN FF1 key. Receipt files stay at the production station and are"
+              + " checked there by 'ledger verify'. Exit 0 valid, 1 invalid, 4 valid with warnings"
+              + " (a legacy v1 ledger).")
   static final class AuditLedger implements Callable<Integer> {
     @Option(names = "--producer", required = true)
     String producer;
@@ -138,14 +140,8 @@ final class RootCommand implements Callable<Integer> {
         report =
             new RootStationService().auditLedger(producer, context, ledger, parsed[0], parsed[1]);
       }
-      for (String problem : report.problems) {
-        System.out.println("FAIL  " + problem);
-      }
-      System.out.println(
-          report.valid()
-              ? "Ledger audit valid: " + report.audited + " OPID(s) replayed."
-              : "Ledger audit INVALID: " + report.problems.size() + " problem(s).");
-      return report.valid() ? 0 : 1;
+      return LedgerCommand.summarize(
+          report, "Ledger audit valid: " + report.audited + " OPID(s) replayed.", "Ledger audit");
     }
   }
 }

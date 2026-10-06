@@ -110,7 +110,13 @@ final class SamConst {
   //
   // Sizes.
   //
-  static final short LENGTH_IO_BUFFER = (short) 1024;
+  /**
+   * The largest response is ISSUE: {@code 70 82 LL LL} and a worst-case F9 certificate (756
+   * octets), {@code 71 81 CB} and the 203-octet ISSUE entry, and {@code 72 L} with an ECDSA
+   * signature of at most 72 octets: 1040 octets.
+   */
+  static final short LENGTH_IO_BUFFER = (short) 1056;
+
   static final short LENGTH_SCRATCH = (short) 320;
   static final short LENGTH_NONCE = (short) 32;
   static final short OFFSET_NONCE_STATE = LENGTH_NONCE;
@@ -128,7 +134,9 @@ final class SamConst {
   static final short LENGTH_U32 = (short) 4;
   static final short LENGTH_DIGITS = (short) 8;
   static final short LENGTH_OPID = (short) 17;
-  static final short LENGTH_LAST_ENTRY = (short) 160;
+  /** The largest ledger entry, ISSUE: the 65-octet header and a 138-octet payload. */
+  static final short LENGTH_LAST_ENTRY = (short) 203;
+
   static final short LENGTH_F9_TEMPLATE_MAX = (short) 96;
   static final short LENGTH_SAM_SUBJECT_MAX = (short) 128;
   static final short LENGTH_SAM_CERT_MAX = (short) 1024;
@@ -150,13 +158,25 @@ final class SamConst {
   static final short STAGE_PARAMETERS_MAX = (short) 512;
   static final short STAGE_CERTIFICATE = (short) 0;
   static final short STAGE_CERTIFICATE_MAX = LENGTH_SAM_CERT_MAX;
+  /**
+   * ISSUE is staged at the top of the I/O buffer: {@code 86 41 | 9E 48 | 93 40 | 94 20 | 95 20} at
+   * most. The certificate is built from offset 0 and its TBSCertificate ends below offset 700, so
+   * the request stays intact until the entry is staged (step 11); the response written after the
+   * commit then overwrites it.
+   */
+  static final short STAGE_ISSUE_MAX = (short) 275;
+
+  static final short STAGE_ISSUE = (short) (LENGTH_IO_BUFFER - STAGE_ISSUE_MAX);
   /** I/O buffer offset for public-key comparisons after point validation in ISSUE. */
   static final short IO_POINT_COMPARE = (short) 512;
 
   //
   // Scratch layout for ISSUE. Regions marked with the same offset are live in disjoint steps, as
   // numbered in the ISSUE order: POP message (steps 2-10, F9 point at +39), ENTRY (steps 11-12),
-  // TIMES (step 5), OPID/SEQ/EVENT (steps 8-12), SIGNATURE (steps 13-16).
+  // TIMES (step 5), OPID/SEQ/EVENT (steps 8-12), SIGNATURE (steps 13-16). The 203-octet ISSUE
+  // entry covers HASH_AUX, where f9Ski (steps 10-11) is copied into the entry before the entry
+  // reaches it; tbsHash sits above the entry and receives the new chain head once the entry is
+  // complete (steps 11-12).
   //
   static final short S_POP = (short) 0;
   static final short S_POP_NONCE = (short) 7;
@@ -164,7 +184,8 @@ final class SamConst {
   static final short LENGTH_POP = (short) 104;
   static final short S_ENTRY = (short) 0;
   static final short S_TIMES = (short) 104;
-  static final short S_HASH_TBS = (short) 160;
+  static final short S_HASH_TBS = (short) 250;
+  static final short S_ISSUE_HEAD = S_HASH_TBS;
   static final short S_HASH_AUX = (short) 192;
   static final short S_SIGNATURE = (short) 224;
   static final short S_OPID = (short) 224;
@@ -395,6 +416,8 @@ final class SamConst {
     (byte) 0x0A,
     (byte) 0x02
   };
+  /** F9 issuance extension version 2: adds capSha256 and cplcSha256. */
+  static final byte ISSUANCE_EXTENSION_VERSION = (byte) 0x02;
   // 1.3.6.1.4.1.57923.20.10.10.3: root-signed SAM batch extension.
   static final byte[] OID_BATCH_EXTENSION = {
     (byte) 0x2B,

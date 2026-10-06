@@ -38,6 +38,13 @@
    - **SAM output is not channel-protected.** The SAM does not wrap responses. The authenticity of
      ledger entries, issued certificates and signed STATUS comes from SAM signatures. Responses are
      not confidential on the reader link, so no SAM response carries secret material.
+   - **Build and CAP identity are claims, not on-card measurements.** The leaf `buildSha256` is a
+     constant compiled into the applet (`build.sha256`), so a modified applet can report any value.
+     The F9 issuance extension `capSha256` and `cplcSha256` are SHA-256 values the production host
+     computes over the CAP file it was given and the CPLC data the card served; the SAM signs them
+     as received and cannot check them. They bind a card to a release only as far as the
+     production station is trusted. `attestation verify` rejects version 1 extensions, which lack
+     them.
 
    ## Issuer SAM Metering
    The SAM, not the host, owns OPID allocation and the quota:
@@ -59,6 +66,11 @@
    - Every event is a signed, hash-chained ledger entry. The SAM keeps only the last entry and the
      head; detection of a truncated or altered host ledger depends on comparing the host chain with
      the SAM's current head.
+   - The host ledger (format 2) also binds every receipt rewrite by SHA-256, so `ledger verify`
+     detects an edited or deleted receipt. A host crash between a receipt rewrite and its ledger
+     line fails verification closed for that receipt; see
+     [docs/PRODUCTION_QUALIFICATION.md](docs/PRODUCTION_QUALIFICATION.md#ledger-and-receipt-integrity).
+     A format 1 ledger verifies only with a warning (exit 4).
    - The SAM does not track F9 public keys. A repeated ISSUE for the same F9 key produces a second
      certificate with a different OPID; ledger audits should flag duplicate `f9Ski` values.
 
@@ -132,8 +144,18 @@
 
    jCardEngine does not roll back persistent writes on `abortTransaction`, so the repository tests
    cover these paths with white-box ordering tests, not with real tears. Power interruption around
-   SAM ISSUE, SAM TOP UP, SAM personalization and the PIV F9 certificate load must be qualified on
-   every target chip before production use.
+   SAM ISSUE, TOP UP, VOID, CLOSE and personalization, the PIV F9 certificate load, PIN/PUK updates
+   and secure-messaging CVC replacement must be qualified on every target chip before production
+   use.
+
+   ## Applet Deletion
+   Each PIV and Issuer SAM instance owns its cryptographic services and codecs (PIV: `PIVCrypto`,
+   `TLVReader`, `TLVWriter`, `DERWriter`; SAM: its certificate writer), allocated in its constructor
+   at install; no static field references an allocated object, and two instances share no service
+   object. `uninstall()` clears nothing. A deletion the platform refuses (JCRE 3.0.5 Section
+   11.3.4.2) therefore leaves the instance fully usable without any allocation after install, and
+   deleting one instance does not affect another. Qualify the platform's deletion path on hardware
+   ([docs/PRODUCTION_QUALIFICATION.md](docs/PRODUCTION_QUALIFICATION.md#card-platform-gates)).
 
    ## PIN and PUK Retry Counters
    CHANGE REFERENCE DATA and RESET RETRY COUNTER evaluate PIN history only after the current PIN or
@@ -144,7 +166,9 @@
    the security status. `OwnerPIN` counter updates do not participate in transactions, so the
    restore is not atomic: a tear part way through leaves the counter between its prior value and
    the maximum, which only benefits a caller that already presented the correct value. A disabled
-   PUK returns `6A88` for both commands.
+   PUK returns `6A88` for both commands. Until the issuer sets the PUK, it holds a random
+   install-time value; a caller presenting that value fails as on a mismatch (`63CX`, PUK retry
+   counter decremented, PUK security status false), so no command accepts an unprovisioned PUK.
 
    ## Response Chaining
    A pending response is bound to the class family of the command that started it. A GP
@@ -156,7 +180,8 @@
    chosen set of points (ECC Public Keys) existing on a low order curve.
    
    OpenFIPS201 validates the uncompressed-point prefix, coordinate ranges, and the curve equation
-   before invoking ECDH. Invalid and off-curve points are rejected. ECC key objects also reject a
+   before invoking ECDH. Invalid and off-curve points are rejected. An imported EC public point
+   passes the same validation; an invalid point returns `6A80` and clears the partial import. ECC key objects also reject a
    configuration that combines signing and key-establishment roles.
 
    Point validation uses software multi-precision arithmetic. Qualify P-256 and P-384 GENERAL

@@ -96,6 +96,8 @@ public final class AttestationVerifier {
   public static final String F9_ISSUANCE_EXTENSION = "f9.issuance-extension";
   public static final String F9_LCG_AUDIT = "f9.lcg-audit";
   public static final String F9_EXPECT_OPID = "f9.expect-opid";
+  public static final String F9_EXPECT_CAP = "f9.expect-cap";
+  public static final String F9_EXPECT_CPLC = "f9.expect-cplc";
   public static final String F9_NOT_VOIDED = "f9.not-voided";
   public static final String LEAF = "leaf";
   public static final String LEAF_SIGNATURE = "leaf.signature";
@@ -104,6 +106,7 @@ public final class AttestationVerifier {
   public static final String LEAF_AKI = "leaf.aki";
   public static final String LEAF_VALIDITY = "leaf.validity";
   public static final String LEAF_EXTENSION = "leaf.extension";
+  public static final String LEAF_EXPECT_BUILD = "leaf.expect-build";
   public static final String LEAF_ORIGIN = "leaf.origin";
   public static final String LEAF_KEY_REFERENCE = "leaf.key-reference";
   public static final String LEAF_KEY_USAGE = "leaf.key-usage";
@@ -258,12 +261,15 @@ public final class AttestationVerifier {
       check(SAM_REGISTRY, this::registry);
       check(F9_LCG_AUDIT, this::lcgAudit);
       check(F9_EXPECT_OPID, this::expectOpid);
+      check(F9_EXPECT_CAP, this::expectCap);
+      check(F9_EXPECT_CPLC, this::expectCplc);
       check(F9_NOT_VOIDED, this::notVoided);
       if (leaf == null) {
         skip(LEAF, "no leaf certificate supplied");
       } else {
         leafChecks();
       }
+      check(LEAF_EXPECT_BUILD, this::expectBuild);
       check(LEAF_SLOT_SPKI, this::slotSpki);
       check(CHUID_IDENTITY, this::chuid);
     }
@@ -501,7 +507,14 @@ public final class AttestationVerifier {
                     OpenPhysicalExtensions.requireNonCritical(
                         f9.extensions(), OpenPhysicalExtensions.F9_ISSUANCE));
             issuance = parsed;
-            return "issuanceSeq " + parsed.issuanceSeq + ", eventSeq " + parsed.eventSeq;
+            return "issuanceSeq "
+                + parsed.issuanceSeq
+                + ", eventSeq "
+                + parsed.eventSeq
+                + ", capSha256 "
+                + hex(parsed.capSha256())
+                + ", cplcSha256 "
+                + hex(parsed.cplcSha256());
           });
     }
 
@@ -644,6 +657,54 @@ public final class AttestationVerifier {
       return opid.toPrinted();
     }
 
+    /** The SAM-signed capSha256 equals the expected SHA-256 of the installed CAP file. */
+    String expectCap() throws Skip {
+      byte[] expected = request.expectCapSha256().orElse(null);
+      if (expected == null) {
+        throw new Skip("no expected CAP SHA-256 supplied");
+      }
+      require(f9 != null, "expected CAP SHA-256 supplied but no F9 certificate supplied");
+      if (issuance == null) {
+        throw new IllegalStateException("F9 issuance extension unavailable");
+      }
+      require(
+          Arrays.equals(issuance.capSha256(), expected),
+          "F9 capSha256 " + hex(issuance.capSha256()) + " != expected " + hex(expected));
+      return hex(expected);
+    }
+
+    /** The SAM-signed cplcSha256 equals the expected SHA-256 of the card's CPLC data. */
+    String expectCplc() throws Skip {
+      byte[] expected = request.expectCplcSha256().orElse(null);
+      if (expected == null) {
+        throw new Skip("no expected CPLC SHA-256 supplied");
+      }
+      require(f9 != null, "expected CPLC SHA-256 supplied but no F9 certificate supplied");
+      if (issuance == null) {
+        throw new IllegalStateException("F9 issuance extension unavailable");
+      }
+      require(
+          Arrays.equals(issuance.cplcSha256(), expected),
+          "F9 cplcSha256 " + hex(issuance.cplcSha256()) + " != expected " + hex(expected));
+      return hex(expected);
+    }
+
+    /** The leaf buildSha256 equals the expected build identity ({@code build.sha256}). */
+    String expectBuild() throws Skip {
+      byte[] expected = request.expectBuildSha256().orElse(null);
+      if (expected == null) {
+        throw new Skip("no expected build SHA-256 supplied");
+      }
+      require(leaf != null, "expected build SHA-256 supplied but no leaf certificate supplied");
+      if (pivLeaf == null) {
+        throw new IllegalStateException("leaf OpenPhysical extension unavailable");
+      }
+      require(
+          Arrays.equals(pivLeaf.buildSha256(), expected),
+          "leaf buildSha256 " + hex(pivLeaf.buildSha256()) + " != expected " + hex(expected));
+      return hex(expected);
+    }
+
     // ---- leaf ----
 
     void leafChecks() {
@@ -671,7 +732,7 @@ public final class AttestationVerifier {
             return String.format(
                 Locale.ROOT,
                 "slot %02X, mechanism %02X, role %02X, attributes %02X, buildFlags %02X, vciSuite"
-                    + " %02X, appletVersion %s, platformId %s",
+                    + " %02X, appletVersion %s, platformId %s, buildSha256 %s",
                 parsed.keyReference,
                 parsed.mechanism,
                 parsed.role,
@@ -679,7 +740,8 @@ public final class AttestationVerifier {
                 parsed.buildFlags,
                 parsed.vciSuite,
                 hex(parsed.appletVersion()),
-                hex(parsed.platformId()));
+                hex(parsed.platformId()),
+                hex(parsed.buildSha256()));
           });
       check(
           LEAF_ORIGIN,

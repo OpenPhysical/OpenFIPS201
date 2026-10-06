@@ -18,7 +18,8 @@ import java.util.Arrays;
  * <pre>
  * "OPSAMLE1"(8) | type(1) | samSki(20) | eventSeq(4) | prevHead(32) | payload
  *  GENESIS 01: sha256(samCert)(32) | paramsDigest(32) | quota(4) | lastTs(8)
- *  ISSUE   02: issuanceSeq(4) | opidLen(1) | opid(opidLen) | f9Ski(20) | tbsHash(32)
+ *  ISSUE   02: issuanceSeq(4) | opidLen(1) | opid(opidLen) | f9Ski(20) | capSha256(32)
+ *              | cplcSha256(32) | tbsHash(32)
  *  TOPUP   03: ts(8) | added(4) | newQuota(4)
  *  TERM    04: issued(4) | quota(4)
  *  VOID    05: issuanceSeq(4) | opidLen(1) = 17 | opid(17) | reason(1)
@@ -55,6 +56,8 @@ public final class SamLedgerEntry {
   public final long issuanceSeq;
   public final String opid;
   private final byte[] f9Ski;
+  private final byte[] capSha256;
+  private final byte[] cplcSha256;
   private final byte[] tbsHash;
 
   // TOPUP
@@ -84,6 +87,8 @@ public final class SamLedgerEntry {
     long seq = -1;
     String opidValue = null;
     byte[] ski = null;
+    byte[] cap = null;
+    byte[] cplc = null;
     byte[] tbs = null;
     long addedValue = -1;
     long issuedValue = -1;
@@ -102,10 +107,13 @@ public final class SamLedgerEntry {
         }
         seq = IssuanceCrypto.unsigned(entry, p, 4);
         int opidLength = entry[p + 4] & 0xFF;
-        requireLength(entry, p + 5 + opidLength + 20 + 32);
+        requireLength(entry, p + 5 + opidLength + 20 + 32 + 32 + 32);
         opidValue = new String(entry, p + 5, opidLength, StandardCharsets.US_ASCII);
-        ski = Arrays.copyOfRange(entry, p + 5 + opidLength, p + 25 + opidLength);
-        tbs = Arrays.copyOfRange(entry, p + 25 + opidLength, p + 57 + opidLength);
+        int fields = p + 5 + opidLength;
+        ski = Arrays.copyOfRange(entry, fields, fields + 20);
+        cap = Arrays.copyOfRange(entry, fields + 20, fields + 52);
+        cplc = Arrays.copyOfRange(entry, fields + 52, fields + 84);
+        tbs = Arrays.copyOfRange(entry, fields + 84, fields + 116);
         break;
       case TYPE_TOPUP:
         requireLength(entry, p + 16);
@@ -139,6 +147,8 @@ public final class SamLedgerEntry {
     this.issuanceSeq = seq;
     this.opid = opidValue;
     this.f9Ski = ski;
+    this.capSha256 = cap;
+    this.cplcSha256 = cplc;
     this.tbsHash = tbs;
     this.added = addedValue;
     this.issued = issuedValue;
@@ -189,6 +199,16 @@ public final class SamLedgerEntry {
 
   public byte[] tbsHash() {
     return copy(tbsHash);
+  }
+
+  /** ISSUE: the host-measured SHA-256 of the installed PIV CAP file. */
+  public byte[] capSha256() {
+    return copy(capSha256);
+  }
+
+  /** ISSUE: the host-measured SHA-256 of the card's CPLC data. */
+  public byte[] cplcSha256() {
+    return copy(cplcSha256);
   }
 
   /** Whether {@code signature} is the SAM's ECDSA signature over this entry. */

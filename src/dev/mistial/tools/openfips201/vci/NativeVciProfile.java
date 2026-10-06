@@ -73,6 +73,12 @@ public final class NativeVciProfile {
   /**
    * SP 800-85B AS06.04.06: "The eContentType of the encapContentInfo shall be
    * id-icao-ldsSecurityObject (OID = 1.3.27.1.1.1)."
+   *
+   * <p>SP 800-73-5 Part 1 Section 3.1.7 specifies the Security Object by reference to ICAO 9303
+   * Part 10, whose id-icao-ldsSecurityObject is 2.23.136.1.1.1. The PIV conformance requirements
+   * nonetheless fix the value 1.3.27.1.1.1: SP 800-85B AS06.04.06 and SP 800-166 DTR-07.02.01.06.
+   * GSA ICAM test cards carry it and the GSA piv-conformance tool enforces it, so 2.23.136.1.1.1 is
+   * not accepted.
    */
   static final ASN1ObjectIdentifier ID_ICAO_LDS_SECURITY_OBJECT =
       new ASN1ObjectIdentifier("1.3.27.1.1.1");

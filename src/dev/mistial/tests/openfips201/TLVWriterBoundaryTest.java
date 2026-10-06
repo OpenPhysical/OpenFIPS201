@@ -140,6 +140,59 @@ class TLVWriterBoundaryTest {
     assertEquals((byte) 0xFC, output[5]);
   }
 
+  /**
+   * ISO/IEC 7816-4 Section 6.3 recommends "the shortest possible coding of the length field". A
+   * {@code maxLength} that reserves a longer form than the actual content needs must still produce
+   * the shortest form, with the content moved to follow it and the vacated octets zeroised.
+   */
+  @Test
+  void oversizedMaxLengthProducesShortestLengthEncoding() {
+    int[][] cases = {
+      // {maxLength, contentLength}
+      {0x7FFF, 0x00},
+      {0x0100, 0x7F},
+      {0x0100, 0x80},
+      {0x0100, 0xFF},
+      {0x0100, 0x0100},
+      {0x00FF, 0x7F},
+      {0x00FF, 0x80},
+      {0x0080, 0x7F},
+      {0x7FFF, 0x0100}
+    };
+    for (int[] testCase : cases) {
+      int maxLength = testCase[0];
+      int contentLength = testCase[1];
+      byte[] content = new byte[contentLength];
+      for (int i = 0; i < content.length; i++) content[i] = (byte) (i + 1);
+      byte[] header = minimalHeader(contentLength);
+      byte[] expected = new byte[NONZERO_PARENT_OFFSET + header.length + contentLength];
+      System.arraycopy(header, 0, expected, NONZERO_PARENT_OFFSET, header.length);
+      System.arraycopy(content, 0, expected, NONZERO_PARENT_OFFSET + header.length, content.length);
+
+      byte[] output = new byte[NONZERO_PARENT_OFFSET + 4 + contentLength];
+      TLVWriter writer = writer();
+      writer.init(output, NONZERO_PARENT_OFFSET, (short) maxLength, PIV.CONST_TAG_DATA);
+      System.arraycopy(content, 0, output, writer.getOffset(), content.length);
+      writer.move((short) contentLength);
+
+      String context = "maxLength " + maxLength + ", content " + contentLength;
+      assertEquals(
+          (short) (header.length + contentLength), writer.finish(), context + ": returned length");
+      byte[] written = java.util.Arrays.copyOf(output, expected.length);
+      assertArrayEquals(expected, written, context + ": encoding");
+      for (int i = expected.length; i < output.length; i++) {
+        assertEquals(0, output[i], context + ": vacated octet " + i + " zeroised");
+      }
+    }
+  }
+
+  /** Independent wire answer: tag 53 and the shortest BER length for {@code length}. */
+  private static byte[] minimalHeader(int length) {
+    if (length < 0x80) return new byte[] {0x53, (byte) length};
+    if (length <= 0xFF) return new byte[] {0x53, (byte) 0x81, (byte) length};
+    return new byte[] {0x53, (byte) 0x82, (byte) (length >> 8), (byte) length};
+  }
+
   private static TLVWriter writer() {
     try (MockedStatic<JCSystem> mocked = Mockito.mockStatic(JCSystem.class)) {
       mocked
@@ -148,7 +201,7 @@ class TLVWriterBoundaryTest {
       mocked
           .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
           .thenReturn(new short[6]);
-      TLVWriter writer = TLVWriter.getInstance();
+      TLVWriter writer = new TLVWriter();
       writer.reset();
       return writer;
     }

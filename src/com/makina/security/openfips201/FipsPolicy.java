@@ -39,9 +39,11 @@ final class FipsPolicy {
       byte id, byte modeContact, byte modeContactless, byte mechanism, byte role, byte attributes) {
     // SP 800-73-5 Part 1 Table 5 fixes each standard key reference's contact and contactless
     // security conditions. Compatibility builds retain issuer-specific access policies.
-    if (ENABLED && !allowsKeyAccessModes(id, modeContact, modeContactless)) {
+    // #if FIPS_MODE
+    if (!allowsKeyAccessModes(id, modeContact, modeContactless)) {
       return false;
     }
+    // #endif
     return allowsKeyDefinition(id, mechanism, role, attributes);
   }
 
@@ -107,6 +109,7 @@ final class FipsPolicy {
     return !ENABLED;
   }
 
+  // #if FIPS_MODE
   private static boolean allowsKeyAccessModes(byte id, byte contact, byte contactless) {
     if (id == PIV.ID_KEY_ATTESTATION) {
       return accessMatches(
@@ -134,13 +137,13 @@ final class FipsPolicy {
           PIVObject.ACCESS_MODE_PIN,
           (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN));
     }
-    return !ENABLED;
+    return false;
   }
+  // #endif
 
   static boolean allowsObjectDefinition(
       byte[] id, short offset, short length, byte contact, byte contactless) {
-    if (!ENABLED) return true;
-
+    // #if FIPS_MODE
     if (length == (short) 1 && id[offset] == (byte) 0x7E) {
       return accessMatches(
           contact, contactless, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS);
@@ -189,6 +192,9 @@ final class FipsPolicy {
           contact, contactless, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_VCI);
     }
     return false;
+    // #else
+    return true;
+    // #endif
   }
 
   /**
@@ -200,9 +206,14 @@ final class FipsPolicy {
    * any positive capacity.
    */
   static boolean allowsObjectCapacity(byte[] id, short offset, short length, short capacity) {
-    return !ENABLED || capacity >= minimumObjectCapacity(id, offset, length);
+    // #if FIPS_MODE
+    return capacity >= minimumObjectCapacity(id, offset, length);
+    // #else
+    return true;
+    // #endif
   }
 
+  // #if FIPS_MODE
   /** Returns the SP 800-73-5 Part 1 Table 8 minimum container capacity, or zero when none. */
   static short minimumObjectCapacity(byte[] id, short offset, short length) {
     if (length == (short) 1 && id[offset] == (byte) 0x7E) return (short) 19;
@@ -253,6 +264,7 @@ final class FipsPolicy {
       byte contact, byte contactless, byte expectedContact, byte expectedContactless) {
     return contact == expectedContact && contactless == expectedContactless;
   }
+  // #endif
 
   private static boolean isAes(byte mechanism) {
     return mechanism == PIV.ID_ALG_AES_128

@@ -34,8 +34,10 @@ package dev.mistial.openphysical.sam;
  * BasicConstraints critical {@code 30 06 01 01 FF 02 01 00}; KeyUsage critical {@code 03 02 02 04}
  * (keyCertSign); SubjectKeyIdentifier (RFC 7093 method 1); AuthorityKeyIdentifier keyIdentifier =
  * SAM SKI; issuance extension 1.3.6.1.4.1.57923.20.10.10.2 (non-critical) {@code SEQUENCE{version
- * 1, issuanceSeq, eventSeq, prevChainHead OCTET STRING(32)}}. The PIV card checks BC, KU and SKI
- * exactly and requires a well-formed AKI. The worst case is about 690 octets.
+ * 2, issuanceSeq, eventSeq, prevChainHead OCTET STRING(32), capSha256 OCTET STRING(32), cplcSha256
+ * OCTET STRING(32)}}. The PIV card checks BC, KU and SKI exactly and requires a well-formed AKI.
+ * The worst case (128-octet SAM subject, 96-octet template, GeneralizedTime validity, 5-octet
+ * eventSeq, 72-octet signature) is 756 octets, inside the card's 760-octet limit.
  */
 final class F9CertificateBuilder {
   private F9CertificateBuilder() {}
@@ -67,7 +69,10 @@ final class F9CertificateBuilder {
       byte[] issuanceSeq,
       short issuanceSeqOffset,
       byte[] eventSeq,
-      short eventSeqOffset) {
+      short eventSeqOffset,
+      byte[] measurements,
+      short capSha256Offset,
+      short cplcSha256Offset) {
     writer.init(out, (short) 0);
     writer.begin((byte) 0x70);
     writer.begin((byte) 0x30); // Certificate
@@ -117,10 +122,12 @@ final class F9CertificateBuilder {
         (short) SamConst.OID_ISSUANCE_EXTENSION.length);
     writer.begin(TLV.ASN1_OCTET_STRING);
     writer.begin((byte) 0x30);
-    writer.writeIntegerByte((byte) 0x01);
+    writer.writeIntegerByte(SamConst.ISSUANCE_EXTENSION_VERSION);
     writer.writePositiveInteger(issuanceSeq, issuanceSeqOffset, SamConst.LENGTH_U32);
     writer.writePositiveInteger(eventSeq, eventSeqOffset, SamConst.LENGTH_U32);
     writer.writeTlv(TLV.ASN1_OCTET_STRING, state.chainHead, (short) 0, SamConst.LENGTH_HASH);
+    writer.writeTlv(TLV.ASN1_OCTET_STRING, measurements, capSha256Offset, SamConst.LENGTH_HASH);
+    writer.writeTlv(TLV.ASN1_OCTET_STRING, measurements, cplcSha256Offset, SamConst.LENGTH_HASH);
     writer.end();
     writer.end();
     writer.end();

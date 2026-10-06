@@ -23,6 +23,9 @@ final class PIVOpacity {
   static final short FIELD_LENGTH = (short) 48;
   // #endif
   static final short SESSION_KEY_LENGTH = (short) (FIELD_LENGTH - (short) 16);
+  // Equal to ECPointValidator.encodedLength(FIELD_LENGTH), the single definition of the
+  // uncompressed encoding. The Java Card converter accepts only constant initializers in a static
+  // initializer, so the value is written as the compile-time constant that method returns.
   static final short POINT_LENGTH = (short) (FIELD_LENGTH * (short) 2 + (short) 1);
   static final short NONCE_LENGTH = (short) (FIELD_LENGTH / (short) 2);
 
@@ -34,6 +37,7 @@ final class PIVOpacity {
   static final short OFFSET_N = (short) (OFFSET_Z + FIELD_LENGTH);
   static final short OFFSET_ID_SICC = (short) (OFFSET_N + NONCE_LENGTH);
 
+  // #if FIPS_MODE
   // #if VCI_CS2
   private static final byte[] KDA_EXPECTED = {
     (byte) 0xA4, (byte) 0x28, (byte) 0xFA, (byte) 0x53,
@@ -89,15 +93,19 @@ final class PIVOpacity {
     (byte) 0x29, (byte) 0xFB, (byte) 0xAE, (byte) 0xD2
   };
   // #endif
+  // #endif
 
+  private final PIVCrypto crypto;
   private final byte[] output;
   private final byte[] workspace;
 
-  PIVOpacity(byte[] output, byte[] workspace) {
+  PIVOpacity(PIVCrypto crypto, byte[] output, byte[] workspace) {
+    this.crypto = crypto;
     this.output = output;
     this.workspace = workspace;
   }
 
+  // #if FIPS_MODE
   /**
    * Runs the compiled suite's SP 800-56C one-step KDA known-answer test.
    *
@@ -129,6 +137,7 @@ final class PIVOpacity {
       buffer[(short) (offset + index)] = (byte) (firstValue + (byte) index);
     }
   }
+  // #endif
 
   /**
    * Derives the compiled suite's session keys from the shared workspace layout ({@link
@@ -187,7 +196,7 @@ final class PIVOpacity {
                 hostPointOffset,
                 cardIdOffset,
                 hostControlByte);
-        PIVCrypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
+        crypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
         short copyLength = hashLength;
         if ((short) (written + copyLength) > outputLength) {
           copyLength = (short) (outputLength - written);

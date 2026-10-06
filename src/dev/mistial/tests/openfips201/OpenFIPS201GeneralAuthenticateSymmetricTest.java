@@ -2,11 +2,19 @@ package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
+import com.makina.security.openfips201.OpenFIPS201;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
+import javacard.framework.Applet;
+import javacard.framework.ISO7816;
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
 import javax.smartcardio.CommandAPDU;
@@ -487,7 +495,9 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
       "7C0453008100", // unknown child
       "7C068101AA8101BB", // duplicate Challenge with different values
       "7C06820100820102", // duplicate Response with different values
-      "7C0480008000" // duplicate Witness
+      "7C0480008000", // duplicate Witness
+      "7C0485008500", // duplicate Exponentiation
+      "7C088501AA8501BB" // duplicate Exponentiation with different values
     };
     for (String data : malformed) {
       assertSw(
@@ -500,6 +510,88 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
         transmit(
             0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
         "The canonical challenge request is accepted");
+  }
+
+  /**
+   * Well-formed BER-TLV that is not exactly one Table 7 template is rejected with '6A80' by the
+   * template grammar check itself, which wipes the received command data from the scratch buffer
+   * before it throws. The parser is called directly, without the command-level failure handler, so
+   * the wipe it performs is observed on its own.
+   */
+  @Test
+  void nonCanonicalTemplateRejectionWipesScratch() throws Exception {
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x14);
+    assertSw(0x9000, selectApplet(), "SELECT before template parser cases");
+
+    String[] malformed = {
+      "53007C028100", // leading top-level sibling
+      "7C0281005300", // trailing top-level sibling
+      "7C0485008500", // duplicate Exponentiation
+      "7C0453008100", // unknown child
+      "7C068101AA8101BB" // duplicate Challenge with different values
+    };
+    AutoCloseable context = (AutoCloseable) engine.getClass().getMethod("asCurrent").invoke(engine);
+    try {
+      Object piv = field(unwrapApplet(engine.getApplet(OPENFIPS201_AID)), "piv");
+      Object handler = field(piv, "authenticationCommands");
+      byte[] scratch = (byte[]) field(piv, "scratch");
+      Method parse =
+          handler
+              .getClass()
+              .getDeclaredMethod(
+                  "processGeneralAuthenticate", byte[].class, short.class, short.class);
+      parse.setAccessible(true);
+      for (String data : malformed) {
+        byte[] body = hex(data);
+        byte[] apdu = new byte[5 + body.length];
+        apdu[1] = (byte) 0x87;
+        apdu[2] = TEST_ALGORITHM;
+        apdu[3] = KEY_REF_CARD_MANAGEMENT;
+        apdu[4] = (byte) body.length;
+        System.arraycopy(body, 0, apdu, 5, body.length);
+        Arrays.fill(scratch, (byte) 0xA5);
+
+        InvocationTargetException failure =
+            assertThrows(
+                InvocationTargetException.class,
+                () -> parse.invoke(handler, apdu, (short) 5, (short) body.length),
+                data);
+        Throwable cause = failure.getCause();
+        assertEquals(
+            "javacard.framework.ISOException", cause.getClass().getName(), data + ": exception");
+        assertEquals(
+            ISO7816.SW_WRONG_DATA,
+            (short) cause.getClass().getMethod("getReason").invoke(cause),
+            data + ": status word");
+        assertArrayEquals(new byte[scratch.length], scratch, data + ": scratch wiped");
+      }
+    } finally {
+      context.close();
+    }
+  }
+
+  private static Object field(Object target, String name) throws Exception {
+    Field field = target.getClass().getDeclaredField(name);
+    field.setAccessible(true);
+    return field.get(target);
+  }
+
+  private static Applet unwrapApplet(Applet appletProxy) throws Exception {
+    if (appletProxy.getClass().getName().equals(OpenFIPS201.class.getName())) return appletProxy;
+    for (Field proxyField : appletProxy.getClass().getDeclaredFields()) {
+      if (!InvocationHandler.class.isAssignableFrom(proxyField.getType())) continue;
+      proxyField.setAccessible(true);
+      Object handler = proxyField.get(null);
+      for (Field handlerField : handler.getClass().getDeclaredFields()) {
+        handlerField.setAccessible(true);
+        Object value = handlerField.get(handler);
+        if (value instanceof Applet
+            && value.getClass().getName().equals(OpenFIPS201.class.getName())) {
+          return (Applet) value;
+        }
+      }
+    }
+    throw new IllegalStateException("Unable to unwrap simulator applet proxy");
   }
 
   /** GENERAL AUTHENTICATE Case 1D: a symmetric key enciphers a host challenge. */

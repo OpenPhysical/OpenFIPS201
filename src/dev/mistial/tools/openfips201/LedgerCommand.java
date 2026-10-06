@@ -27,10 +27,38 @@ import picocli.CommandLine.Option;
     description = "Verify and reconcile a batch's hash-chained issuance ledger.",
     subcommands = {LedgerCommand.Verify.class, LedgerCommand.Reconcile.class})
 final class LedgerCommand implements Callable<Integer> {
+  /** Exit code of a ledger without problems whose verification reported warnings. */
+  static final int EXIT_VALID_WITH_WARNINGS = 4;
+
   @Override
   public Integer call() {
     CommandLine.usage(this, System.err);
     return 2;
+  }
+
+  /**
+   * Prints a verification report's problems and warnings and its summary line.
+   *
+   * @return 0 valid, 1 invalid, {@value #EXIT_VALID_WITH_WARNINGS} valid with warnings
+   */
+  static int summarize(IssuanceLedger.Report report, String validSummary, String subject) {
+    for (String problem : report.problems) {
+      System.out.println("FAIL  " + problem);
+    }
+    for (String warning : report.warnings) {
+      System.out.println("WARN  " + warning);
+    }
+    if (!report.valid()) {
+      System.out.println(subject + " INVALID: " + report.problems.size() + " problem(s).");
+      return 1;
+    }
+    if (!report.warnings.isEmpty()) {
+      System.out.println(
+          validSummary + " WITH " + report.warnings.size() + " WARNING(S); not a clean pass.");
+      return EXIT_VALID_WITH_WARNINGS;
+    }
+    System.out.println(validSummary);
+    return 0;
   }
 
   @Command(
@@ -40,7 +68,9 @@ final class LedgerCommand implements Callable<Integer> {
           "Verify the ledger offline (hash chain, SAM signatures, entry types, seq continuity,"
               + " unique OPIDs and f9Ski, SAM chain, registry lines under root.pem). With --sam,"
               + " also require the live SAM to be at the ledger's last entry and DECIPHER-check"
-              + " issued OPIDs. No OPID is recomputed here. Exit 0 valid, 1 invalid.")
+              + " issued OPIDs. Every receipt the ledger names must exist and match the hash the"
+              + " ledger last recorded for it. No OPID is recomputed here. Exit 0 valid, 1"
+              + " invalid, 4 valid with warnings (a legacy v1 ledger: receipts not bound).")
   static final class Verify implements Callable<Integer> {
     @Option(names = "--producer", required = true)
     String producer;
@@ -93,14 +123,12 @@ final class LedgerCommand implements Callable<Integer> {
         System.out.println(
             "DECIPHER: " + report.deciphered + " issued OPID(s) confirmed by the SAM.");
       }
-      for (String problem : report.problems) {
-        System.out.println("FAIL  " + problem);
+      if (report.receiptsVerified > 0) {
+        System.out.println(
+            "Receipts: " + report.receiptsVerified + " match their ledger bindings.");
       }
-      System.out.println(
-          report.valid()
-              ? "Ledger valid: " + report.issued + " issued."
-              : "Ledger INVALID: " + report.problems.size() + " problem(s).");
-      return report.valid() ? 0 : 1;
+      return LedgerCommand.summarize(
+          report, "Ledger valid: " + report.issued + " issued.", "Ledger");
     }
   }
 

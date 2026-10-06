@@ -58,9 +58,9 @@ import org.globalplatform.SecureChannel;
  * </ul>
  *
  * <p>Command conventions: CLA 80 is plaintext and 84 is secure-channel protected; the chaining bit
- * is accepted only on PUT PARAMETERS and LOAD SAM CERTIFICATE. Any command other than GET RESPONSE
- * abandons a pending outgoing response, and any command other than ISSUE and GET RESPONSE consumes
- * the issuance nonce.
+ * is accepted only on PUT PARAMETERS, LOAD SAM CERTIFICATE and ISSUE. Any command other than GET
+ * RESPONSE abandons a pending outgoing response, and any command other than ISSUE and GET RESPONSE
+ * consumes the issuance nonce.
  */
 public final class IssuerSam extends Applet implements AppletEvent, ExtendedLength {
   private static final byte SC_MASK =
@@ -76,6 +76,7 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
   private final SamLedger ledger;
   private final SamPersonalization personalization;
   private final ApduChain chain;
+  private final DERWriter certificateWriter;
   private final byte[] io;
   private final byte[] scratch;
   private final byte[] nonce;
@@ -90,7 +91,7 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
             (short) (SamConst.LENGTH_NONCE + 1), JCSystem.CLEAR_ON_DESELECT);
     flags = JCSystem.makeTransientByteArray(LENGTH_FLAGS, JCSystem.CLEAR_ON_DESELECT);
     result = JCSystem.makeTransientShortArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    DERWriter.initialize();
+    certificateWriter = new DERWriter();
     state = new SamState();
     crypto = new SamCrypto(io);
     ledger = new SamLedger(state, crypto, io, scratch, nonce);
@@ -117,10 +118,17 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
     state.operatorPin.reset();
   }
 
+  /**
+   * Prepares for deletion. Nothing is required: every object this instance allocated, the DER
+   * writer included, is referenced only from the instance itself, never from a static field, so
+   * JCRE 3.0.5 Section 11.3.4.2 does not block the deletion and the objects are released with the
+   * instance. JC 3.0.5 API AppletEvent states "The Java Card runtime environment will not rollback
+   * state automatically if applet deletion fails"; leaving the state untouched keeps the instance
+   * fully operational in that case.
+   */
   @Override
   public void uninstall() {
-    DERWriter.terminate();
-    TLVReader.terminate();
+    // Intentionally empty: there is no static reference to release.
   }
 
   @Override
@@ -247,13 +255,12 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
         send(apdu, SamConst.LENGTH_NONCE);
         return;
       case SamConst.INS_ISSUE:
-        // Step 1: lifecycle, secure channel and operator PIN.
-        requireOperator();
-        requireP1P2(p1, p2, (byte) 0, SamConst.P2_ISSUE_F9);
-        short issued = ledger.issue(DERWriter.getInstance(), buffer, offset, length);
-        result[RESULT_LENGTH] = issued;
-        flags[FLAG_RESULT_VALID] = (byte) 1;
-        send(apdu, issued);
+        try {
+          processIssue(apdu, buffer, cla, p1, p2, offset, length);
+        } catch (ISOException e) {
+          chain.abortIncoming();
+          throw e;
+        }
         return;
       case SamConst.INS_TOP_UP:
         requireP1P2(p1, p2, (byte) 0, (byte) 0);
@@ -352,6 +359,33 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
     short responseLength =
         personalization.loadCertificate(io, SamConst.STAGE_CERTIFICATE, total, buffer, (short) 0);
     apdu.setOutgoingAndSend((short) 0, responseLength);
+  }
+
+  /**
+   * ISSUE, possibly command-chained: every frame needs the lifecycle, secure channel and operator
+   * PIN (step 1); the assembled request is staged at {@link SamConst#STAGE_ISSUE} and processed
+   * when the last frame arrives. Only the last frame uses the nonce.
+   */
+  private void processIssue(
+      APDU apdu, byte[] buffer, byte cla, byte p1, byte p2, short offset, short length) {
+    requireOperator();
+    requireP1P2(p1, p2, (byte) 0, SamConst.P2_ISSUE_F9);
+    short total =
+        chain.append(
+            SamConst.INS_ISSUE,
+            Util.getShort(buffer, ISO7816.OFFSET_P1),
+            true,
+            (cla & SamConst.CLA_CHAIN_BIT) != 0,
+            buffer,
+            offset,
+            length,
+            SamConst.STAGE_ISSUE,
+            SamConst.STAGE_ISSUE_MAX);
+    if (total < (short) 0) return;
+    short issued = ledger.issue(certificateWriter, io, SamConst.STAGE_ISSUE, total);
+    result[RESULT_LENGTH] = issued;
+    flags[FLAG_RESULT_VALID] = (byte) 1;
+    send(apdu, issued);
   }
 
   /** Secure channel, then 6986 after LOCK. */
@@ -601,7 +635,9 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
               || cla == SamConst.CLA_PROPRIETARY_SM;
     } else {
       byte base = cla;
-      if (ins == SamConst.INS_PUT_PARAMETERS || ins == SamConst.INS_LOAD_SAM_CERTIFICATE) {
+      if (ins == SamConst.INS_PUT_PARAMETERS
+          || ins == SamConst.INS_LOAD_SAM_CERTIFICATE
+          || ins == SamConst.INS_ISSUE) {
         base = (byte) (cla & (byte) ~SamConst.CLA_CHAIN_BIT);
       }
       valid = base == SamConst.CLA_PROPRIETARY || base == SamConst.CLA_PROPRIETARY_SM;

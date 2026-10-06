@@ -39,6 +39,7 @@ class PIVSecurityProviderPinUpdateTest {
   private AutoCloseable engineContext;
   private MockedStatic<GPSystem> gp;
   private CVM cvm;
+  private PIVCrypto crypto;
 
   @BeforeEach
   void enterCardContext() throws Exception {
@@ -49,8 +50,7 @@ class PIVSecurityProviderPinUpdateTest {
     cvm = Mockito.mock(CVM.class);
     gp = Mockito.mockStatic(GPSystem.class);
     gp.when(() -> GPSystem.getCVM(GPSystem.CVM_GLOBAL_PIN)).thenReturn(cvm);
-    PIVCrypto.terminate();
-    PIVCrypto.init();
+    crypto = new PIVCrypto();
   }
 
   @AfterEach
@@ -61,7 +61,7 @@ class PIVSecurityProviderPinUpdateTest {
 
   @Test
   void pinHistoryHoldsKeyedEntriesRatherThanPlainDigests() throws Exception {
-    PIVSecurityProvider provider = new PIVSecurityProvider(null);
+    PIVSecurityProvider provider = new PIVSecurityProvider(crypto, null);
     provider.updatePIN(PIV.ID_CVM_LOCAL_PIN, PIN_A, (short) 0, (byte) PIN_A.length, HISTORY);
 
     byte[] entry = Arrays.copyOfRange(pinHistory(provider), 0, 32);
@@ -72,7 +72,7 @@ class PIVSecurityProviderPinUpdateTest {
     assertFalse(Arrays.equals(new byte[32], entry), "The current PIN must be recorded");
 
     // A second card keys its history with a different install-time secret.
-    PIVSecurityProvider other = new PIVSecurityProvider(null);
+    PIVSecurityProvider other = new PIVSecurityProvider(crypto, null);
     other.updatePIN(PIV.ID_CVM_LOCAL_PIN, PIN_A, (short) 0, (byte) PIN_A.length, HISTORY);
     assertFalse(
         Arrays.equals(entry, Arrays.copyOfRange(pinHistory(other), 0, 32)),
@@ -90,7 +90,7 @@ class PIVSecurityProviderPinUpdateTest {
 
   @Test
   void historyRejectionLeavesTheReferenceDataUnchanged() throws Exception {
-    PIVSecurityProvider provider = new PIVSecurityProvider(null);
+    PIVSecurityProvider provider = new PIVSecurityProvider(crypto, null);
     provider.updatePIN(PIV.ID_CVM_LOCAL_PIN, PIN_A, (short) 0, (byte) PIN_A.length, HISTORY);
     provider.updatePIN(PIV.ID_CVM_LOCAL_PIN, PIN_B, (short) 0, (byte) PIN_B.length, HISTORY);
     byte[] historyBefore = pinHistory(provider).clone();
@@ -124,7 +124,7 @@ class PIVSecurityProviderPinUpdateTest {
               depthAtUpdate[0] = JCSystem.getTransactionDepth();
               return true;
             });
-    PIVSecurityProvider provider = new PIVSecurityProvider(null);
+    PIVSecurityProvider provider = new PIVSecurityProvider(crypto, null);
 
     provider.updatePIN(PIV.ID_CVM_GLOBAL_PIN, PIN_A, (short) 0, (byte) PIN_A.length, HISTORY);
 
@@ -144,7 +144,7 @@ class PIVSecurityProviderPinUpdateTest {
                 Mockito.anyByte(),
                 Mockito.eq(CVM.FORMAT_HEX)))
         .thenReturn(false);
-    PIVSecurityProvider provider = new PIVSecurityProvider(null);
+    PIVSecurityProvider provider = new PIVSecurityProvider(crypto, null);
 
     ISOException refused =
         assertThrows(

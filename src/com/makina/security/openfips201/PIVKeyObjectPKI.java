@@ -42,8 +42,9 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes) {
-    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+      byte attributes,
+      PIVCrypto crypto) {
+    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
   }
 
   /**
@@ -95,11 +96,12 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
   /**
    * Generates a new asymmetric key pair and returns the public component.
    *
+   * @param writer the TLV writer that encodes the public component template
    * @param outBuffer the output buffer to hold the generated public component
    * @param outOffset the starting position of the output buffer
    * @return The length of the generated key
    */
-  abstract short generate(byte[] outBuffer, short outOffset);
+  abstract short generate(TLVWriter writer, byte[] outBuffer, short outOffset);
 
   /** Verifies that the public and private components form a usable pair. */
   abstract boolean pairwiseConsistencyTest(byte[] scratch, short offset);
@@ -156,12 +158,15 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
 
   abstract boolean hasPrivateMaterial();
 
+  // #if ATTESTATION_ENABLED
   /**
    * Writes the public key as an X.509 SubjectPublicKeyInfo structure.
    *
+   * @param writer a DER writer not in use by the caller, whose state this method replaces
    * @param outBuffer the output buffer
    * @param outOffset the starting output offset
    * @return length of the DER SubjectPublicKeyInfo
    */
-  abstract short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset);
+  abstract short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset);
+  // #endif
 }
