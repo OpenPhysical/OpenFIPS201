@@ -96,9 +96,11 @@ public final class RootStationService {
     }
     byte[] samCertificate = Base64.getDecoder().decode(sam.certificate);
     PublicKey samKey = StrictDer.parseCertificate(samCertificate).getPublicKey();
+    // The exported ledger travels without the production station's receipt files: their bindings
+    // are checked for form only, and their contents by the station's 'ledger verify'.
     IssuanceLedger.Report report =
         new IssuanceLedger(ledgerFile)
-            .verify(samKey, samCertificate, HexUtil.parse(lcg.paramsDigest), lcg.quota, iin);
+            .verify(samKey, samCertificate, HexUtil.parse(lcg.paramsDigest), lcg.quota, iin, null);
     BatchLcgAuditor auditor = BatchLcgAuditor.of(lcg, keys.iinCipher(iin));
     for (Map.Entry<Long, String> issued : report.opids.entrySet()) {
       try {

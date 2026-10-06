@@ -30,9 +30,10 @@ public final class LedgerService {
   public static final int DEFAULT_DECIPHER_SAMPLE = 8;
 
   /**
-   * Offline verification: {@link IssuanceLedger#verify}, the SAM certificate under {@code root}
-   * with its batch extension against the batch record, and the batch's allocate and bind registry
-   * lines (root signatures, linkage, bind line hash == the certificate's registryHead).
+   * Offline verification: {@link IssuanceLedger#verify} including the batch's receipt files against
+   * their ledger bindings, the SAM certificate under {@code root} with its batch extension against
+   * the batch record, and the batch's allocate and bind registry lines (root signatures, linkage,
+   * bind line hash == the certificate's registryHead).
    */
   public IssuanceLedger.Report verify(BatchMetadata batch, X509Certificate root) throws Exception {
     byte[] samCertificate = IssuanceService.samCertificate(batch);
@@ -44,7 +45,8 @@ public final class LedgerService {
             samCertificate,
             HexUtil.parse(batch.paramsDigest),
             batch.quota.initial,
-            batch.opid.iin);
+            batch.opid.iin,
+            batch.directory().resolve("receipts"));
     try {
       SamCertificateFactory.requireValid(
           root, samCertificate, StrictDer.parseCertificate(samCertificate).getNotBefore());

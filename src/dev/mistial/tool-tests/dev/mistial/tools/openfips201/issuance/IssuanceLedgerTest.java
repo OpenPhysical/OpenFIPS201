@@ -9,10 +9,12 @@ package dev.mistial.tools.openfips201.issuance;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.mistial.tools.openfips201.common.HexUtil;
@@ -25,8 +27,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
-/** Tamper detection in {@code ledger.jsonl}. */
+/** Tamper detection in {@code ledger.jsonl} and in the receipts it binds. */
 class IssuanceLedgerTest {
   @TempDir Path home;
   private String previousHome;
@@ -61,7 +65,17 @@ class IssuanceLedgerTest {
             soft.sam.certificate,
             soft.sam.parameters.paramsDigest(),
             soft.batch.quota.initial,
-            soft.batch.opid.iin);
+            soft.batch.opid.iin,
+            receipts());
+  }
+
+  private Path receipts() {
+    return soft.batch.directory().resolve("receipts");
+  }
+
+  /** The receipt file named by the {@code issue} line of issuance {@code seq}. */
+  private Path receiptOf(int seq) throws Exception {
+    return receipts().resolve(soft.ledger().issueLine(seq).string("receipt"));
   }
 
   private List<String> lines() throws Exception {
@@ -119,7 +133,173 @@ class IssuanceLedgerTest {
   void untouchedLedgerVerifies() throws Exception {
     IssuanceLedger.Report report = verify();
     assertTrue(report.valid(), report.problems.toString());
+    assertTrue(report.warnings.isEmpty(), report.warnings.toString());
+    assertEquals(IssuanceLedger.VERSION, report.version);
     assertEquals(3, report.issued);
+    assertEquals(3, report.receiptsVerified);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"card.cplc", "card.kddInitial", "sam.opid", "identifiers.opid"})
+  void editedReceiptFieldFailsVerification(String field) throws Exception {
+    Path receipt = receiptOf(2);
+    JsonObject json =
+        JsonParser.parseString(new String(Files.readAllBytes(receipt), StandardCharsets.UTF_8))
+            .getAsJsonObject();
+    String[] path = field.split("\\.");
+    JsonObject parent = json.getAsJsonObject(path[0]);
+    String original = parent.get(path[1]).getAsString();
+    String edited =
+        original.substring(0, original.length() - 1) + (original.endsWith("0") ? "1" : "0");
+    parent.addProperty(path[1], edited);
+    Files.write(
+        receipt,
+        new GsonBuilder()
+            .setPrettyPrinting()
+            .disableHtmlEscaping()
+            .create()
+            .toJson(json)
+            .getBytes(StandardCharsets.UTF_8));
+
+    IssuanceLedger.Report report = verify();
+    assertFalse(report.valid());
+    assertTrue(
+        mentions(report, receipt.getFileName() + " differs from its last ledger binding"),
+        report.problems.toString());
+  }
+
+  @Test
+  void deletedReceiptFailsVerification() throws Exception {
+    Path receipt = receiptOf(3);
+    Files.delete(receipt);
+    IssuanceLedger.Report report = verify();
+    assertFalse(report.valid());
+    assertTrue(mentions(report, receipt.getFileName() + " is missing"), report.problems.toString());
+  }
+
+  @Test
+  void receiptReplacedBySymbolicLinkFailsVerification() throws Exception {
+    Path receipt = receiptOf(1);
+    Path copy = receipt.resolveSibling("copy.bin");
+    Files.move(receipt, copy);
+    try {
+      Files.createSymbolicLink(receipt, copy);
+    } catch (UnsupportedOperationException | java.io.IOException noLinks) {
+      org.junit.jupiter.api.Assumptions.assumeTrue(false, "symbolic links unavailable");
+    }
+    assertTrue(mentions(verify(), receipt.getFileName() + " is missing"));
+  }
+
+  @Test
+  void receiptHashWithoutAReceiptOrOfTheWrongFormIsFlagged() throws Exception {
+    List<String> lines = lines();
+    int index = indexOfIssue(2);
+    JsonObject json = JsonParser.parseString(lines.get(index)).getAsJsonObject();
+    json.addProperty("receiptSha256", "00");
+    lines.set(index, new Gson().toJson(json));
+    writeRechained(lines);
+    assertTrue(mentions(verify(), "is not 64 hex digits"));
+
+    json.remove("receipt");
+    lines.set(index, new Gson().toJson(json));
+    writeRechained(lines);
+    assertTrue(mentions(verify(), "receipt hash without a receipt"));
+  }
+
+  @Test
+  void receiptNameWithAPathIsFlagged() throws Exception {
+    soft.ledger().appendReceipt("../ledger.jsonl", IssuanceLedger.ZERO_HASH, "test");
+    assertTrue(mentions(verify(), "is not a plain receipt file name"));
+  }
+
+  @Test
+  void unboundReceiptNameIsFlagged() throws Exception {
+    List<String> lines = lines();
+    int index = indexOfIssue(2);
+    JsonObject json = JsonParser.parseString(lines.get(index)).getAsJsonObject();
+    String name = json.get("receipt").getAsString();
+    // Drop every binding of the receipt of issuance 2, as a forger rewriting the ledger would.
+    json.remove("receiptSha256");
+    lines.set(index, new Gson().toJson(json));
+    List<String> kept = new ArrayList<String>();
+    for (String line : lines) {
+      JsonObject parsed = JsonParser.parseString(line).getAsJsonObject();
+      boolean binds =
+          name.equals(parsed.has("receipt") ? parsed.get("receipt").getAsString() : null)
+              && (parsed.has("receiptSha256") || parsed.has("sha256"));
+      if (!binds) {
+        kept.add(line);
+      }
+    }
+    writeRechained(kept);
+    assertTrue(mentions(verify(), name + " is named but no ledger line binds its hash"));
+  }
+
+  @Test
+  void legacyLedgerVerifiesOnlyWithTheUnboundReceiptsWarning() throws Exception {
+    // A v1 ledger: same lines without receipt bindings.
+    List<String> legacy = new ArrayList<String>();
+    for (String line : lines()) {
+      JsonObject json = JsonParser.parseString(line).getAsJsonObject();
+      if (IssuanceLedger.RECEIPT.equals(json.get("type").getAsString())) {
+        continue;
+      }
+      json.addProperty("v", IssuanceLedger.LEGACY_VERSION);
+      json.remove("receiptSha256");
+      legacy.add(new Gson().toJson(json));
+    }
+    writeRechained(legacy);
+    // Receipt files are not compared in a legacy ledger, so an edit is not detected: the warning
+    // says so.
+    Files.write(receiptOf(1), "{}".getBytes(StandardCharsets.UTF_8));
+
+    IssuanceLedger.Report report = verify();
+    assertTrue(report.valid(), report.problems.toString());
+    assertEquals(IssuanceLedger.LEGACY_VERSION, report.version);
+    assertEquals(
+        java.util.Collections.singletonList(IssuanceLedger.LEGACY_WARNING), report.warnings);
+
+    // The ledger stays v1 when appended, and binds nothing.
+    assertNull(soft.ledger().appendReceipt(receiptOf(1).getFileName().toString(), "AA", "test"));
+    IssuanceLedger.Line outcome =
+        soft.ledger()
+            .appendOutcome(
+                1,
+                soft.ledger().issueLine(1).string("opid"),
+                "x",
+                null,
+                receiptOf(1).getFileName().toString(),
+                IssuanceLedger.ZERO_HASH,
+                null,
+                null);
+    assertEquals(IssuanceLedger.LEGACY_VERSION, outcome.number("v"));
+    assertFalse(outcome.json.has("receiptSha256"));
+    assertTrue(verify().valid());
+  }
+
+  @Test
+  void mixedVersionsAreFlagged() throws Exception {
+    List<String> lines = lines();
+    int index = indexOfIssue(2);
+    JsonObject json = JsonParser.parseString(lines.get(index)).getAsJsonObject();
+    json.addProperty("v", IssuanceLedger.LEGACY_VERSION);
+    lines.set(index, new Gson().toJson(json));
+    writeRechained(lines);
+    assertTrue(mentions(verify(), "version is not 2"));
+  }
+
+  @Test
+  void unsupportedVersionFails() throws Exception {
+    List<String> lines = lines();
+    List<String> out = new ArrayList<String>();
+    for (String line : lines) {
+      JsonObject json = JsonParser.parseString(line).getAsJsonObject();
+      json.addProperty("v", 3);
+      out.add(new Gson().toJson(json));
+    }
+    writeRechained(out);
+    IssuanceLedger.Report report = verify();
+    assertTrue(mentions(report, "unsupported ledger format version 3"), report.problems.toString());
   }
 
   @Test
@@ -212,7 +392,7 @@ class IssuanceLedgerTest {
               .getEncoded();
       IssueResponse response =
           IssueResponse.parse(soft.sam.issue(point, signature.sign(), validity));
-      soft.ledger().appendIssue(response.signedEntry, null, null, false);
+      soft.ledger().appendIssue(response.signedEntry, null, null, null, false);
     }
     IssuanceLedger.Report report = verify();
     assertTrue(mentions(report, "duplicate F9 key identifier"), report.problems.toString());

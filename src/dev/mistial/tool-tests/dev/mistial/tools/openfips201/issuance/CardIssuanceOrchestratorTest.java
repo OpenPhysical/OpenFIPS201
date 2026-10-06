@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.SecureFiles;
 import dev.mistial.tools.openfips201.opid.Opid;
 import java.nio.file.Files;
@@ -95,9 +96,23 @@ class CardIssuanceOrchestratorTest {
     }
     IssuanceLedger.Report report = verifyLedger();
     assertTrue(report.valid(), report.problems.toString());
+    assertTrue(report.warnings.isEmpty(), report.warnings.toString());
     assertEquals(1, report.issued);
+    assertEquals(1, report.receiptsVerified);
     List<IssuanceLedger.Line> lines = soft.ledger().read();
-    assertEquals(IssuanceLedger.OUTCOME, lines.get(lines.size() - 1).type());
+    IssuanceLedger.Line outcome = lines.get(lines.size() - 1);
+    assertEquals(IssuanceLedger.OUTCOME, outcome.type());
+    // The outcome binds the receipt's final octets; every stage after ISSUED was bound on the way.
+    assertEquals(sha256(result.receipt), outcome.string("receiptSha256"));
+    IssuanceLedger.Line issue = soft.ledger().issueLine(1);
+    assertNotNull(issue.string("receiptSha256"));
+    int receiptLines = 0;
+    for (IssuanceLedger.Line line : lines) {
+      if (IssuanceLedger.RECEIPT.equals(line.type())) {
+        receiptLines++;
+      }
+    }
+    assertEquals(IssuanceStage.COMPLETED.ordinal() - IssuanceStage.ISSUED.ordinal(), receiptLines);
     String csv =
         new String(
             Files.readAllBytes(soft.batch.directory().resolve(soft.batch.receiptsCsv)), "UTF-8");
@@ -118,6 +133,7 @@ class CardIssuanceOrchestratorTest {
     assertFalse(receipt.burned);
     assertEquals(0, soft.sam.issued);
     assertEquals(0, soft.ledger().lastIssueSeq());
+    assertEquals(sha256(result.receipt), lastBinding(result.receipt));
     assertTrue(verifyLedger().valid());
     // The next card still receives the first OPID.
     CardIssuanceOrchestrator.Result next = produce(new FakePivCard(), NONE);
@@ -174,9 +190,45 @@ class CardIssuanceOrchestratorTest {
     assertEquals(burned.receipt.getFileName().toString(), receipt.reissueOf);
     assertEquals(
         again.receipt.getFileName().toString(), IssuanceReceipt.read(burned.receipt).supersededBy);
+    // The supersededBy rewrite of the burned receipt is bound by a receipt line.
+    assertEquals(sha256(burned.receipt), lastBinding(burned.receipt));
+    assertEquals(sha256(again.receipt), lastBinding(again.receipt));
     IssuanceLedger.Report report = verifyLedger();
     assertTrue(report.valid(), report.problems.toString());
+    assertEquals(2, report.receiptsVerified);
     assertTrue(report.voided.contains(soft.expected(1).toPrinted()), report.voided.toString());
+
+    // Pointing the burned receipt at another card afterwards is detected.
+    IssuanceReceipt edited = IssuanceReceipt.read(burned.receipt);
+    edited.card.kddInitial = "00";
+    edited.replace(burned.receipt);
+    IssuanceLedger.Report tampered = verifyLedger();
+    assertFalse(tampered.valid());
+    assertTrue(
+        tampered.problems.toString().contains(burned.receipt.getFileName() + " differs"),
+        tampered.problems.toString());
+  }
+
+  @Test
+  void producedReceiptEditedOrDeletedFailsVerification() throws Exception {
+    CardIssuanceOrchestrator.Result first = produce(new FakePivCard(), NONE);
+    CardIssuanceOrchestrator.Result second = produce(new FakePivCard(), NONE);
+    assertTrue(verifyLedger().valid(), verifyLedger().problems.toString());
+
+    IssuanceReceipt edited = IssuanceReceipt.read(first.receipt);
+    edited.sam.opid = soft.expected(3).toPrinted();
+    edited.replace(first.receipt);
+    IssuanceLedger.Report report = verifyLedger();
+    assertFalse(report.valid());
+    assertTrue(
+        report.problems.toString().contains(first.receipt.getFileName() + " differs"),
+        report.problems.toString());
+
+    Files.delete(second.receipt);
+    report = verifyLedger();
+    assertTrue(
+        report.problems.toString().contains(second.receipt.getFileName() + " is missing"),
+        report.problems.toString());
   }
 
   @Test
@@ -216,9 +268,12 @@ class CardIssuanceOrchestratorTest {
 
     assertEquals(CardIssuanceOrchestrator.EXIT_BURNED, result.exitCode);
     List<IssuanceLedger.Line> lines = soft.ledger().read();
-    assertEquals(IssuanceLedger.ISSUE, lines.get(lines.size() - 2).type());
-    assertTrue(lines.get(lines.size() - 2).json.get("recovered").getAsBoolean());
-    assertEquals(IssuanceLedger.LOST, lines.get(lines.size() - 1).type());
+    assertEquals(IssuanceLedger.ISSUE, lines.get(lines.size() - 3).type());
+    assertTrue(lines.get(lines.size() - 3).json.get("recovered").getAsBoolean());
+    assertEquals(IssuanceLedger.LOST, lines.get(lines.size() - 2).type());
+    // The failure record written after the recovery is bound by a receipt line.
+    assertEquals(IssuanceLedger.RECEIPT, lines.get(lines.size() - 1).type());
+    assertEquals(sha256(result.receipt), lines.get(lines.size() - 1).string("sha256"));
     assertTrue(verifyLedger().valid());
   }
 
@@ -366,6 +421,29 @@ class CardIssuanceOrchestratorTest {
             soft.sam.certificate,
             soft.sam.parameters.paramsDigest(),
             soft.batch.quota.initial,
-            soft.batch.opid.iin);
+            soft.batch.opid.iin,
+            soft.batch.directory().resolve("receipts"));
+  }
+
+  /** The hash the ledger last recorded for {@code receipt}, or null. */
+  private String lastBinding(Path receipt) throws Exception {
+    String name = receipt.getFileName().toString();
+    String last = null;
+    for (IssuanceLedger.Line line : soft.ledger().read()) {
+      if (name.equals(line.string("receipt"))) {
+        String sha256 =
+            IssuanceLedger.RECEIPT.equals(line.type())
+                ? line.string("sha256")
+                : line.string("receiptSha256");
+        if (sha256 != null) {
+          last = sha256;
+        }
+      }
+    }
+    return last;
+  }
+
+  private static String sha256(Path file) throws Exception {
+    return HexUtil.format(IssuanceCrypto.sha256(Files.readAllBytes(file)));
   }
 }

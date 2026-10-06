@@ -74,6 +74,11 @@ import org.bouncycastle.asn1.x509.Time;
  *   <li>COMPLETED: identifiers recorded, the ledger {@code outcome} and the CSV row written.
  * </ol>
  *
+ * <p>Receipt binding (ledger format v2): from the {@code issue} line on, and for every rewrite on
+ * the failure path or of a superseded receipt, each receipt rewrite is immediately followed by a
+ * ledger line carrying the SHA-256 of the octets written ({@code receiptSha256} on the {@code
+ * issue} and {@code outcome} lines, otherwise a {@code receipt} line).
+ *
  * <p>Exit codes: {@value #EXIT_OK} completed; {@value #EXIT_FAILED} failed before any OPID was
  * committed; {@value #EXIT_BURNED} failed after the SAM committed the OPID, which is never reused.
  */
@@ -307,13 +312,17 @@ public final class CardIssuanceOrchestrator {
     receipt.burned = true;
     receipt.sam.issueResponse = HexUtil.format(raw);
     receipt.enter(IssuanceStage.ISSUED);
-    receipt.replace(run.receiptPath);
+    String receiptSha256 = receipt.replace(run.receiptPath);
     run.stage = IssuanceStage.ISSUED;
     IssueResponse response = IssueResponse.parse(raw);
     byte[] certificate = response.certificate();
     String certificateSha256 = HexUtil.format(IssuanceCrypto.sha256(certificate));
     ledger.appendIssue(
-        response.signedEntry, certificateSha256, run.receiptPath.getFileName().toString(), false);
+        response.signedEntry,
+        certificateSha256,
+        run.receiptPath.getFileName().toString(),
+        receiptSha256,
+        false);
     run.issueLogged = true;
     run.issued = response;
     SamLedgerEntry entry = response.signedEntry.entry;
@@ -403,13 +412,14 @@ public final class CardIssuanceOrchestrator {
     identifiers.ccc = HexUtil.format(OpidIdentifiers.cccCardIdentifier(opid));
     receipt.identifiers = identifiers;
     receipt.status = IssuanceReceipt.STATUS_COMPLETED;
-    receipt.replace(run.receiptPath);
+    String completedSha256 = receipt.replace(run.receiptPath);
     ledger.appendOutcome(
         entry.issuanceSeq,
         entry.opid,
         IssuanceReceipt.STATUS_COMPLETED,
         IssuanceStage.COMPLETED.name(),
         run.receiptPath.getFileName().toString(),
+        completedSha256,
         receipt.reissueOf,
         null);
     appendCsv(receipt, run);
@@ -506,12 +516,12 @@ public final class CardIssuanceOrchestrator {
       }
       ledger.appendVoid(voided, old);
       ledger.appendOutcome(
-          burned.seq, burned.opid, IssuanceReceipt.STATUS_VOIDED, null, old, null, self);
+          burned.seq, burned.opid, IssuanceReceipt.STATUS_VOIDED, null, old, null, null, self);
       run.lastEventSeq = entry.eventSeq;
       run.lastHead = entry.head();
     }
     burned.receipt.supersededBy = self;
-    burned.receipt.replace(burned.receiptPath);
+    ledger.appendReceipt(old, burned.receipt.replace(burned.receiptPath), "supersededBy " + self);
     if (burned.receipt.keys != null) {
       DerivedScpKeys keys = inputs.keyDeriver.derive(identity.kdd());
       if (keys.config.keyVersion != burned.receipt.keys.keyVersion
@@ -652,11 +662,23 @@ public final class CardIssuanceOrchestrator {
         .getEncoded(ASN1Encoding.DER);
   }
 
+  /**
+   * Records {@code stage} in the receipt. Once the ledger names the receipt (its {@code issue} line
+   * is written), each rewrite is bound by a {@code receipt} line before the stage runs.
+   */
   private void advance(IssuanceReceipt receipt, Run run, IssuanceStage stage) throws Exception {
     run.stage = stage;
     receipt.enter(stage);
-    receipt.replace(run.receiptPath);
+    String sha256 = receipt.replace(run.receiptPath);
+    if (run.issueLogged) {
+      bind(run, sha256, "stage " + stage.name());
+    }
     hooks.before(stage);
+  }
+
+  /** Appends the {@code receipt} line binding this attempt's receipt as just rewritten. */
+  private void bind(Run run, String sha256, String reason) throws IOException {
+    ledger.appendReceipt(run.receiptPath.getFileName().toString(), sha256, reason);
   }
 
   private Result fail(IssuanceReceipt receipt, Run run, PublicKey samKey, Exception failure)
@@ -672,18 +694,19 @@ public final class CardIssuanceOrchestrator {
     if (run.issueLogged) {
       exit = EXIT_BURNED;
       SamLedgerEntry entry = run.issued.signedEntry.entry;
-      receipt.replace(run.receiptPath);
+      String sha256 = receipt.replace(run.receiptPath);
       ledger.appendOutcome(
           entry.issuanceSeq,
           entry.opid,
           IssuanceReceipt.STATUS_FAILED,
           stage,
           run.receiptPath.getFileName().toString(),
+          sha256,
           receipt.reissueOf,
           null);
     } else if (run.issueRequested && notCommitted(failure)) {
       exit = EXIT_FAILED;
-      receipt.replace(run.receiptPath);
+      bind(run, receipt.replace(run.receiptPath), "failed " + stage);
     } else if (run.issueRequested) {
       // The SAM may have committed. 6500 is a definite burn whose entry GET LAST ENTRY recovers;
       // any other loss leaves the ledger to 'ledger reconcile'.
@@ -704,10 +727,10 @@ public final class CardIssuanceOrchestrator {
       } else {
         record.redactedMessage += "; the OPID may be burned: run 'ledger reconcile'";
       }
-      receipt.replace(run.receiptPath);
+      bind(run, receipt.replace(run.receiptPath), "failed " + stage);
     } else {
       exit = EXIT_FAILED;
-      receipt.replace(run.receiptPath);
+      bind(run, receipt.replace(run.receiptPath), "failed " + stage);
     }
     appendCsv(receipt, run);
     return new Result(exit, run.receiptPath, receipt);

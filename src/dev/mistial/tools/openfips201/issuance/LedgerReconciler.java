@@ -70,7 +70,7 @@ public final class LedgerReconciler {
                 + " was due");
       }
       dev.mistial.tools.openfips201.opid.Opid.parseCanonical(current.entry.opid);
-      ledger.appendIssue(current, null, receipt, true);
+      ledger.appendIssue(current, null, receipt, null, true);
       ledger.appendLost(current.entry.issuanceSeq, current.entry.opid, reason);
       return Outcome.RECOVERED_ISSUE;
     }

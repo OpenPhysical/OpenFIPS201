@@ -10,6 +10,7 @@ package dev.mistial.tools.openfips201.issuance;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
+import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.common.SecureFiles;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +25,9 @@ import java.util.Map;
 /**
  * Receipt of one card issuance, schema {@code openfips201.receipt/2}. It is created owner-only with
  * {@code CREATE_NEW} at {@link IssuanceStage#PREFLIGHT} and replaced atomically at every later
- * stage, so a crash leaves the last completed stage on disk.
+ * stage, so a crash leaves the last completed stage on disk. From its {@code issue} line on (and
+ * for every rewrite on the failure path), each replacement is followed by a ledger line carrying
+ * the SHA-256 of the new file, so {@code ledger verify} detects any later edit or deletion.
  */
 public final class IssuanceReceipt {
   public static final String SCHEMA = "openfips201.receipt/2";
@@ -158,9 +161,17 @@ public final class IssuanceReceipt {
     return SecureFiles.writeNew(file, json());
   }
 
-  Path replace(Path file) throws IOException {
+  /**
+   * Atomically replaces {@code file} with this receipt.
+   *
+   * @return the hex SHA-256 of the octets written, which the caller binds in the ledger ({@link
+   *     IssuanceLedger}, format v2) with the line that follows the rewrite
+   */
+  String replace(Path file) throws IOException {
     updated = Instant.now().toString();
-    return SecureFiles.replaceAtomically(file, json());
+    byte[] json = json();
+    SecureFiles.replaceAtomically(file, json);
+    return HexUtil.format(IssuanceCrypto.sha256(json));
   }
 
   private byte[] json() {
