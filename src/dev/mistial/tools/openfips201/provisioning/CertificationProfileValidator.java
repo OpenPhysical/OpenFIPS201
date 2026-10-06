@@ -19,11 +19,23 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.ASN1Set;
+import org.bouncycastle.asn1.cms.Attribute;
+import org.bouncycastle.asn1.cms.AttributeTable;
 import org.bouncycastle.asn1.icao.DataGroupHash;
 import org.bouncycastle.asn1.icao.LDSSecurityObject;
+import org.bouncycastle.asn1.nist.NISTObjectIdentifiers;
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
+import org.bouncycastle.asn1.sec.SECObjectIdentifiers;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
+import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cms.CMSProcessableByteArray;
 import org.bouncycastle.cms.CMSSignedData;
@@ -36,20 +48,48 @@ public final class CertificationProfileValidator {
   private static final byte ACCESS_PIN_ALWAYS = (byte) 0x02;
   private static final byte ACCESS_VCI = (byte) 0x08;
   private static final byte ACCESS_ALWAYS = (byte) 0x7F;
+  // SP 800-73-5 Part 1 Section 3.3.2, first byte of the PIN Usage Policy: bit 6 Global PIN, bit 5
+  // OCC, bit 4 VCI, and bit 3 "set to one if a VCI is established without a pairing code".
+  private static final int PIN_POLICY_GLOBAL_PIN = 0x20;
+  private static final int PIN_POLICY_OCC = 0x10;
+  private static final int PIN_POLICY_VCI = 0x08;
+  private static final int PIN_POLICY_VCI_WITHOUT_PAIRING = 0x04;
+  // "Table 1 lists the acceptable values for the first byte of the PIN Usage Policy".
+  private static final int[] TABLE_1_FIRST_BYTES = {
+    0x40, 0x48, 0x4C, 0x50, 0x58, 0x5C, 0x60, 0x68, 0x6C, 0x70, 0x78, 0x7C
+  };
   private static final String[] MANDATORY = {
     "5FC107", "5FC102", "5FC105", "5FC101", "5FC103", "5FC108", "5FC106"
   };
+  private static final ASN1ObjectIdentifier ID_PIV_CHUID_SECURITY_OBJECT =
+      new ASN1ObjectIdentifier("2.16.840.1.101.3.6.1");
+  private static final ASN1ObjectIdentifier ID_PIV_SIGNER_DN =
+      new ASN1ObjectIdentifier("2.16.840.1.101.3.6.5");
+  private static final ASN1ObjectIdentifier ID_ICAO_LDS_SECURITY_OBJECT =
+      new ASN1ObjectIdentifier("1.3.27.1.1.1");
 
   /** Frozen issuer claims that affect which Part 1 objects are required. */
   public static final class Claims {
     public final boolean governmentEmail;
     public final boolean vci;
     public final boolean pairingRequired;
+    public final boolean globalPin;
 
+    /** Claims for a card whose Global PIN is not enabled. */
     public Claims(boolean governmentEmail, boolean vci, boolean pairingRequired) {
+      this(governmentEmail, vci, pairingRequired, false);
+    }
+
+    /**
+     * @param globalPin whether the applet configuration enables the Global PIN, which Discovery may
+     *     then advertise
+     */
+    public Claims(
+        boolean governmentEmail, boolean vci, boolean pairingRequired, boolean globalPin) {
       this.governmentEmail = governmentEmail;
       this.vci = vci;
       this.pairingRequired = pairingRequired;
+      this.globalPin = globalPin;
     }
   }
 
@@ -118,6 +158,9 @@ public final class CertificationProfileValidator {
       validateContainer(entry.getKey(), entry.getValue().payload);
     }
     validateSecurityObject(objects, true);
+    if (objects.containsKey("5FC122")) {
+      validateSmSignerUsage(objects.get("5FC122").payload, objects.get("5FC102").payload);
+    }
   }
 
   /** Rejects issuer packages whose ACRs contradict Part 1 Tables 2 and 5. */
@@ -315,15 +358,40 @@ public final class CertificationProfileValidator {
     }
     int first = value[policy.value] & 0xFF;
     int second = value[policy.value + 1] & 0xFF;
-    if ((first & 0xC3) != 0x40 || ((first & 0x20) == 0 && second != 0)) {
-      throw new IllegalArgumentException("invalid Part 1 PIN Usage Policy");
+    if (!isTable1PinUsagePolicy(first, second)) {
+      throw new IllegalArgumentException(
+          String.format("invalid Part 1 PIN Usage Policy %02X%02X", first, second));
     }
-    if (((first & 0x08) != 0) != claims.vci
-        || (claims.vci && (((first & 0x04) == 0) != claims.pairingRequired))) {
+    // Section 3.3.2: bit 5 "indicates whether the optional OCC satisfies the PIV ACRs" and bit 6
+    // "whether the optional Global PIN satisfies the PIV ACRs". The applet implements no OCC and
+    // rejects a Discovery Object that advertises a Global PIN its configuration does not enable.
+    if ((first & PIN_POLICY_OCC) != 0) {
+      throw new IllegalArgumentException("Discovery advertises OCC, which the applet lacks");
+    }
+    if ((first & PIN_POLICY_GLOBAL_PIN) != 0 && !claims.globalPin) {
+      throw new IllegalArgumentException("Discovery advertises a Global PIN that is not claimed");
+    }
+    if (((first & PIN_POLICY_VCI) != 0) != claims.vci
+        || (claims.vci
+            && (((first & PIN_POLICY_VCI_WITHOUT_PAIRING) == 0) != claims.pairingRequired))) {
       throw new IllegalArgumentException("Discovery VCI/pairing bits contradict frozen claims");
     }
     if (claims.vci) require(objects, "5FC122");
     if (claims.pairingRequired) require(objects, "5FC123");
+  }
+
+  /**
+   * Returns whether {@code first} is a SP 800-73-5 Part 1 Table 1 value and {@code second} obeys
+   * Section 3.3.2: "0x10 indicates that the PIV Card Application PIN is the primary PIN", "0x20
+   * indicates that the Global PIN is the primary PIN", and "If Bit 6 of the first byte of the PIN
+   * Usage Policy is set to zero, then the second byte is RFU and SHALL be set to 0x00."
+   */
+  static boolean isTable1PinUsagePolicy(int first, int second) {
+    boolean listed = false;
+    for (int value : TABLE_1_FIRST_BYTES) listed |= value == first;
+    if (!listed) return false;
+    if ((first & PIN_POLICY_GLOBAL_PIN) == 0) return second == 0x00;
+    return second == 0x10 || second == 0x20;
   }
 
   static void validateContainer(String id, byte[] payload) {
@@ -468,6 +536,23 @@ public final class CertificationProfileValidator {
     }
     offset = element(payload, offset, 0xFE, 0, 0, id).end;
     requireEnd(payload, offset, id);
+  }
+
+  /**
+   * SP 800-73-5 Part 1 Section 3.3.7: "The X.509 Certificate for Content Signing SHALL also include
+   * an extended key usage (extKeyUsage) extension asserting id-PIV-content-signing", or the PIV-I
+   * purpose for a PIV-I card ({@link ContentSigningProfile}).
+   *
+   * @param chuid the card's CHUID value, which determines the card type
+   */
+  static void validateSmSignerUsage(byte[] payload, byte[] chuid) {
+    X509CertificateHolder certificate;
+    try {
+      certificate = new X509CertificateHolder(certificateValue(payload, "5FC122"));
+    } catch (Exception e) {
+      throw new IllegalArgumentException("5FC122 does not carry an X.509 certificate", e);
+    }
+    ContentSigningProfile.requireUsage(certificate, chuid, "5FC122");
   }
 
   private static void validatePairingCode(String id, byte[] payload) {
@@ -638,8 +723,27 @@ public final class CertificationProfileValidator {
     }
     X509CertificateHolder contentSigner = validateChuidSignature(objects.get("5FC102").payload);
     verifyCmsSigner(cms, contentSigner, "Security Object");
+    // SP 800-85B AS06.04.06: "The eContentType of the encapContentInfo shall be
+    // id-icao-ldsSecurityObject (OID = 1.3.27.1.1.1)."
+    if (!ID_ICAO_LDS_SECURITY_OBJECT.getId().equals(cms.getSignedContentTypeOID())) {
+      throw new IllegalArgumentException(
+          "Security Object eContentType must be id-icao-ldsSecurityObject, not "
+              + cms.getSignedContentTypeOID());
+    }
+    SignerInformation securityObjectSigner = singleSigner(cms, "Security Object");
+    requireTable2Digest(securityObjectSigner, contentSigner, "Security Object");
     byte[] ldsBytes = (byte[]) cms.getSignedContent().getContent();
     LDSSecurityObject lds = LDSSecurityObject.getInstance(ASN1Primitive.fromByteArray(ldsBytes));
+    // SP 800-78-5 Section 3.2.3: "This specification requires that the message digests of digital
+    // information be computed using the same hash algorithm used to generate the digital signature
+    // on the Security Object."
+    if (!lds.getDigestAlgorithmIdentifier()
+        .getAlgorithm()
+        .getId()
+        .equals(securityObjectSigner.getDigestAlgOID())) {
+      throw new IllegalArgumentException(
+          "Security Object LDS hash algorithm differs from its signature hash algorithm");
+    }
     MessageDigest digest =
         MessageDigest.getInstance(lds.getDigestAlgorithmIdentifier().getAlgorithm().getId(), "BC");
     Set<Integer> seen = new HashSet<Integer>();
@@ -708,7 +812,86 @@ public final class CertificationProfileValidator {
     }
     X509CertificateHolder certificate = (X509CertificateHolder) matched;
     verifyCmsSigner(cms, certificate, "CHUID");
+    // SP 800-73-5 Part 1 Section 3.1.2.1: "The encapContentInfo SHALL: Specify an eContentType of
+    // id-PIV-CHUIDSecurityObject".
+    if (!ID_PIV_CHUID_SECURITY_OBJECT.getId().equals(cms.getSignedContentTypeOID())) {
+      throw new IllegalArgumentException(
+          "CHUID eContentType must be id-PIV-CHUIDSecurityObject, not "
+              + cms.getSignedContentTypeOID());
+    }
+    requirePivSignerDn(signer, certificate);
+    requireTable2Digest(signer, certificate, "CHUID");
+    // SP 800-73-5 Part 1 Section 3.1.2.1: "The content signing certificate SHALL also include an
+    // extended key usage (extKeyUsage) extension asserting id-PIV-content-signing"; a PIV-I card's
+    // content signer asserts id-fpki-pivi-content-signing instead. The same certificate verifies
+    // the Security Object signature (Section 3.1.7).
+    ContentSigningProfile.requireUsage(certificate, payload, "CHUID");
     return certificate;
+  }
+
+  /**
+   * SP 800-73-5 Part 1 Section 3.1.2.1: the CHUID SignerInfo SHALL "Include, at a minimum, the
+   * following signed attributes: ... A pivSigner-DN attribute containing the subject name that
+   * appears in the PKI certificate for the entity that signed the CHUID".
+   */
+  private static void requirePivSignerDn(
+      SignerInformation signer, X509CertificateHolder certificate) {
+    AttributeTable attributes = signer.getSignedAttributes();
+    ASN1EncodableVector values =
+        attributes == null ? new ASN1EncodableVector() : attributes.getAll(ID_PIV_SIGNER_DN);
+    if (values.size() != 1) {
+      throw new IllegalArgumentException("CHUID signer must carry exactly one pivSigner-DN");
+    }
+    ASN1Set attributeValues = ((Attribute) values.get(0)).getAttrValues();
+    if (attributeValues.size() != 1
+        || !certificate
+            .getSubject()
+            .equals(X500Name.getInstance(attributeValues.getObjectAt(0).toASN1Primitive()))) {
+      throw new IllegalArgumentException(
+          "CHUID pivSigner-DN does not match the content signing certificate subject");
+    }
+  }
+
+  /**
+   * Enforces SP 800-78-5 Section 3.2.1 Table 2: "ECDSA (Curve P-256) | SHA-256", "ECDSA (Curve
+   * P-384) | SHA-384", and RSA with "SHA-256 or SHA-384".
+   */
+  private static void requireTable2Digest(
+      SignerInformation signer, X509CertificateHolder certificate, String label) {
+    AlgorithmIdentifier keyAlgorithm = certificate.getSubjectPublicKeyInfo().getAlgorithm();
+    String digest = signer.getDigestAlgOID();
+    boolean conforming;
+    if (X9ObjectIdentifiers.id_ecPublicKey.equals(keyAlgorithm.getAlgorithm())) {
+      ASN1Encodable curve = keyAlgorithm.getParameters();
+      String signature = signer.getEncryptionAlgOID();
+      if (SECObjectIdentifiers.secp256r1.equals(curve)) {
+        conforming =
+            NISTObjectIdentifiers.id_sha256.getId().equals(digest)
+                && X9ObjectIdentifiers.ecdsa_with_SHA256.getId().equals(signature);
+      } else if (SECObjectIdentifiers.secp384r1.equals(curve)) {
+        conforming =
+            NISTObjectIdentifiers.id_sha384.getId().equals(digest)
+                && X9ObjectIdentifiers.ecdsa_with_SHA384.getId().equals(signature);
+      } else {
+        conforming = false;
+      }
+    } else if (PKCSObjectIdentifiers.rsaEncryption.equals(keyAlgorithm.getAlgorithm())) {
+      conforming =
+          NISTObjectIdentifiers.id_sha256.getId().equals(digest)
+              || NISTObjectIdentifiers.id_sha384.getId().equals(digest);
+    } else {
+      conforming = false;
+    }
+    if (!conforming) {
+      throw new IllegalArgumentException(
+          label
+              + " signature algorithm and hash do not match SP 800-78-5 Table 2 for the signer key"
+              + " (digest "
+              + digest
+              + ", signature "
+              + signer.getEncryptionAlgOID()
+              + ")");
+    }
   }
 
   private static void verifyCmsSigner(

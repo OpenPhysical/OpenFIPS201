@@ -3,16 +3,11 @@ package com.makina.security.openfips201;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
-import javacard.framework.JCSystem;
-import javacard.framework.Util;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 class PIVAttestationDerValidationTest {
 
@@ -26,31 +21,31 @@ class PIVAttestationDerValidationTest {
           0x30, 0x5A
         };
 
-    PIVAttestation.validateDerName(name, (short) 0, (short) name.length);
-    PIVAttestation.validateDerValidity(validity, (short) 0, (short) validity.length);
+    DERValidator.validateDerName(name, (short) 0, (short) name.length);
+    DERValidator.validateDerValidity(validity, (short) 0, (short) validity.length);
   }
 
   @Test
   void rejectsMalformedNameHierarchyAndNonCanonicalTimes() {
     assertWrongData(
         () ->
-            PIVAttestation.validateDerName(
+            DERValidator.validateDerName(
                 new byte[] {0x30, 0x03, 0x31, 0x01, 0x00}, (short) 0, (short) 5));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerValidity(
+            DERValidator.validateDerValidity(
                 validity("260101000000X", "300101000000Z"), (short) 0, (short) 32));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerValidity(
+            DERValidator.validateDerValidity(
                 validity("260230000000Z", "300101000000Z"), (short) 0, (short) 32));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerValidity(
+            DERValidator.validateDerValidity(
                 validity("300101000000Z", "260101000000Z"), (short) 0, (short) 32));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerValidity(
+            DERValidator.validateDerValidity(
                 new byte[] {
                   0x30, 0x20, 0x18, 0x0F, 0x32, 0x30, 0x34, 0x39, 0x30, 0x31, 0x30, 0x31, 0x30,
                   0x30, 0x30, 0x30, 0x30, 0x30, 0x5A, 0x17, 0x0D, 0x34, 0x39, 0x30, 0x31, 0x30,
@@ -61,10 +56,25 @@ class PIVAttestationDerValidationTest {
   }
 
   @Test
+  void rejectsSameYearInvertedValidity() {
+    // The years compare equal, so the month-through-second fields decide the order.
+    assertWrongData(
+        () ->
+            DERValidator.validateDerValidity(
+                validity("260601000000Z", "260101000000Z"), (short) 0, (short) 32));
+    assertWrongData(
+        () ->
+            DERValidator.validateDerValidity(
+                validity("260101000001Z", "260101000000Z"), (short) 0, (short) 32));
+    byte[] equal = validity("260101000000Z", "260101000000Z");
+    DERValidator.validateDerValidity(equal, (short) 0, (short) equal.length);
+  }
+
+  @Test
   void rejectsMalformedDirectoryStringsAndUnsortedRdnSets() {
     assertWrongData(
         () ->
-            PIVAttestation.validateDerName(
+            DERValidator.validateDerName(
                 new byte[] {
                   0x30,
                   0x0D,
@@ -86,7 +96,7 @@ class PIVAttestationDerValidationTest {
                 (short) 15));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerName(
+            DERValidator.validateDerName(
                 new byte[] {
                   0x30, 0x0C, 0x31, 0x0A, 0x30, 0x08, 0x06, 0x03, 0x55, 0x04, 0x03, 0x13, 0x01, 0x40
                 },
@@ -94,7 +104,7 @@ class PIVAttestationDerValidationTest {
                 (short) 14));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerName(
+            DERValidator.validateDerName(
                 new byte[] {
                   0x30, 0x0C, 0x31, 0x0A, 0x30, 0x08, 0x06, 0x03, 0x55, 0x04, 0x03, 0x14, 0x01, 0x41
                 },
@@ -102,7 +112,7 @@ class PIVAttestationDerValidationTest {
                 (short) 14));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerName(
+            DERValidator.validateDerName(
                 new byte[] {
                   0x30, 0x16, 0x31, 0x14, 0x30, 0x08, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x01,
                   0x42, 0x30, 0x08, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x01, 0x41
@@ -112,89 +122,89 @@ class PIVAttestationDerValidationTest {
   }
 
   @Test
-  void interruptedIssuerNameCopyPreservesTheActiveProfile() throws Exception {
-    try (MockedStatic<JCSystem> jcSystem = Mockito.mockStatic(JCSystem.class)) {
-      jcSystem.when(JCSystem::getTransactionDepth).thenReturn((byte) 0);
-      PIVAttestation attestation = new PIVAttestation();
-      byte[] original = validName("Issuer One");
-      byte[] replacement = validName("Issuer Two");
-      attestation.updateElement(
-          PIVAttestation.ELEMENT_SUBJECT, original, (short) 0, (short) original.length);
-      attestation.markAuthorityActive();
-
-      Field subjectField = PIVAttestation.class.getDeclaredField("subject");
-      subjectField.setAccessible(true);
-      byte[] activeBefore = ((byte[]) subjectField.get(attestation)).clone();
-
-      try (MockedStatic<Util> util = Mockito.mockStatic(Util.class, Mockito.CALLS_REAL_METHODS)) {
-        util.when(
-                () ->
-                    Util.arrayCopyNonAtomic(
-                        Mockito.same(replacement),
-                        Mockito.eq((short) 0),
-                        Mockito.any(byte[].class),
-                        Mockito.eq((short) 0),
-                        Mockito.eq((short) replacement.length)))
-            .thenAnswer(
-                invocation -> {
-                  byte[] destination = invocation.getArgument(2);
-                  System.arraycopy(replacement, 0, destination, 0, 4);
-                  throw new RuntimeException("simulated tear during persistent copy");
-                });
-
-        assertThrows(
-            RuntimeException.class,
-            () ->
-                attestation.updateElement(
-                    PIVAttestation.ELEMENT_SUBJECT,
-                    replacement,
-                    (short) 0,
-                    (short) replacement.length));
-      }
-
-      assertArrayEquals(activeBefore, (byte[]) subjectField.get(attestation));
-      assertTrue(attestation.isAuthorityActive());
-    }
+  void utf8AcceptsMultibyteAndRejectsOverlongForms() {
+    assertAcceptedValue((byte) 0x0C, new byte[] {(byte) 0xC3, (byte) 0xA9});
+    assertAcceptedValue((byte) 0x0C, new byte[] {(byte) 0xE2, (byte) 0x82, (byte) 0xAC});
+    assertAcceptedValue(
+        (byte) 0x0C, new byte[] {(byte) 0xF0, (byte) 0x9F, (byte) 0x98, (byte) 0x80});
+    assertRejectedValue((byte) 0x0C, new byte[] {(byte) 0xE0, (byte) 0x80, (byte) 0xAF});
+    assertRejectedValue(
+        (byte) 0x0C, new byte[] {(byte) 0xF0, (byte) 0x80, (byte) 0x80, (byte) 0xAF});
+    assertRejectedValue((byte) 0x0C, new byte[] {(byte) 0xED, (byte) 0xA0, (byte) 0x80});
+    assertRejectedValue((byte) 0x0C, new byte[] {(byte) 0xC3});
   }
 
   @Test
-  void authorityActivationHasPersistentPendingAndCompletePhases() throws Exception {
-    try (MockedStatic<JCSystem> jcSystem = Mockito.mockStatic(JCSystem.class)) {
-      jcSystem.when(JCSystem::getTransactionDepth).thenReturn((byte) 0);
-      PIVAttestation attestation = new PIVAttestation();
-      java.lang.reflect.Method begin =
-          PIVAttestation.class.getDeclaredMethod("beginAuthorityActivation");
-      java.lang.reflect.Method pending =
-          PIVAttestation.class.getDeclaredMethod("isAuthorityActivationPending");
-      java.lang.reflect.Method complete =
-          PIVAttestation.class.getDeclaredMethod("completeAuthorityActivation");
+  void bmpStringRejectsSurrogateCodeUnits() {
+    assertAcceptedValue((byte) 0x1E, new byte[] {0x00, 0x41});
+    assertRejectedValue((byte) 0x1E, new byte[] {(byte) 0xD8, 0x00});
+    assertRejectedValue((byte) 0x1E, new byte[] {(byte) 0xDF, (byte) 0xFF});
+    assertRejectedValue((byte) 0x1E, new byte[] {0x00, 0x41, 0x00});
+  }
 
-      begin.invoke(attestation);
-      assertTrue((Boolean) pending.invoke(attestation));
-      org.junit.jupiter.api.Assertions.assertFalse(attestation.isAuthorityActive());
+  @Test
+  void numericStringRejectsLetters() {
+    assertAcceptedValue((byte) 0x12, "12 34".getBytes(StandardCharsets.US_ASCII));
+    assertRejectedValue((byte) 0x12, "12A4".getBytes(StandardCharsets.US_ASCII));
+  }
 
-      complete.invoke(attestation);
-      org.junit.jupiter.api.Assertions.assertFalse((Boolean) pending.invoke(attestation));
-      assertTrue(attestation.isAuthorityActive());
-    }
+  @Test
+  void universalStringRejectsCodePointsAboveUnicodeRange() {
+    assertAcceptedValue((byte) 0x1C, new byte[] {0x00, 0x00, 0x00, 0x41});
+    assertAcceptedValue((byte) 0x1C, new byte[] {0x00, 0x10, (byte) 0xFF, (byte) 0xFF});
+    assertRejectedValue((byte) 0x1C, new byte[] {0x00, 0x11, 0x00, 0x00});
+    assertRejectedValue((byte) 0x1C, new byte[] {0x01, 0x00, 0x00, 0x41});
+    assertRejectedValue((byte) 0x1C, new byte[] {0x00, 0x00, (byte) 0xD8, 0x00});
+  }
+
+  @Test
+  void normalizeTimeExpandsUtcTimeCenturyAndCopiesGeneralizedTime() {
+    assertNormalized(utcTime("490101000000Z"), "20490101000000");
+    assertNormalized(utcTime("500101000000Z"), "19500101000000");
+    assertNormalized(utcTime("991231235959Z"), "19991231235959");
+    byte[] generalized = tlv((byte) 0x18, ascii("20500101120000Z"));
+    assertNormalized(generalized, "20500101120000");
+    assertWrongData(
+        () ->
+            DERValidator.normalizeTime(
+                utcTime("491301000000Z"), (short) 0, new byte[14], (short) 0));
   }
 
   @Test
   void rejectsMalformedDerProfileElements() {
     assertWrongData(
-        () -> PIVAttestation.validateDerName(new byte[] {0x31, 0x00}, (short) 0, (short) 2));
+        () -> DERValidator.validateDerName(new byte[] {0x31, 0x00}, (short) 0, (short) 2));
     assertWrongData(
-        () -> PIVAttestation.validateDerName(new byte[] {0x30, 0x00, 0x00}, (short) 0, (short) 3));
+        () -> DERValidator.validateDerName(new byte[] {0x30, 0x00, 0x00}, (short) 0, (short) 3));
     assertWrongData(
-        () -> PIVAttestation.validateDerName(new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2));
+        () -> DERValidator.validateDerName(new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerName(
+            DERValidator.validateDerName(
                 new byte[] {0x30, (byte) 0x81, 0x01, 0x00}, (short) 0, (short) 4));
     assertWrongData(
         () ->
-            PIVAttestation.validateDerValidity(
+            DERValidator.validateDerValidity(
                 new byte[] {0x30, 0x03, 0x16, 0x01, 0x5A}, (short) 0, (short) 5));
+  }
+
+  private static void assertNormalized(byte[] time, String expected) {
+    byte[] out = new byte[16];
+    short length = DERValidator.normalizeTime(time, (short) 0, out, (short) 1);
+    assertEquals(DERValidator.LENGTH_NORMALIZED_TIME, length);
+    byte[] actual = new byte[14];
+    System.arraycopy(out, 1, actual, 0, 14);
+    assertArrayEquals(ascii(expected), actual);
+  }
+
+  private static void assertAcceptedValue(byte tag, byte[] value) {
+    byte[] name = nameWith(tag, value);
+    DERValidator.validateDerName(name, (short) 0, (short) name.length);
+  }
+
+  private static void assertRejectedValue(byte tag, byte[] value) {
+    byte[] name = nameWith(tag, value);
+    assertWrongData(() -> DERValidator.validateDerName(name, (short) 0, (short) name.length));
   }
 
   /** Confirms that a malformed DER fixture is rejected with {@code SW_WRONG_DATA}. */
@@ -210,23 +220,22 @@ class PIVAttestationDerValidationTest {
    * @return complete DER Name encoding
    */
   private static byte[] validName(String commonName) {
-    byte[] value = commonName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-    byte[] encoded = new byte[value.length + 13];
-    encoded[0] = 0x30;
-    encoded[1] = (byte) (encoded.length - 2);
-    encoded[2] = 0x31;
-    encoded[3] = (byte) (encoded.length - 4);
-    encoded[4] = 0x30;
-    encoded[5] = (byte) (encoded.length - 6);
-    encoded[6] = 0x06;
-    encoded[7] = 0x03;
-    encoded[8] = 0x55;
-    encoded[9] = 0x04;
-    encoded[10] = 0x03;
-    encoded[11] = 0x0C;
-    encoded[12] = (byte) value.length;
-    System.arraycopy(value, 0, encoded, 13, value.length);
-    return encoded;
+    return nameWith((byte) 0x0C, commonName.getBytes(StandardCharsets.UTF_8));
+  }
+
+  /** Builds a one-attribute common-name Name whose value uses the given string tag. */
+  private static byte[] nameWith(byte tag, byte[] value) {
+    byte[] attribute =
+        tlv((byte) 0x30, concat(new byte[] {0x06, 0x03, 0x55, 0x04, 0x03}, tlv(tag, value)));
+    return tlv((byte) 0x30, tlv((byte) 0x31, attribute));
+  }
+
+  private static byte[] utcTime(String value) {
+    return tlv((byte) 0x17, ascii(value));
+  }
+
+  private static byte[] ascii(String value) {
+    return value.getBytes(StandardCharsets.US_ASCII);
   }
 
   /**
@@ -237,19 +246,23 @@ class PIVAttestationDerValidationTest {
    * @return complete DER Validity encoding
    */
   private static byte[] validity(String notBefore, String notAfter) {
-    byte[] first = notBefore.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-    byte[] second = notAfter.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-    byte[] encoded = new byte[2 + 2 + first.length + 2 + second.length];
-    encoded[0] = 0x30;
-    encoded[1] = (byte) (encoded.length - 2);
-    encoded[2] = 0x17;
-    encoded[3] = (byte) first.length;
-    System.arraycopy(first, 0, encoded, 4, first.length);
-    short secondOffset = (short) (4 + first.length);
-    encoded[secondOffset] = 0x17;
-    encoded[(short) (secondOffset + 1)] = (byte) second.length;
-    System.arraycopy(second, 0, encoded, secondOffset + 2, second.length);
-    return encoded;
+    return tlv((byte) 0x30, concat(utcTime(notBefore), utcTime(notAfter)));
+  }
+
+  private static byte[] tlv(byte tag, byte[] value) {
+    if (value.length >= 0x80) throw new IllegalArgumentException("short-form fixtures only");
+    byte[] result = new byte[value.length + 2];
+    result[0] = tag;
+    result[1] = (byte) value.length;
+    System.arraycopy(value, 0, result, 2, value.length);
+    return result;
+  }
+
+  private static byte[] concat(byte[] left, byte[] right) {
+    byte[] result = new byte[left.length + right.length];
+    System.arraycopy(left, 0, result, 0, left.length);
+    System.arraycopy(right, 0, result, left.length, right.length);
+    return result;
   }
 
   private interface ThrowingRunnable {

@@ -7,10 +7,18 @@
 
 package dev.mistial.tools.openfips201.pkcs11;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import dev.mistial.tools.openfips201.crypto.SecretSource;
+import java.io.IOException;
 import java.nio.file.Paths;
 
+/**
+ * PKCS#11 module, token, key and PIN-source selection.
+ *
+ * <p>Contract: the user PIN is never held here. It is named by exactly one of {@link #pinEnv} (an
+ * environment variable), {@link #pinFile} (a regular file owned by the current user with no group
+ * or other permission bits) or {@link #pinPrompt} (read from the console without echo), and is read
+ * by {@link #readPin()} each time a session logs in.
+ */
 public final class Pkcs11Config {
   public String module;
   public String tokenLabel;
@@ -19,6 +27,7 @@ public final class Pkcs11Config {
   public String keyId;
   public String pinEnv;
   public String pinFile;
+  public boolean pinPrompt;
   public String softhsmConfig;
 
   public Pkcs11Config copy() {
@@ -30,29 +39,36 @@ public final class Pkcs11Config {
     copy.keyId = keyId;
     copy.pinEnv = pinEnv;
     copy.pinFile = pinFile;
+    copy.pinPrompt = pinPrompt;
     copy.softhsmConfig = softhsmConfig;
     return copy;
   }
 
+  /**
+   * Returns the user PIN in a new array owned (and wiped) by the caller. A {@link #pinFile} that is
+   * not owner-only is refused ({@link SecretSource#fromFile(java.nio.file.Path)}).
+   */
   public char[] readPin() {
+    char[] value;
     if (pinEnv != null && !pinEnv.isEmpty()) {
-      String value = System.getenv(pinEnv);
-      if (value == null) {
-        throw new IllegalArgumentException("Environment variable is not set: " + pinEnv);
-      }
-      return value.toCharArray();
-    }
-    if (pinFile != null && !pinFile.isEmpty()) {
+      value = SecretSource.fromEnv(pinEnv);
+    } else if (pinFile != null && !pinFile.isEmpty()) {
       try {
-        String value =
-            new String(Files.readAllBytes(Paths.get(pinFile)), StandardCharsets.UTF_8).trim();
-        if (!value.isEmpty()) {
-          return value.toCharArray();
-        }
-      } catch (java.io.IOException e) {
+        value = SecretSource.fromFile(Paths.get(pinFile));
+      } catch (IOException e) {
         throw new IllegalArgumentException("Unable to read PKCS#11 pinFile: " + pinFile, e);
       }
+    } else if (pinPrompt) {
+      value =
+          SecretSource.fromConsole(
+              "PKCS#11 user PIN for token " + (tokenLabel == null ? "" : tokenLabel),
+              "--pkcs11-pin");
+    } else {
+      throw new IllegalArgumentException("PKCS#11 pinEnv, pinFile or pinPrompt is required");
     }
-    throw new IllegalArgumentException("PKCS#11 pinEnv or pinFile is required");
+    if (value.length == 0) {
+      throw new IllegalArgumentException("PKCS#11 PIN is empty");
+    }
+    return value;
   }
 }

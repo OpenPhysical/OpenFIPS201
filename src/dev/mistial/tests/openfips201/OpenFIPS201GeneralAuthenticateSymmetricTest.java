@@ -2,11 +2,14 @@ package dev.mistial.tests.openfips201;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
+import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.globalplatform.GPSystem;
 import org.globalplatform.SecureChannel;
@@ -25,6 +28,8 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
   private static final byte TEST_ALGORITHM = FIPS_MODE ? ALG_AES_128 : ALG_3DES;
   private static final byte KEY_REF_CARD_MANAGEMENT = (byte) 0x9B;
   private static final byte KEY_REF_SECURE_MESSAGING = (byte) 0x04;
+  // A dynamically defined key reference; the standard profile keeps the keystore extension.
+  private static final byte KEY_REF_DYNAMIC = (byte) 0x10;
   private static final byte ACTIVE_SM_ALGORITHM =
       (byte) ("CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2")) ? 0x2E : 0x27);
 
@@ -331,6 +336,300 @@ class OpenFIPS201GeneralAuthenticateSymmetricTest extends OpenFIPS201TestSupport
         transmit(
             0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
         "The applet must accept a fresh authentication command");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Appendix A.2 Table 23 sends the mutual-authentication response as {@code 7C
+   * { 80 witness 81 challenge 82 00 }}. The empty Response requests the enciphered challenge and
+   * must not divert the command to internal authentication.
+   */
+  @Test
+  void mutualAuthenticateAcceptsResponseRequestObject() throws Exception {
+    byte[] key = keyMaterial((byte) 0x61);
+    provisionManagementKeyOverScp(key, (byte) 0x18);
+    assertSw(0x9000, selectApplet(), "SELECT before mutual authentication with 82 00");
+    int blockLength = FIPS_MODE ? 16 : 8;
+    byte[] hostChallenge = new byte[blockLength];
+    Arrays.fill(hostChallenge, (byte) 0x5A);
+
+    requestWitness();
+    assertSw(
+        0x6982,
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            mutualResponseRequest(new byte[blockLength], hostChallenge)),
+        "A wrong witness must fail even when the Response request is present");
+    assertSw(
+        0x6982,
+        updateLocalPinWithManagementKey(),
+        "A rejected witness must not grant management authorization");
+
+    byte[] encryptedWitness = Arrays.copyOfRange(requestWitness().getData(), 4, 4 + blockLength);
+    byte[] witness = crypt(Cipher.DECRYPT_MODE, key, encryptedWitness);
+    ResponseAPDU response =
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            mutualResponseRequest(witness, hostChallenge));
+    assertSw(0x9000, response, "Mutual authentication response in the Table 23 form");
+    assertArrayEquals(
+        hostChallenge,
+        crypt(Cipher.DECRYPT_MODE, key, Arrays.copyOfRange(response.getData(), 4, 4 + blockLength)),
+        "Card response must encipher the host challenge");
+    assertSw(
+        0x9000,
+        updateLocalPinWithManagementKey(),
+        "Completed mutual authentication grants management authorization");
+  }
+
+  /**
+   * A pending challenge is accepted only by the command that immediately follows its request. A
+   * failed GENERAL AUTHENTICATE in between abandons it.
+   */
+  @Test
+  void failedGeneralAuthenticateDiscardsPendingChallenge() throws Exception {
+    byte[] key = keyMaterial((byte) 0x41);
+    provisionManagementKeyOverScp(key, (byte) 0x14);
+    assertSw(0x9000, selectApplet(), "SELECT before stale-challenge cases");
+
+    int algorithm = TEST_ALGORITHM & 0xFF;
+    int managementKey = KEY_REF_CARD_MANAGEMENT & 0xFF;
+    CommandAPDU[] failing = {
+      new CommandAPDU(0x00, 0x87, algorithm, 0x01, hex("7C028100")),
+      new CommandAPDU(0x00, 0x87, algorithm, managementKey, hex("5300")),
+      new CommandAPDU(0x00, 0x87, 0x11, 0x9A, hex("7C0481008200")),
+      new CommandAPDU(0x00, 0x87, 0x27, managementKey, hex("7C028100")),
+      new CommandAPDU(0x00, 0x87, algorithm, managementKey, hex("7C0481008100"))
+    };
+    for (CommandAPDU command : failing) {
+      byte[] challenge = requestChallenge();
+      ResponseAPDU failure = transmit(command);
+      assertTrue(failure.getSW() != 0x9000, "Precondition failure expected: " + swHex(failure));
+      assertSw(
+          0x6982,
+          transmit(
+              0x00,
+              0x87,
+              TEST_ALGORITHM & 0xFF,
+              KEY_REF_CARD_MANAGEMENT & 0xFF,
+              tlv((byte) 0x7C, tlv((byte) 0x82, crypt(Cipher.ENCRYPT_MODE, key, challenge)))),
+          "A challenge must not survive a failed GENERAL AUTHENTICATE " + swHex(failure));
+    }
+
+    byte[] challenge = requestChallenge();
+    assertSw(
+        0x9000,
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            tlv((byte) 0x7C, tlv((byte) 0x82, crypt(Cipher.ENCRYPT_MODE, key, challenge)))),
+        "An immediately following response is accepted");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 2.4.2: "An aborted or failed execution of an authentication protocol
+   * SHALL set the security status indicator associated with the credential used in the protocol to
+   * FALSE."
+   */
+  @Test
+  void failedResponseClearsEarlierManagementAuthentication() throws Exception {
+    byte[] key = keyMaterial((byte) 0x41);
+    provisionManagementKeyOverScp(key, (byte) 0x14);
+    assertSw(0x9000, selectApplet(), "SELECT before 9B status test");
+
+    byte[] challenge = requestChallenge();
+    assertSw(
+        0x9000,
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            tlv((byte) 0x7C, tlv((byte) 0x82, crypt(Cipher.ENCRYPT_MODE, key, challenge)))),
+        "9B external authentication");
+    assertSw(0x9000, updateLocalPinWithManagementKey(), "9B authorizes a PIN replacement");
+
+    assertSw(
+        0x6982,
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            tlv((byte) 0x7C, tlv((byte) 0x82, new byte[FIPS_MODE ? 16 : 8]))),
+        "An unsolicited response fails");
+    assertSw(
+        0x6982,
+        updateLocalPinWithManagementKey(),
+        "The failed response must clear the earlier 9B authorization");
+  }
+
+  /**
+   * SP 800-73-5 Part 2 Section 3.2.4 defines the data field as the Table 7 dynamic authentication
+   * template. Siblings, unknown children and duplicated objects are rejected.
+   */
+  @Test
+  void nonCanonicalAuthenticationTemplatesAreRejected() {
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x14);
+    assertSw(0x9000, selectApplet(), "SELECT before template grammar cases");
+
+    String[] malformed = {
+      "53007C028100", // leading top-level sibling
+      "7C0281005300", // trailing top-level sibling
+      "7C0481008100", // duplicate Challenge
+      "7C0453008100", // unknown child
+      "7C068101AA8101BB", // duplicate Challenge with different values
+      "7C06820100820102", // duplicate Response with different values
+      "7C0480008000" // duplicate Witness
+    };
+    for (String data : malformed) {
+      assertSw(
+          0x6A80,
+          transmit(0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex(data)),
+          "Non-canonical template " + data);
+    }
+    assertSw(
+        0x9000,
+        transmit(
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100")),
+        "The canonical challenge request is accepted");
+  }
+
+  /** GENERAL AUTHENTICATE Case 1D: a symmetric key enciphers a host challenge. */
+  @Test
+  void internalAuthenticateEnciphersChallenge() throws Exception {
+    assumeFalse(FIPS_MODE, "The FIPS profile defines no symmetric key permitting internal use");
+    byte[] key = new byte[16];
+    for (int i = 0; i < key.length; i++) key[i] = (byte) (0x21 + i);
+    provisionSymmetricKeyOverScp(KEY_REF_DYNAMIC, ALG_AES_128, (byte) 0x12, key);
+    assertSw(0x9000, selectApplet(), "SELECT before internal authentication");
+
+    byte[] challenge = new byte[16];
+    Arrays.fill(challenge, (byte) 0x3C);
+    byte[][] requests = {
+      tlv((byte) 0x7C, concat(tlv((byte) 0x81, challenge), tlv((byte) 0x82, new byte[0]))),
+      // SP 800-73-5 Part 2 Appendix A orders the empty Response first.
+      tlv((byte) 0x7C, concat(tlv((byte) 0x82, new byte[0]), tlv((byte) 0x81, challenge)))
+    };
+    for (byte[] request : requests) {
+      ResponseAPDU response = transmit(0x00, 0x87, ALG_AES_128, KEY_REF_DYNAMIC, request);
+      assertSw(0x9000, response, "Internal authenticate");
+      byte[] cryptogram = tlvValue(response.getData(), (byte) 0x82);
+      assertArrayEquals(
+          challenge, aes(Cipher.DECRYPT_MODE, key, cryptogram), "Card enciphers the challenge");
+    }
+
+    assertSw(
+        0x6A80,
+        transmit(
+            0x00,
+            0x87,
+            ALG_AES_128,
+            KEY_REF_DYNAMIC,
+            tlv(
+                (byte) 0x7C,
+                concat(tlv((byte) 0x81, new byte[15]), tlv((byte) 0x82, new byte[0])))),
+        "The challenge must be exactly one cipher block");
+  }
+
+  @Test
+  void internalAuthenticateRequiresPermitInternal() {
+    provisionManagementKeyOverScp(keyMaterial((byte) 0x41), (byte) 0x14);
+    assertSw(0x9000, selectApplet(), "SELECT before internal authentication without permission");
+    assertSw(
+        0x6982,
+        transmit(
+            0x00,
+            0x87,
+            TEST_ALGORITHM & 0xFF,
+            KEY_REF_CARD_MANAGEMENT & 0xFF,
+            tlv(
+                (byte) 0x7C,
+                concat(
+                    tlv((byte) 0x81, new byte[FIPS_MODE ? 16 : 8]),
+                    tlv((byte) 0x82, new byte[0])))),
+        "Internal authentication requires ATTR_PERMIT_INTERNAL");
+  }
+
+  private byte[] requestChallenge() {
+    ResponseAPDU response =
+        transmit(
+            0x00, 0x87, TEST_ALGORITHM & 0xFF, KEY_REF_CARD_MANAGEMENT & 0xFF, hex("7C028100"));
+    assertSw(0x9000, response, "External-authentication challenge request");
+    return tlvValue(response.getData(), (byte) 0x81);
+  }
+
+  /** A 9B-authorized proprietary local PIN replacement (CLA 80, INS 25, P1 01, P2 80). */
+  private ResponseAPDU updateLocalPinWithManagementKey() {
+    return transmit(0x80, 0x25, 0x01, 0x80, hex("313233343536FFFF"));
+  }
+
+  private void provisionSymmetricKeyOverScp(
+      final byte id, final byte algorithm, final byte attributes, final byte[] keyBytes) {
+    withMockedScp(
+        () -> {
+          assertSw(0x9000, selectApplet(), "SELECT before symmetric key provisioning");
+          assertSw(
+              0x9000,
+              transmit(
+                  0x84,
+                  0xDB,
+                  0xFF,
+                  0xFF,
+                  new byte[] {
+                    (byte) 0x66,
+                    (byte) 0x12,
+                    (byte) 0x8B,
+                    (byte) 0x01,
+                    id,
+                    (byte) 0x8C,
+                    (byte) 0x01,
+                    (byte) 0x7F,
+                    (byte) 0x8D,
+                    (byte) 0x01,
+                    (byte) 0x00,
+                    (byte) 0x8E,
+                    (byte) 0x01,
+                    algorithm,
+                    (byte) 0x8F,
+                    (byte) 0x01,
+                    (byte) 0x01,
+                    (byte) 0x90,
+                    (byte) 0x01,
+                    attributes
+                  }),
+              "Create symmetric key");
+          assertSw(
+              0x9000,
+              transmit(
+                  0x84,
+                  0x25,
+                  0x01,
+                  id & 0xFF,
+                  concat(
+                      new byte[] {(byte) 0x80, (byte) 0x01, algorithm}, keyUpdateData(keyBytes))),
+              "Import symmetric key");
+        });
+  }
+
+  private static byte[] mutualResponseRequest(byte[] witness, byte[] challenge) {
+    return tlv(
+        (byte) 0x7C,
+        concat(
+            tlv((byte) 0x80, witness), tlv((byte) 0x81, challenge), tlv((byte) 0x82, new byte[0])));
+  }
+
+  private static byte[] aes(int mode, byte[] key, byte[] input) throws Exception {
+    Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
+    cipher.init(mode, new SecretKeySpec(key, "AES"));
+    return cipher.doFinal(input);
   }
 
   private void provisionManagementKeyOverScp(byte[] keyBytes, byte attributes) {

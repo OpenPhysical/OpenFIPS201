@@ -147,8 +147,8 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
         new String(tlvValue(data, outerOffset, outerEnd, 0x80), StandardCharsets.US_ASCII),
         "GET VERSION application name should identify this fork");
     assertEquals((byte) 0x01, singleByteTlvValue(data, outerOffset, outerEnd, 0x81));
-    assertEquals((byte) 0x0A, singleByteTlvValue(data, outerOffset, outerEnd, 0x82));
-    assertEquals((byte) 0x02, singleByteTlvValue(data, outerOffset, outerEnd, 0x83));
+    assertEquals((byte) 0x0B, singleByteTlvValue(data, outerOffset, outerEnd, 0x82));
+    assertEquals((byte) 0x00, singleByteTlvValue(data, outerOffset, outerEnd, 0x83));
   }
 
   @Test
@@ -249,8 +249,31 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
     assumeTrue(isAttestationEnabledBuild(), "ATTEST precondition test requires attestation build");
     assertSw(0x9000, selectApplet(), "SELECT before ATTEST length check");
 
-    ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x00, hex("00"));
-    assertSw(0x6700, response, "ATTEST is a no-body command and must reject nonzero Lc");
+    // Over T=1 the command case is explicit, so stray command data is detected and rejected.
+    withContactProtocol(
+        javacard.framework.APDU.PROTOCOL_T1,
+        () ->
+            assertSw(
+                0x6700,
+                transmit(0x00, 0xF9, 0x9A, 0x00, hex("00")),
+                "ATTEST is a no-body command and must reject nonzero Lc"));
+  }
+
+  @Test
+  void attestCase2OverT0DoesNotReceiveCommandData() {
+    assumeTrue(isAttestationEnabledBuild(), "ATTEST transport test requires attestation build");
+    assertSw(0x9000, selectApplet(), "SELECT before ATTEST T=0 check");
+
+    // JC 3.0.5 APDU.setIncomingAndReceive(): over T=0 "the P3 param is assumed to be Lc". The
+    // case 2 ATTEST form carries Le in P3, so the applet must not request command data and
+    // proceeds to its normal precondition checks.
+    withContactProtocol(
+        javacard.framework.APDU.PROTOCOL_T0,
+        () ->
+            assertSw(
+                0x6985,
+                transmit(new javax.smartcardio.CommandAPDU(0x00, 0xF9, 0x9A, 0x00, 0xFF)),
+                "ATTEST with Le=FF over T=0 reaches the authority check"));
   }
 
   @Test
@@ -260,6 +283,16 @@ class OpenFIPS201CommandDispatchTest extends OpenFIPS201TestSupport {
 
     ResponseAPDU response = transmit(0x00, 0xF9, 0x9A, 0x01);
     assertSw(0x6A86, response, "ATTEST requires P2=0x00");
+  }
+
+  @Test
+  void attestationAuthorityProofRequiresSecureChannel() {
+    assumeTrue(
+        isAttestationEnabledBuild(), "F9 PROVE precondition test requires attestation build");
+    assertSw(0x9000, selectApplet(), "SELECT before F9 PROVE check");
+
+    ResponseAPDU response = transmit(0x00, 0xF9, 0xF9, 0x01, new byte[32]);
+    assertSw(0x6982, response, "F9 PROVE outside an encrypted and MACed secure channel");
   }
 
   @Test

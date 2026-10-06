@@ -41,6 +41,17 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
   static final byte ELEMENT_KEY = (byte) 0x80;
   // Clear any key material from this object (same wire tag as the common ELEMENT_CLEAR)
   static final byte ELEMENT_KEY_CLEAR = ELEMENT_CLEAR;
+  // Length of one DES key within a 3TDEA key bundle
+  private static final short LENGTH_DES_KEY = (short) 8;
+  // Two key containers are built when the key object is defined. An update writes the inactive
+  // container and publishes it by a transactional swap of the active reference, so a key rotation
+  // allocates no persistent memory and a power loss leaves either the previous or the new key
+  // active. JC 3.0.5 API JCSystem.isObjectDeletionSupported() "is used to determine if the
+  // implementation for the Java Card platform supports the object deletion mechanism", so a
+  // container built per update cannot be assumed reclaimable.
+  private final SecretKey keyA;
+  private final SecretKey keyB;
+  // The active container (keyA or keyB), or null when no key value is published.
   private SecretKey key;
 
   private PIVKeyObjectSYM(
@@ -53,6 +64,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       byte attributes)
       throws ISOException {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+    keyA = allocateKey();
+    keyB = allocateKey();
   }
 
   static PIVKeyObjectSYM create(
@@ -83,14 +96,21 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
     try {
       switch (element) {
         case ELEMENT_KEY:
-          SecretKey replacement = allocateKey();
+          // SP 800-78-5 Section 3.1 Table 1 note 3: "3TDEA is Triple DES using Keying Option 1
+          // from [SP800-67], which requires that all three keys be unique (i.e., Key 1 != Key 2,
+          // Key 2 != Key 3, and Key 3 != Key 1)." DES ignores the parity bit of each byte.
+          if (isTdea() && !hasDistinctTdeaKeys(buffer, offset)) {
+            ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          }
+          SecretKey replacement = (key == keyA) ? keyB : keyA;
           try {
             if (replacement.getType() == KeyBuilder.TYPE_DES) {
               ((DESKey) replacement).setKey(buffer, offset);
             } else if (replacement.getType() == KeyBuilder.TYPE_AES) {
               ((AESKey) replacement).setKey(buffer, offset);
             } else {
-              ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+              // Internal fault: ISO/IEC 7816-4 Table 6 '6F00' (no precise diagnosis).
+              ISOException.throwIt(ISO7816.SW_UNKNOWN);
             }
           } catch (Exception ex) {
             replacement.clearKey();
@@ -102,7 +122,6 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
           key = replacement;
           JCSystem.commitTransaction();
           if (previous != null) previous.clearKey();
-          runGc();
           break;
 
         default:
@@ -112,6 +131,31 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
     } finally {
       PIVSecurityProvider.zeroise(buffer, offset, keyLengthBytes);
     }
+  }
+
+  private boolean isTdea() {
+    return getMechanism() == PIV.ID_ALG_DEFAULT || getMechanism() == PIV.ID_ALG_TDEA_3KEY;
+  }
+
+  /**
+   * Returns whether the three 8-byte DES keys of a 3TDEA key bundle are pairwise distinct, ignoring
+   * the parity bit (bit 0) of every byte.
+   */
+  private static boolean hasDistinctTdeaKeys(byte[] buffer, short offset) {
+    short key2 = (short) (offset + LENGTH_DES_KEY);
+    short key3 = (short) (key2 + LENGTH_DES_KEY);
+    return !desKeysEqual(buffer, offset, key2)
+        && !desKeysEqual(buffer, key2, key3)
+        && !desKeysEqual(buffer, key3, offset);
+  }
+
+  private static boolean desKeysEqual(byte[] buffer, short first, short second) {
+    byte difference = 0;
+    for (short i = 0; i < LENGTH_DES_KEY; i++) {
+      difference |=
+          (byte) ((buffer[(short) (first + i)] ^ buffer[(short) (second + i)]) & (byte) 0xFE);
+    }
+    return difference == 0;
   }
 
   private SecretKey allocateKey() throws ISOException {
@@ -142,11 +186,10 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
 
   @Override
   void clear() {
-    if (key != null) {
-      key.clearKey();
-      key = null;
-      runGc();
-    }
+    // Unpublish before wiping, so an interrupted clear never leaves a partly cleared key active.
+    key = null;
+    keyA.clearKey();
+    keyB.clearKey();
     clearOrigin();
   }
 
@@ -159,15 +202,16 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
     switch (getMechanism()) {
       case PIV.ID_ALG_DEFAULT:
       case PIV.ID_ALG_TDEA_3KEY:
-        return (short) 8;
+        return PIVCrypto.LENGTH_BLOCK_TDEA;
 
       case PIV.ID_ALG_AES_128:
       case PIV.ID_ALG_AES_192:
       case PIV.ID_ALG_AES_256:
-        return (short) 16;
+        return PIVCrypto.LENGTH_BLOCK_AES;
 
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // ISO/IEC 7816-4 Table 7 '6A81' (function not supported): not a symmetric mechanism.
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
         return (short) 0; // Keep compiler happy
     }
   }
@@ -189,7 +233,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
         return KeyBuilder.LENGTH_AES_256;
 
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // ISO/IEC 7816-4 Table 7 '6A81' (function not supported): not a symmetric mechanism.
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
         return (short) 0; // Keep compiler happy
     }
   }
@@ -199,7 +244,8 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
 
     // PRE-CONDITION 1 - The length must be equal to the block length
     if (inLength != getBlockLength()) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      // ISO/IEC 7816-4 Table 7 '6A80' (incorrect parameters in the command data field).
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     return PIVCrypto.doEncrypt(key, inBuffer, inOffset, inLength, outBuffer, outOffset);

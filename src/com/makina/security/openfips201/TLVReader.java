@@ -45,7 +45,11 @@ final class TLVReader {
   private static final short CONTEXT_POSITION = (short) 1;
   // The offset given when the data was set, allowing for a reset
   private static final short CONTEXT_POSITION_RESET = (short) 2;
-  private static final short LENGTH_CONTEXT = (short) 4;
+  // Exclusive ends of the open constructed objects during validation, innermost last
+  private static final short CONTEXT_OPEN_ENDS = (short) 3;
+  // Maximum number of nested non-empty constructed objects accepted by validation
+  private static final short MAX_NESTING = (short) 8;
+  private static final short LENGTH_CONTEXT = (short) (CONTEXT_OPEN_ENDS + MAX_NESTING);
 
   //
   // CONSTANTS
@@ -83,7 +87,7 @@ final class TLVReader {
    * @return The length of the data element
    */
   static short getLength(byte[] data, short offset) throws ISOException {
-    return TLV.readLength(data, offset, (short) data.length, false);
+    return TLV.readLength(data, offset, (short) data.length);
   }
 
   /**
@@ -94,7 +98,7 @@ final class TLVReader {
    * @return The data element offset
    */
   static short getDataOffset(byte[] data, short offset) {
-    return TLV.dataOffset(data, offset, (short) data.length, false);
+    return TLV.dataOffset(data, offset, (short) data.length);
   }
 
   /**
@@ -124,59 +128,41 @@ final class TLVReader {
     }
   }
 
+  /**
+   * Checks that the input is a concatenation of well-formed BER-TLV objects and that the value of
+   * every non-empty constructed object is itself such a concatenation, ending exactly at its
+   * parent's end.
+   *
+   * <p>The walk is iterative: the ends of the open constructed objects are kept in {@link
+   * #context}, so input received before any authentication cannot grow the Java Card stack. At most
+   * {@link #MAX_NESTING} non-empty constructed objects may be open at once.
+   */
   private boolean validate() {
     byte[] data = (byte[]) dataPtr[0];
-    short start = context[CONTEXT_POSITION_RESET];
-    short end = (short) (start + context[CONTEXT_LENGTH]);
-    return validateRange(data, start, end, (byte) 0);
-  }
+    short position = context[CONTEXT_POSITION_RESET];
+    short end = (short) (position + context[CONTEXT_LENGTH]);
+    short depth = (short) 0;
 
-  private static boolean validateRange(byte[] data, short start, short end, byte depth) {
-    if (depth > (byte) 8) return false;
-
-    short position = start;
-    while (position < end) {
-      short tagStart = position;
-      byte firstTag = data[position++];
-      if ((firstTag & TLV.MASK_TAG_MULTI_BYTE) == TLV.MASK_TAG_MULTI_BYTE) {
-        byte tagBytes = 0;
-        byte value;
-        do {
-          if (position >= end || tagBytes == (byte) 2) return false;
-          value = data[position++];
-          if (tagBytes == 0 && (value & 0x7F) == 0) return false;
-          tagBytes++;
-        } while ((value & TLV.MASK_HIGH_TAG_MOREDATA) == TLV.MASK_HIGH_TAG_MOREDATA);
+    while (true) {
+      short parentEnd = depth == (short) 0 ? end : context[(short) (CONTEXT_OPEN_ENDS + depth - 1)];
+      if (position == parentEnd) {
+        if (depth == (short) 0) return true;
+        depth--;
+        continue;
       }
 
-      if (position >= end) return false;
-      short valueLength;
-      short lengthByte = (short) (data[position++] & 0xFF);
-      if ((lengthByte & 0x80) == 0) {
-        valueLength = lengthByte;
-      } else {
-        short lengthBytes = (short) (lengthByte & 0x7F);
-        if (lengthBytes == 0 || lengthBytes > 2 || position > (short) (end - lengthBytes)) {
-          return false;
-        }
-        if (lengthBytes == 1) {
-          valueLength = (short) (data[position++] & 0xFF);
-        } else {
-          valueLength = Util.getShort(data, position);
-          position += 2;
-        }
+      short objectEnd = TLV.endOrInvalid(data, position, parentEnd);
+      if (objectEnd == TLV.INVALID) return false;
+      short valueOffset = TLV.valueOffsetOrInvalid(data, position, parentEnd);
+      if ((data[position] & TLV.MASK_CONSTRUCTED) == 0 || valueOffset == objectEnd) {
+        position = objectEnd;
+        continue;
       }
-
-      if (valueLength < 0 || position > (short) (end - valueLength)) return false;
-      short valueEnd = (short) (position + valueLength);
-      if ((data[tagStart] & (byte) 0x20) != 0
-          && valueLength != 0
-          && !validateRange(data, position, valueEnd, (byte) (depth + 1))) {
-        return false;
-      }
-      position = valueEnd;
+      if (depth == MAX_NESTING) return false;
+      context[(short) (CONTEXT_OPEN_ENDS + depth)] = objectEnd;
+      depth++;
+      position = valueOffset;
     }
-    return position == end;
   }
 
   /***
@@ -195,87 +181,6 @@ final class TLVReader {
     context[CONTEXT_POSITION] = 0;
     context[CONTEXT_POSITION_RESET] = 0;
     context[CONTEXT_LENGTH] = 0;
-  }
-
-  /**
-   * Tests whether there is a TLV object initialised for reading
-   *
-   * @return true if there is a TLV object initialised for reading
-   */
-  boolean isInitialized() {
-    return (dataPtr[0] != null);
-  }
-
-  /** Restores the current position to the offset originally supplied to init() */
-  void resetPosition() throws ISOException {
-    if (!isInitialized()) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    context[CONTEXT_POSITION] = context[CONTEXT_POSITION_RESET];
-  }
-
-  /**
-   * Finds a tag in the currently active TLV object
-   *
-   * @param tag The tag to find
-   * @return True if the requested tag was found before the end of the buffer was reached
-   */
-  boolean find(byte tag) {
-    while ((short) (context[CONTEXT_POSITION] - context[CONTEXT_POSITION_RESET])
-        < context[CONTEXT_LENGTH]) {
-      // Is this our tag number?
-      if (tag == getTag()) return true;
-
-      // Skip to the next tag at this level (i.e. it will not descend into children)
-      if (!moveNext()) return false;
-    }
-
-    // We didn't find the requested tag
-    return false;
-  }
-
-  /**
-   * Finds a tag in the currently active TLV object
-   *
-   * @param tag The tag to find
-   * @return True if the requested tag was found before the end of the buffer was reached
-   */
-  boolean find(short tag) {
-    while ((short) (context[CONTEXT_POSITION] - context[CONTEXT_POSITION_RESET])
-        < context[CONTEXT_LENGTH]) {
-      // Is this our tag number?
-      if (tag == getTagShort()) return true;
-
-      // Skip to the next tag at this level (i.e. it will not descend into children)
-      if (!moveNext()) return false;
-    }
-
-    // We didn't find the requested tag
-    return false;
-  }
-
-  /**
-   * Finds a tag in the currently active TLV object, not including the current tag
-   *
-   * @param tag The tag to find
-   * @return True if the requested tag was found before the end of the buffer was reached
-   */
-  boolean findNext(byte tag) {
-    // Skip to the next tag
-    if (!moveNext()) return false;
-
-    return find(tag);
-  }
-
-  /**
-   * Finds a tag in the currently active TLV object, not including the current tag
-   *
-   * @param tag The tag to find
-   * @return True if the requested tag was found before the end of the buffer was reached
-   */
-  boolean findNext(short tag) {
-    // Skip to the next tag
-    if (!moveNext()) return false;
-
-    return find(tag);
   }
 
   /**
@@ -322,54 +227,8 @@ final class TLVReader {
    * @return True if the first byte of the data matches the comparison
    */
   boolean matchData(byte value) {
-    return matchData(value, (short) 0);
-  }
-
-  /**
-   * Tests if the current value matches the data for the current tag
-   *
-   * @param value The value to compare against
-   * @param offset The offset within the data to compare against
-   * @return True if the first byte of the data matches the comparison
-   */
-  boolean matchData(byte value, short offset) {
     byte[] data = (byte[]) dataPtr[0];
-    offset += getDataOffset();
-    return (value == data[offset]);
-  }
-
-  /**
-   * Tests if the current value matches the data for the current tag
-   *
-   * @param value The value to compare against
-   * @return True if the first two bytes of the data matches the comparison
-   */
-  boolean matchData(short value) {
-    return matchData(value, (short) 0);
-  }
-
-  /**
-   * Tests if the current value matches the data for the current tag
-   *
-   * @param value The value to compare against
-   * @param offset The offset within the data to compare against
-   * @return True if the first two bytes of the data matches the comparison
-   */
-  boolean matchData(short value, short offset) {
-    byte[] data = (byte[]) dataPtr[0];
-    offset += getDataOffset();
-    return (value == Util.getShort(data, offset));
-  }
-
-  /**
-   * Tests if the current tag matches the supplied one
-   *
-   * @param tag The tag to find
-   * @return True if the current tag matches the supplied one
-   */
-  boolean match(short tag) {
-    if (isEOF()) return false;
-    return (tag == Util.getShort((byte[]) dataPtr[0], context[CONTEXT_POSITION]));
+    return (value == data[getDataOffset()]);
   }
 
   /**
@@ -380,15 +239,6 @@ final class TLVReader {
   byte getTag() {
     byte[] data = (byte[]) dataPtr[0];
     return data[context[CONTEXT_POSITION]];
-  }
-
-  /**
-   * Returns the tag identifier for the current tag
-   *
-   * @return The identifier for the current tag
-   */
-  short getTagShort() {
-    return Util.getShort((byte[]) dataPtr[0], context[CONTEXT_POSITION]);
   }
 
   /**
@@ -441,15 +291,6 @@ final class TLVReader {
   }
 
   /**
-   * Sets the current position within the TLV object
-   *
-   * @param offset The current position within the TLV object
-   */
-  void setOffset(short offset) {
-    context[CONTEXT_POSITION] = offset;
-  }
-
-  /**
    * Gets the offset in the current tag to it's data element
    *
    * @return The data offset in the current tag
@@ -473,7 +314,7 @@ final class TLVReader {
     } else if ((short) 2 == length) {
       return Util.getShort(data, offset);
     } else {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (short) -1; // Dummy
     }
   }
@@ -482,6 +323,8 @@ final class TLVReader {
    * Reads the current tag value as a byte value
    *
    * @return The current tag value as a byte
+   * @throws ISOException '6A80' (ISO/IEC 7816-4 Table 7, incorrect parameters in the command data
+   *     field) if the value is not exactly one byte
    */
   byte toByte() throws ISOException {
     byte[] data = (byte[]) dataPtr[0];
@@ -490,41 +333,8 @@ final class TLVReader {
     if ((short) 1 == length) {
       return data[getDataOffset()];
     } else {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return (byte) 0; // Keep compiler happy
     }
-  }
-
-  /**
-   * Reads the current tag value as a boolean value
-   *
-   * @return True if the current data element is non-zero, otherwise False.
-   */
-  boolean toBoolean() throws ISOException {
-    byte[] data = (byte[]) dataPtr[0];
-    short length = getLength();
-
-    if ((short) 1 == length) {
-      return (data[getDataOffset()] != (byte) 0);
-    } else {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-      return false; // Keep compiler happy
-    }
-  }
-
-  /**
-   * Writes the raw bytes for this tag to the specified buffer, which must have enough space to
-   * write the entire object to (as per getLength()).
-   *
-   * @param buffer The buffer to write the bytes to
-   * @param offset The offset to start writing from in buffer
-   */
-  void toBytes(byte[] buffer, short offset) {
-
-    byte[] data = (byte[]) dataPtr[0];
-    short dataLength = getLength();
-    short dataOffset = getDataOffset();
-
-    Util.arrayCopyNonAtomic(data, dataOffset, buffer, offset, dataLength);
   }
 }

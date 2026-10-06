@@ -1,16 +1,21 @@
 package com.makina.security.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.Util;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import pro.javacard.engine.JavaCardEngine;
 
 class PIVKeyObjectECCTest {
@@ -28,6 +33,56 @@ class PIVKeyObjectECCTest {
       key.updateElement(PIVKeyObjectECC.ELEMENT_SM_CVC, cvc, (short) 0, (short) cvc.length);
       assertEquals((short) cvc.length, field(key, "smCvcLength").getShort(key));
     }
+  }
+
+  /**
+   * Util.arrayCopyNonAtomic "does not use the transaction facility during the copy operation even
+   * if a transaction is in progress" (JC 3.0.5 API). An interrupted CVC replacement must leave the
+   * complete previous certificate published; a completed one publishes the complete new one.
+   */
+  @Test
+  void interruptedCvcReplacementKeepsThePublishedCertificate() throws Exception {
+    try (AutoCloseable ignored = enterEngineContext()) {
+      PIVKeyObjectECC key = createEcc(PIV.ID_KEY_SECURE_MESSAGING, PIV.ID_ALG_ECC_SM);
+      byte[] previous = {0x7F, 0x21, 0x04, 0x01, 0x02, 0x03, 0x04};
+      byte[] replacement = {0x7F, 0x21, 0x04, 0x05, 0x06, 0x07, 0x08};
+      key.updateElement(PIVKeyObjectECC.ELEMENT_SM_CVC, previous, (short) 0, (short) 7);
+
+      try (MockedStatic<Util> util = Mockito.mockStatic(Util.class, Mockito.CALLS_REAL_METHODS)) {
+        util.when(
+                () ->
+                    Util.arrayCopyNonAtomic(
+                        Mockito.any(byte[].class),
+                        Mockito.anyShort(),
+                        Mockito.any(byte[].class),
+                        Mockito.anyShort(),
+                        Mockito.anyShort()))
+            .thenAnswer(
+                invocation -> {
+                  byte[] source = invocation.getArgument(0);
+                  short sourceOffset = invocation.getArgument(1);
+                  byte[] destination = invocation.getArgument(2);
+                  short destinationOffset = invocation.getArgument(3);
+                  System.arraycopy(source, sourceOffset, destination, destinationOffset, 5);
+                  throw new IllegalStateException("power lost during the copy");
+                });
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                key.updateElement(
+                    PIVKeyObjectECC.ELEMENT_SM_CVC, replacement, (short) 0, (short) 7));
+      }
+      assertArrayEquals(previous, publishedCvc(key), "previous CVC stays published");
+
+      key.updateElement(PIVKeyObjectECC.ELEMENT_SM_CVC, replacement, (short) 0, (short) 7);
+      assertArrayEquals(replacement, publishedCvc(key), "completed replacement is published");
+    }
+  }
+
+  private static byte[] publishedCvc(PIVKeyObjectECC key) {
+    byte[] out = new byte[key.getSmCvcLength()];
+    key.getSmCvc(out, (short) 0);
+    return out;
   }
 
   @Test

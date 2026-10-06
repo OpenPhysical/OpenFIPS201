@@ -24,8 +24,8 @@ class TLVLengthTest {
     assertArrayEquals(new byte[] {(byte) 0x82, (byte) 0x01, (byte) 0x00}, slice(buffer, 0, 3));
 
     byte[] tlv = new byte[] {(byte) 0x5F, (byte) 0xC1, (byte) 0x5A, (byte) 0x81, (byte) 0x80};
-    assertEquals((short) 0x80, TLV.readLength(tlv, (short) 0, (short) tlv.length, false));
-    assertEquals((short) 5, TLV.dataOffset(tlv, (short) 0, (short) tlv.length, false));
+    assertEquals((short) 0x80, TLV.readLength(tlv, (short) 0, (short) tlv.length));
+    assertEquals((short) 5, TLV.dataOffset(tlv, (short) 0, (short) tlv.length));
   }
 
   @Test
@@ -34,36 +34,37 @@ class TLVLengthTest {
         ISO7816.SW_WRONG_LENGTH, () -> TLV.writeLength(new byte[4], (short) 0, (short) -1));
     assertIsoReason(
         ISO7816.SW_WRONG_DATA,
-        () -> TLV.readLength(new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2, true));
+        () -> TLV.readLength(new byte[] {0x30, (byte) 0x80}, (short) 0, (short) 2));
     assertIsoReason(
         ISO7816.SW_WRONG_DATA,
-        () -> TLV.readLength(new byte[] {0x30, (byte) 0x83, 0, 0, 1}, (short) 0, (short) 5, true));
+        () -> TLV.readLength(new byte[] {0x30, (byte) 0x83, 0, 0, 1}, (short) 0, (short) 5));
     assertIsoReason(
         ISO7816.SW_WRONG_DATA,
-        () -> TLV.readLength(new byte[] {0x30, (byte) 0x82, 0x01}, (short) 0, (short) 3, true));
+        () -> TLV.readLength(new byte[] {0x30, (byte) 0x82, 0x01}, (short) 0, (short) 3));
   }
 
   @Test
-  void strictDerRejectsNonMinimalLengthForms() {
+  void rejectsNonMinimalLengthForms() {
     assertIsoReason(
         ISO7816.SW_WRONG_DATA,
-        () -> TLV.readLength(new byte[] {0x30, (byte) 0x81, 0x7F}, (short) 0, (short) 3, true));
+        () -> TLV.readLength(new byte[] {0x30, (byte) 0x81, 0x7F}, (short) 0, (short) 3));
     assertIsoReason(
         ISO7816.SW_WRONG_DATA,
         () ->
             TLV.readLength(
-                new byte[] {0x30, (byte) 0x82, 0x00, (byte) 0x80}, (short) 0, (short) 4, true));
-
-    assertEquals(
-        (short) 0x7F,
-        TLV.readLength(new byte[] {0x30, (byte) 0x81, 0x7F}, (short) 0, (short) 3, false));
+                new byte[] {0x30, (byte) 0x82, 0x00, (byte) 0x80}, (short) 0, (short) 4));
+    assertIsoReason(
+        ISO7816.SW_WRONG_DATA,
+        () ->
+            TLV.readLength(
+                new byte[] {0x30, (byte) 0x82, 0x00, (byte) 0x01}, (short) 0, (short) 4));
   }
 
   @Test
   void computesObjectEndWithBoundsChecks() {
     byte[] object = new byte[] {0x30, 0x03, 0x01, 0x02, 0x03};
-    assertEquals((short) 5, TLV.objectEnd(object, (short) 0, (short) object.length, true));
-    assertIsoReason(ISO7816.SW_WRONG_DATA, () -> TLV.objectEnd(object, (short) 0, (short) 4, true));
+    assertEquals((short) 5, TLV.objectEnd(object, (short) 0, (short) object.length));
+    assertIsoReason(ISO7816.SW_WRONG_DATA, () -> TLV.objectEnd(object, (short) 0, (short) 4));
   }
 
   private static byte[] slice(byte[] buffer, int offset, int length) {

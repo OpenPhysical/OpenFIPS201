@@ -7,7 +7,6 @@
 
 package com.makina.security.openfips201;
 
-import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 
@@ -43,7 +42,7 @@ final class PIVDataStore {
       byte adminKey,
       short capacity) {
     if (find(idBuffer, idOffset, idLength) != null) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      ISOException.throwIt(PIV.SW_OBJECT_EXISTS);
     }
 
     PIVDataObject object =
@@ -61,7 +60,8 @@ final class PIVDataStore {
       object = (PIVDataObject) object.getNext();
     }
     if (object == null) {
-      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+      // ISO/IEC 7816-4 Table 7 '6A88' (referenced data or DO not found).
+      ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
       return;
     }
 

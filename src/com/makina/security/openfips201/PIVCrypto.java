@@ -33,11 +33,9 @@ import javacard.security.AESKey;
 import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
-import javacard.security.Key;
 import javacard.security.KeyAgreement;
 import javacard.security.KeyBuilder;
 import javacard.security.MessageDigest;
-import javacard.security.RSAPrivateCrtKey;
 import javacard.security.RSAPrivateKey;
 import javacard.security.RSAPublicKey;
 import javacard.security.RandomData;
@@ -63,11 +61,6 @@ final class PIVCrypto {
   //
   static final short LENGTH_BLOCK_AES = (short) 16;
   static final short LENGTH_BLOCK_TDEA = (short) 8;
-
-  static final short LENGTH_PUBLIC_EC_256 = (short) 65;
-  static final short LENGTH_PUBLIC_EC_384 = (short) 97;
-
-  static final byte CONST_EC_POINT_UNCOMPRESSED = (byte) 4;
 
   //
   // Crypto Providers
@@ -108,6 +101,11 @@ final class PIVCrypto {
     // #endif
 
     JCSystem.requestObjectDeletion();
+  }
+
+  /** Returns whether {@link #init()} has created the engines and no later terminate() ran. */
+  static boolean isInitialised() {
+    return cspRNG != null;
   }
 
   static void init() {
@@ -250,8 +248,9 @@ final class PIVCrypto {
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
         // SP 800-78 permits only ECDSA P-256 with SHA-256 and P-384 with SHA-384, so SHA-1 and
-        // SHA-512 ECDSA engines are not provided. ECDH support also satisfies ECC mechanisms.
-        return ((cspECCSHA256 != null) || (cspECCSHA384 != null) || (cspECDH != null));
+        // SHA-512 ECDSA engines are not provided. The curve's ECDSA engine or ECDH satisfies the
+        // mechanism; supportsKeyRole() checks the engine each role needs.
+        return ((ecdsaForMechanism(mechanism) != null) || (cspECDH != null));
 
       case PIV.ID_ALG_ECC_CS2:
         // #if VCI_CS2
@@ -281,6 +280,31 @@ final class PIVCrypto {
       default:
         return false;
     }
+  }
+
+  /**
+   * Returns whether the platform provides the engine every role of a key definition needs.
+   *
+   * <p>An ECC signing key needs its curve's ECDSA engine (P-256 with SHA-256, P-384 with SHA-384)
+   * and a key-establishment key needs ECDH, so a definition the card could never use is rejected
+   * when it is created rather than failing at GENERAL AUTHENTICATE.
+   */
+  static boolean supportsKeyRole(byte mechanism, byte role) {
+    switch (mechanism) {
+      case PIV.ID_ALG_ECC_P256:
+      case PIV.ID_ALG_ECC_P384:
+        if ((role & PIVKeyObject.ROLE_SIGN) != (byte) 0 && ecdsaForMechanism(mechanism) == null) {
+          return false;
+        }
+        return (role & PIVKeyObject.ROLE_KEY_ESTABLISH) == (byte) 0 || cspECDH != null;
+
+      default:
+        return true;
+    }
+  }
+
+  private static Signature ecdsaForMechanism(byte mechanism) {
+    return (mechanism == PIV.ID_ALG_ECC_P384) ? cspECCSHA384 : cspECCSHA256;
   }
 
   static boolean isSymmetricMechanism(byte mechanism) {
@@ -328,7 +352,8 @@ final class PIVCrypto {
     if ((inBuffer == outBuffer)
         && (inOffset < outOffset)
         && (outOffset < (short) (inOffset + inLength))) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      // Internal buffer misuse, not a property of the command: ISO/IEC 7816-4 Table 6 '6F00'.
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
 
     Cipher cipher = null;
@@ -513,20 +538,6 @@ final class PIVCrypto {
     return cspAES.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static short doAesCbcEncrypt(
-      SecretKey key,
-      byte[] iv,
-      short ivOffset,
-      short ivLength,
-      byte[] inBuffer,
-      short inOffset,
-      short inLength,
-      byte[] outBuffer,
-      short outOffset) {
-    cspAESCBC.init(key, Cipher.MODE_ENCRYPT, iv, ivOffset, ivLength);
-    return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
-  }
-
   static short doAesCbcDecrypt(
       SecretKey key,
       byte[] iv,
@@ -580,10 +591,6 @@ final class PIVCrypto {
     return buildTransientAesKey(KeyBuilder.LENGTH_AES_128);
   }
 
-  static AESKey buildTransientAes256Key() {
-    return buildTransientAesKey(KeyBuilder.LENGTH_AES_256);
-  }
-
   /** Builds a clear-on-deselect AES key of the given bit length (128 or 256). */
   static AESKey buildTransientAesKey(short keyLengthBits) {
     return (AESKey)
@@ -591,28 +598,22 @@ final class PIVCrypto {
   }
 
   /**
-   * Signs a pre-formatted block of data using an RSA CRT private key operation.
+   * Builds a clear-on-reset AES key for PIV secure-messaging session keys.
    *
-   * @param theKey The key to perform the operation with
-   * @param inBuffer contains the precomputed hash
-   * @param inOffset the location of the first byte of the hash
-   * @param inLength the length og the computed hash
-   * @param outBuffer the buffer to contain the signature
-   * @param outOffset the location of the first byte of the signature
-   * @return the length of the signature
+   * <p>SP 800-73-5 Part 2 Section 3.1.1 keeps all security status indicators unchanged when the PIV
+   * Card Application is reselected, and JCRE 3.0.5 Section 5.1 clears CLEAR_ON_DESELECT memory on
+   * reselection. The owner clears these keys explicitly on a genuine deselect.
    */
-  static short doSign(
-      RSAPrivateCrtKey theKey,
-      byte[] inBuffer,
-      short inOffset,
-      short inLength,
-      byte[] outBuffer,
-      short outOffset) {
-    return doRsaPrivateOperation(theKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+  static AESKey buildSessionAesKey(short keyLengthBits) {
+    return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_RESET, keyLengthBits, false);
   }
 
   /**
-   * Signs a pre-formatted block of data using an RSA private key operation.
+   * Signs a pre-formatted block of data using a raw RSA private key operation.
+   *
+   * <p>PIV supplies the complete encoded message representative, so Java Card signature primitives
+   * would hash or pad data that is already formatted. Raw private-key RSA is the required
+   * operation.
    *
    * @param theKey The key to perform the operation with
    * @param inBuffer contains the precomputed hash
@@ -629,19 +630,7 @@ final class PIVCrypto {
       short inLength,
       byte[] outBuffer,
       short outOffset) {
-    return doRsaPrivateOperation(theKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
-  }
-
-  /**
-   * Applies raw RSA with either supported private-key representation.
-   *
-   * <p>PIV supplies the complete encoded message representative, so Java Card signature primitives
-   * would hash or pad data that is already formatted. Raw private-key RSA is the required operation
-   * for both CRT and modulus/exponent key objects.
-   */
-  private static short doRsaPrivateOperation(
-      Key key, byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
-    cspRSA.init(key, Cipher.MODE_ENCRYPT);
+    cspRSA.init(theKey, Cipher.MODE_ENCRYPT);
     return cspRSA.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
@@ -666,16 +655,10 @@ final class PIVCrypto {
       ECPointValidator validator,
       ECParams params) {
 
-    // Uncompressed ECC public keys are marshaled as the concatenation of:
-    // CONST_POINT_UNCOMPRESSED | X | Y
     // Reject malformed points before invoking providers whose length handling varies by platform.
-    if (((theKey.getSize() == KeyBuilder.LENGTH_EC_FP_256) && (inLength != LENGTH_PUBLIC_EC_256))
-        || ((theKey.getSize() == KeyBuilder.LENGTH_EC_FP_384)
-            && (inLength != LENGTH_PUBLIC_EC_384))) {
-      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-      return (short) 0; // Keep compiler happy
-    }
-
+    // The canonical validator checks the 04 || X || Y encoding, its length for the key's curve,
+    // the coordinate range and the curve equation. SP 800-73-5 Part 2 Table 16 C4: "Return
+    // '6A 80' if public-key validation fails."
     if (!validator.isValid(inBuffer, inOffset, inLength, params)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }

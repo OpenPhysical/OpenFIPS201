@@ -8,6 +8,7 @@
 package dev.mistial.tools.openfips201.common;
 
 import apdu4j.core.BIBO;
+import java.util.ArrayList;
 import java.util.List;
 import javax.smartcardio.Card;
 import javax.smartcardio.CardTerminal;
@@ -19,6 +20,7 @@ public final class CardTarget implements CardConnectionFactory {
   private final String scheme;
   private final String value;
   private final int timeoutMs;
+  private volatile String resolvedReader;
 
   private CardTarget(String scheme, String value, int timeoutMs) {
     this.scheme = scheme;
@@ -49,6 +51,7 @@ public final class CardTarget implements CardConnectionFactory {
     }
     CardTerminal terminal = selectTerminal(value);
     Card card = terminal.connect("*");
+    resolvedReader = terminal.getName();
     return new SmartCardBibo(card);
   }
 
@@ -80,13 +83,50 @@ public final class CardTarget implements CardConnectionFactory {
     }
   }
 
+  /**
+   * Returns the PC/SC reader name this target resolves to, or {@link #displayName()} for a {@code
+   * zmq:} target. After {@link #openBibo()} it is the reader that was connected; before, the
+   * readers are enumerated and selected under the same rules.
+   */
+  public String resolvedName() throws Exception {
+    if ("zmq".equals(scheme)) {
+      return displayName();
+    }
+    String resolved = resolvedReader;
+    return resolved != null ? resolved : selectTerminal(value).getName();
+  }
+
   private static CardTerminal selectTerminal(String readerFilter) throws Exception {
-    List<CardTerminal> terminals = TerminalFactory.getDefault().terminals().list();
+    return selectTerminal(TerminalFactory.getDefault().terminals().list(), readerFilter);
+  }
+
+  /**
+   * Selects one reader. A reader whose name equals {@code readerFilter} wins. Otherwise exactly one
+   * reader name must contain {@code readerFilter}; several matches are refused and listed, so a
+   * mutating command never runs on whichever reader PC/SC enumerates first. With no filter, exactly
+   * one reader must be present.
+   */
+  static CardTerminal selectTerminal(List<CardTerminal> terminals, String readerFilter) {
     if (readerFilter != null && !readerFilter.isEmpty()) {
+      List<CardTerminal> matches = new ArrayList<CardTerminal>();
       for (CardTerminal terminal : terminals) {
-        if (terminal.getName().contains(readerFilter)) {
+        if (terminal.getName().equals(readerFilter)) {
           return terminal;
         }
+        if (terminal.getName().contains(readerFilter)) {
+          matches.add(terminal);
+        }
+      }
+      if (matches.size() == 1) {
+        return matches.get(0);
+      }
+      if (matches.size() > 1) {
+        throw new IllegalArgumentException(
+            "PC/SC reader filter is ambiguous: "
+                + readerFilter
+                + " matches "
+                + terminalNames(matches)
+                + "; use the full reader name");
       }
       throw new IllegalArgumentException(
           "No PC/SC reader matched: "

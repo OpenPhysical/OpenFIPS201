@@ -36,7 +36,13 @@ public final class ZmqEmulatorFixture implements AutoCloseable {
   }
 
   public static ZmqEmulatorFixture start(byte[] scp03MasterKey) throws Exception {
-    ZmqApduServer server = new ZmqApduServer(scp03MasterKey);
+    return start(scp03MasterKey, EmulatedApplet.PIV);
+  }
+
+  /** Starts an emulator holding {@code applets} (the OpenFIPS201 PIV package when none). */
+  public static ZmqEmulatorFixture start(byte[] scp03MasterKey, EmulatedApplet... applets)
+      throws Exception {
+    ZmqApduServer server = new ZmqApduServer(scp03MasterKey, applets);
     CompletableFuture<String> ready = new CompletableFuture<>();
     CompletableFuture<Void> terminated = new CompletableFuture<>();
     Thread thread =

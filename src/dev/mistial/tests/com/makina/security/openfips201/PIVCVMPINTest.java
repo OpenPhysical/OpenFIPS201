@@ -27,6 +27,13 @@ class PIVCVMPINTest {
                 Mockito.eq(CVM.FORMAT_HEX)))
         .thenReturn(CVM.CVM_SUCCESS);
     Mockito.when(cvm.isVerified()).thenReturn(true);
+    Mockito.when(
+            cvm.update(
+                Mockito.any(byte[].class),
+                Mockito.anyShort(),
+                Mockito.anyByte(),
+                Mockito.eq(CVM.FORMAT_HEX)))
+        .thenReturn(true);
 
     try (MockedStatic<GPSystem> gp = Mockito.mockStatic(GPSystem.class)) {
       gp.when(() -> GPSystem.getCVM(GPSystem.CVM_GLOBAL_PIN)).thenReturn(cvm);
@@ -39,11 +46,35 @@ class PIVCVMPINTest {
       pin.reset();
       pin.update(value, (short) 0, (byte) value.length);
       assertEquals(0, pin.getTryLimit());
-      assertFalse(pin.supportsSetTryLimit());
       assertThrows(PINException.class, () -> pin.setTryLimit((byte) 3));
 
       Mockito.verify(cvm).resetState();
       Mockito.verify(cvm).update(value, (short) 0, (byte) value.length, CVM.FORMAT_HEX);
+    }
+  }
+
+  @Test
+  void refusedPlatformUpdateIsReportedAsIllegalValue() {
+    // GP Card Specification v2.3.1 Section 8.2.1: setting a new CVM value "depends on the
+    // requesting Application having the CVM Management privilege". CVM.update returns false when
+    // the platform refuses, and the adapter must not report that as a successful change.
+    CVM cvm = Mockito.mock(CVM.class);
+    Mockito.when(
+            cvm.update(
+                Mockito.any(byte[].class),
+                Mockito.anyShort(),
+                Mockito.anyByte(),
+                Mockito.eq(CVM.FORMAT_HEX)))
+        .thenReturn(false);
+
+    try (MockedStatic<GPSystem> gp = Mockito.mockStatic(GPSystem.class)) {
+      gp.when(() -> GPSystem.getCVM(GPSystem.CVM_GLOBAL_PIN)).thenReturn(cvm);
+      PIVCVMPIN pin = new PIVCVMPIN();
+      byte[] value = {0x31, 0x32, 0x33, 0x34, 0x35, 0x36, (byte) 0xFF, (byte) 0xFF};
+
+      PINException refused =
+          assertThrows(PINException.class, () -> pin.update(value, (short) 0, (byte) value.length));
+      assertEquals(PINException.ILLEGAL_VALUE, refused.getReason());
     }
   }
 

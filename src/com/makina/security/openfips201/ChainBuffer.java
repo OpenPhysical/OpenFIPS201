@@ -71,19 +71,18 @@ final class ChainBuffer {
   // Indicates whether the buffer should be wiped on completion of the chain
   private static final short CONTEXT_CLEAR_ON_COMPLETE = (short) 5;
 
-  // Indicates whether the chain is operating inside a transaction
-  private static final short CONTEXT_TRANSACTION = (short) 6;
-  private static final short CONTEXT_SECURE_OUTGOING = (short) 7;
+  private static final short CONTEXT_SECURE_OUTGOING = (short) 6;
 
-  // The APDU header used for tracking incoming data
-  // NOTE: It's cheaper to use 4 shorts in this array than to allocate a separate 4 bytes, as the
-  // minimum allocation size is 32 bytes anyway
-  private static final short CONTEXT_APDU_CLASS = (short) 8;
-  private static final short CONTEXT_APDU_P1P2 = (short) 9;
-  private static final short CONTEXT_PROTECTION = (short) 10;
+  // The APDU header used for tracking incoming data: CLA (with the chaining bit cleared) and INS
+  // as one short, then P1 and P2 as one short. ISO/IEC 7816-4 Section 5.3.3: "All CLA bytes of the
+  // commands shall be the same, except for bit b5" and "All INS P1 P2 bytes of the commands shall
+  // be the same."
+  private static final short CONTEXT_APDU_CLA_INS = (short) 7;
+  private static final short CONTEXT_APDU_P1P2 = (short) 8;
+  private static final short CONTEXT_PROTECTION = (short) 9;
 
   // Total length of the context transient object
-  private static final short LENGTH_CONTEXT = (short) 11;
+  private static final short LENGTH_CONTEXT = (short) 10;
 
   static final byte PROTECTION_PLAIN = (byte) 0;
   static final byte PROTECTION_PIV_SM = (byte) 1;
@@ -91,6 +90,8 @@ final class ChainBuffer {
 
   // APDU constants
   static final byte CLA_CHAINING = (byte) 0x10;
+  // Clears the CLA chaining bit in the CLA/INS short read from ISO7816.OFFSET_CLA
+  private static final short CLA_INS_CHAINING_MASK = (short) 0xEFFF;
   private static final byte INS_GET_RESPONSE = OpenFIPS201.INS_GP_GET_RESPONSE;
 
   // A pointer to our read/write data buffer
@@ -108,44 +109,22 @@ final class ChainBuffer {
     reset();
   }
 
-  /** Resets the ChainBuffer, aborting any outstanding transaction */
-  private void resetAbort() {
-
-    if (ownerPtr[0] != null) {
-      ((PIVDataObject) ownerPtr[0]).abortUpdate();
-      ownerPtr[0] = null;
-    }
-
-    // Have we been asked to conduct this in a transaction?
-    if ((short) 0 != context[CONTEXT_TRANSACTION]) {
-      JCSystem.abortTransaction();
-    }
-
-    // Perform a normal reset
-    reset();
-  }
-
   /**
-   * Discards an incomplete command chain and aborts its outstanding transaction.
+   * Discards an incomplete command chain and its staged object update.
    *
    * <p>ISO/IEC 7816-4 command chaining treats an interrupted chain as incomplete. The applet also
    * aborts any staged object update so the incomplete logical command is not published.
    */
   void abort() {
-    resetAbort();
+    reset();
   }
 
-  /** Resets the ChainBuffer, committing any outstanding transaction */
+  /** Resets the ChainBuffer, publishing any staged object update */
   private void resetCommit() {
 
     if (ownerPtr[0] != null) {
       ((PIVDataObject) ownerPtr[0]).commitUpdate();
       ownerPtr[0] = null;
-    }
-
-    // Have we been asked to conduct this in a transaction?
-    if ((short) 0 != context[CONTEXT_TRANSACTION]) {
-      JCSystem.commitTransaction();
     }
 
     // Perform a normal reset
@@ -176,23 +155,29 @@ final class ChainBuffer {
     context[CONTEXT_LENGTH] = (short) 0;
     context[CONTEXT_CLEAR_ON_COMPLETE] = (short) 0;
     context[CONTEXT_SECURE_OUTGOING] = (short) 0;
-    context[CONTEXT_APDU_CLASS] = (short) 0;
+    context[CONTEXT_APDU_CLA_INS] = (short) 0;
     context[CONTEXT_APDU_P1P2] = (short) 0;
     context[CONTEXT_PROTECTION] = (short) PROTECTION_PLAIN;
-    context[CONTEXT_TRANSACTION] = (short) 0;
   }
 
   /** Abandons an incomplete command-data chain when a different command arrives. */
   void checkIncomingAPDU(byte[] apdu) {
     if (context[CONTEXT_STATE] != STATE_INCOMING_APDU) return;
+    if (!isSameChainedCommand(apdu)) reset();
+  }
 
-    final short CLA_MASK = ~(short) 0x1000;
-    short command = (short) (Util.getShort(apdu, ISO7816.OFFSET_CLA) & CLA_MASK);
-    short expected = (short) (context[CONTEXT_APDU_CLASS] & CLA_MASK);
-    if (command != expected
-        || context[CONTEXT_APDU_P1P2] != Util.getShort(apdu, ISO7816.OFFSET_P1)) {
-      resetAbort();
-    }
+  /** Records the CLA (chaining bit cleared), INS, P1 and P2 of the first command of a chain. */
+  private void recordChainHeader(byte[] apdu) {
+    context[CONTEXT_APDU_CLA_INS] =
+        (short) (Util.getShort(apdu, ISO7816.OFFSET_CLA) & CLA_INS_CHAINING_MASK);
+    context[CONTEXT_APDU_P1P2] = Util.getShort(apdu, ISO7816.OFFSET_P1);
+  }
+
+  /** Returns whether {@code apdu} has the recorded CLA (ignoring bit b5), INS, P1 and P2. */
+  private boolean isSameChainedCommand(byte[] apdu) {
+    return context[CONTEXT_APDU_CLA_INS]
+            == (short) (Util.getShort(apdu, ISO7816.OFFSET_CLA) & CLA_INS_CHAINING_MASK)
+        && context[CONTEXT_APDU_P1P2] == Util.getShort(apdu, ISO7816.OFFSET_P1);
   }
 
   /**
@@ -238,30 +223,13 @@ final class ChainBuffer {
   }
 
   /**
-   * Configures the ChainBuffer class to process a stream of incoming data directly to an object
+   * Configures the ChainBuffer class to stream incoming data into the unpublished staging buffer of
+   * a data object. The final fragment publishes it ({@link PIVDataObject#commitUpdate()}); an
+   * aborted chain discards it ({@link PIVDataObject#abortUpdate()}).
    *
-   * @param destination The buffer to write data to
-   * @param offset The starting offset of the data to write to
+   * @param destination The data object to replace
    * @param length The length to expect to be written
-   * @param atomic If true, this operation will be conducted inside a transaction
    */
-  void setIncomingObject(byte[] destination, short offset, short length, boolean atomic) {
-
-    reset();
-
-    dataPtr[0] = destination;
-
-    context[CONTEXT_STATE] = STATE_INCOMING_OBJECT;
-    context[CONTEXT_OFFSET] = offset;
-    context[CONTEXT_REMAINING] = length;
-    context[CONTEXT_LENGTH] = length;
-
-    if (atomic) {
-      JCSystem.beginTransaction();
-      context[CONTEXT_TRANSACTION] = (short) 1;
-    }
-  }
-
   void setIncomingObject(PIVDataObject destination, short length) {
     reset();
     byte[] staged = destination.beginUpdate(length);
@@ -293,149 +261,72 @@ final class ChainBuffer {
     // STATE VALIDATION
     //
 
-    // Make sure that we are not in the middle of some other outstanding transaction
+    // Make sure that we are not in the middle of some other outstanding operation
     if (context[CONTEXT_STATE] != STATE_NONE && context[CONTEXT_STATE] != STATE_INCOMING_APDU) {
-      // We have been called in the middle of another operation! call resetAbort in case there is
-      // some outstanding transaction
-      resetAbort();
+      // We have been called in the middle of another operation. Reset, which discards any staged
+      // object update.
+      reset();
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
-    //
-    // CASE 1 - A single-frame APDU (CLA_CHAINING == FALSE and STATE == STATE_NONE)
-    //
-    if ((apdu[ISO7816.OFFSET_CLA] & CLA_CHAINING) == 0 && context[CONTEXT_STATE] == STATE_NONE) {
+    boolean lastCommand = (apdu[ISO7816.OFFSET_CLA] & CLA_CHAINING) == 0;
+    boolean chainActive = context[CONTEXT_STATE] == STATE_INCOMING_APDU;
 
-      // Just copy the buffer to the destination and we are done
-      try {
-        Util.arrayCopyNonAtomic(apdu, inOffset, outBuffer, outOffset, inLength);
-      } catch (Exception ex) {
-        // Buffer overrun
-        reset();
-        ISOException.throwIt(ISO7816.SW_FILE_FULL);
-      }
-
-      // We're done! No state needs to change, just return the value of the LC byte (length of
-      // command data)
-      return inLength;
+    // A continuation must repeat the header of the first command. checkIncomingAPDU() normally
+    // abandons a mismatched chain before this point; a mismatch reaching here is rejected.
+    // ISO/IEC 7816-4 Section 5.3.3: "If SW1-SW2 is set to '6883', then the last command of the
+    // chain is expected."
+    if (chainActive && !isSameChainedCommand(apdu)) {
+      reset();
+      ISOException.throwIt(ISO7816.SW_LAST_COMMAND_EXPECTED);
     }
 
-    //
-    // CASE 2 - The start of an incoming APDU chain (CLA_CHAINING == TRUE and STATE == STATE_NONE)
-    //
-    else if ((apdu[ISO7816.OFFSET_CLA] & CLA_CHAINING) != 0
-        && context[CONTEXT_STATE] == STATE_NONE) {
+    short written = chainActive ? context[CONTEXT_LENGTH] : (short) 0;
+    appendFragment(apdu, inOffset, inLength, outBuffer, outOffset, written);
+    written += inLength;
 
-      // Set up the internal state
+    if (lastCommand) {
+      // A single-frame command, or the last command of a chain: the command data is complete.
+      if (chainActive) reset();
+      return written;
+    }
+
+    // The first or a middle command of a chain: record the header and wait for more data.
+    if (!chainActive) {
       context[CONTEXT_STATE] = STATE_INCOMING_APDU;
       context[CONTEXT_INITIAL] = inOffset;
-      context[CONTEXT_APDU_CLASS] = Util.getShort(apdu, ISO7816.OFFSET_CLA);
-      context[CONTEXT_APDU_P1P2] = Util.getShort(apdu, ISO7816.OFFSET_P1);
-
-      // Write the first section of data
-      try {
-        Util.arrayCopyNonAtomic(apdu, inOffset, outBuffer, outOffset, inLength);
-      } catch (Exception ex) {
-        // Buffer overrun
-        reset();
-        ISOException.throwIt(ISO7816.SW_FILE_FULL);
-      }
-
-      context[CONTEXT_LENGTH] = inLength;
-
-      // Done, return 0 so the caller knows we're not finished!
-      return (short) 0;
+      recordChainHeader(apdu);
     }
+    context[CONTEXT_LENGTH] = written;
+    return (short) 0;
+  }
 
-    //
-    // CASE 3 - The middle of an incoming APDU chain (CLA_CHAINING == TRUE and STATE ==
-    // STATE_INCOMING_APDU)
-    //
-    else if ((apdu[ISO7816.OFFSET_CLA] & CLA_CHAINING) != 0
-        && context[CONTEXT_STATE] == STATE_INCOMING_APDU) {
-
-      // Validate that we are chaining for the correct command
-      if (context[CONTEXT_APDU_CLASS] != Util.getShort(apdu, ISO7816.OFFSET_CLA)
-          || context[CONTEXT_APDU_P1P2] != Util.getShort(apdu, ISO7816.OFFSET_P1)) {
-        reset();
-
-        // NOTE regarding Config.FEATURE_STRICT_APDU_CHAINING:
-        // If we have gotten here, then checkIncomingAPDU was not called. Since we are
-        // already past the point of allowing the applet to switch to other commands,
-        // so we always fail. Use checkIncomingAPDU() and this will never be reached.
-        ISOException.throwIt(ISO7816.SW_LAST_COMMAND_EXPECTED);
-      }
-
-      // Calculate the outOffset by adding the amount of data we have already written
-      outOffset += context[CONTEXT_LENGTH];
-
-      // Write the next section of data
-      try {
-        Util.arrayCopyNonAtomic(apdu, inOffset, outBuffer, outOffset, inLength);
-      } catch (Exception ex) {
-        // Buffer overrun
-        reset();
-        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-      }
-
-      // Update the internal state
-      context[CONTEXT_LENGTH] += inLength;
-
-      // Done, return 0 so the caller knows we're not finished!
-      return (short) 0;
-    }
-
-    //
-    // CASE 4 - The end of an incoming APDU chain (CLA_CHAINING == FALSE and STATE ==
-    // STATE_INCOMING_APDU)
-    //
-    else if ((apdu[ISO7816.OFFSET_CLA] & CLA_CHAINING) == 0
-        && context[CONTEXT_STATE] == STATE_INCOMING_APDU) {
-
-      // Validate that we are chaining for the correct command
-      // NOTE: We have to mask off the chaining bit before comparing
-      final short CLA_MASK = ~(short) 0x1000;
-      if ((context[CONTEXT_APDU_CLASS] & CLA_MASK) != Util.getShort(apdu, ISO7816.OFFSET_CLA)
-          || context[CONTEXT_APDU_P1P2] != Util.getShort(apdu, ISO7816.OFFSET_P1)) {
-        reset();
-
-        // NOTE regarding Config.FEATURE_STRICT_APDU_CHAINING:
-        // If we have gotten here, then checkIncomingAPDU was not called. Since we are
-        // already past the point of allowing the applet to switch to other commands,
-        // so we always fail. Use checkIncomingAPDU() and this will never be reached.
-        ISOException.throwIt(ISO7816.SW_LAST_COMMAND_EXPECTED);
-      }
-
-      // Calculate the outOffset by adding the amount of data we have already written
-      outOffset += context[CONTEXT_LENGTH];
-
-      // Write the final section of data
-      try {
-        Util.arrayCopyNonAtomic(apdu, inOffset, outBuffer, outOffset, inLength);
-      } catch (Exception ex) {
-        // Buffer overrun
-        reset();
-        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-      }
-
-      // Calculate our final length
-      inLength += context[CONTEXT_LENGTH];
-
-      // Reset our internal state
+  /**
+   * Copies one command-data fragment to {@code outBuffer} after the {@code written} bytes already
+   * reassembled there.
+   *
+   * <p>Every reassembly overrun is reported as {@link ISO7816#SW_WRONG_LENGTH}: the logical command
+   * carries more data than this applet accepts for it.
+   */
+  private void appendFragment(
+      byte[] apdu,
+      short inOffset,
+      short inLength,
+      byte[] outBuffer,
+      short outOffset,
+      short written) {
+    short room = (short) ((short) (outBuffer.length - outOffset) - written);
+    if (inLength < (short) 0
+        || inOffset < (short) 0
+        || (short) (inOffset + inLength) < inOffset
+        || (short) (inOffset + inLength) > (short) apdu.length
+        || outOffset < (short) 0
+        || room < (short) 0
+        || inLength > room) {
       reset();
-
-      // Done, return the total length!
-      return inLength;
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
-
-    //
-    // Unexpected state
-    //
-
-    // Should never reach this state, throw back SW_UNKNOWN to flag we have a bug
-    reset();
-    ISOException.throwIt(ISO7816.SW_UNKNOWN);
-    return (short) 0; // Keep the compiler happy
+    Util.arrayCopyNonAtomic(apdu, inOffset, outBuffer, (short) (outOffset + written), inLength);
   }
 
   /**
@@ -454,26 +345,20 @@ final class ChainBuffer {
     if (context[CONTEXT_STATE] != STATE_INCOMING_OBJECT) return;
 
     // This method presumes that setIncomingAndReceive() was previously called if required
-    final short CLA_MASK = ~(short) 0x1000;
-
     boolean firstFrame = context[CONTEXT_LENGTH] == context[CONTEXT_REMAINING];
 
     // If we have not written anything, this must be the first command so set the APDU header and
     // bind the logical write to its transport protection.
     if (firstFrame) {
-      context[CONTEXT_APDU_CLASS] = (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK);
-      context[CONTEXT_APDU_P1P2] = Util.getShort(buffer, ISO7816.OFFSET_P1);
+      recordChainHeader(buffer);
       context[CONTEXT_PROTECTION] = (short) protection;
     }
 
     // Validate that we are chaining for the correct command
-    if (!firstFrame
-        && (context[CONTEXT_APDU_CLASS]
-                != (short) (Util.getShort(buffer, ISO7816.OFFSET_CLA) & CLA_MASK)
-            || context[CONTEXT_APDU_P1P2] != Util.getShort(buffer, ISO7816.OFFSET_P1))) {
+    if (!firstFrame && !isSameChainedCommand(buffer)) {
 
       // Abort the data object write
-      resetAbort();
+      reset();
 
       // Ignore this and let the applet handle as a new APDU
       return;
@@ -482,7 +367,7 @@ final class ChainBuffer {
     // A same-command protection change is a downgrade attempt. Check this after distinguishing an
     // unrelated ISO/IEC 7816-4 command, which first discards the incomplete logical command.
     if (!firstFrame && context[CONTEXT_PROTECTION] != (short) protection) {
-      resetAbort();
+      reset();
       ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
@@ -495,11 +380,12 @@ final class ChainBuffer {
       // 		   and we must not write up to or over the total expected length
       //
 
-      // No data to write? Nothing to do.. What a waste of everyone's time
-      if (length == 0) return;
+      // An empty intermediate frame adds nothing and leaves the chain unchanged. It is a
+      // continuation of this logical command, so it must not fall through to command dispatch.
+      if (length == 0) ISOException.throwIt(ISO7816.SW_NO_ERROR);
 
       if (length >= context[CONTEXT_REMAINING]) {
-        resetAbort();
+        reset();
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       }
 
@@ -516,13 +402,13 @@ final class ChainBuffer {
       //
 
       if (length == 0) {
-        resetAbort();
+        reset();
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       }
 
       // Must be exactly the # of bytes remaining
       if (length != context[CONTEXT_REMAINING]) {
-        resetAbort();
+        reset();
         ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
       }
 
@@ -536,42 +422,54 @@ final class ChainBuffer {
   }
 
   private void copyIncomingObjectFragment(byte[] source, short offset, short length) {
-    if (context[CONTEXT_TRANSACTION] != (short) 0) {
-      Util.arrayCopy(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-    } else {
-      // PIVDataObject receives into unpublished staging. Only its reference swap needs a
-      // transaction; atomically copying a large final fragment can exhaust the commit buffer.
-      Util.arrayCopyNonAtomic(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
-    }
+    // PIVDataObject receives into unpublished staging. Only its reference swap needs a
+    // transaction; atomically copying a large final fragment can exhaust the commit buffer.
+    Util.arrayCopyNonAtomic(source, offset, (byte[]) dataPtr[0], context[CONTEXT_OFFSET], length);
   }
 
   /**
    * Starts or continues processing for an outgoing buffer being transmitted to the host
    *
+   * <p>The response is bound to the class family of the command that started it. The initiating
+   * command records its transport {@code protection}. GP SCP protects commands only (this applet
+   * applies no response MAC or encryption), so every response on this path is plaintext and a
+   * plaintext GET RESPONSE (CLA '00' or '80') continues it, whichever class started it. A GP
+   * SCP-protected GET RESPONSE continues only a response started under GP SCP; any other GP SCP
+   * continuation abandons the response and returns '69 85'.
+   *
    * @param apdu The current APDU buffer to transmit with
+   * @param protection The transport protection of the current command
    */
-  void processOutgoing(APDU apdu) throws ISOException {
+  void processOutgoing(APDU apdu, byte protection) throws ISOException {
+    byte[] apduBuffer = apdu.getBuffer();
+    boolean getResponse = apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE;
+    if (getResponse) requireGetResponseHeader(apduBuffer);
+
     // GET RESPONSE is valid only while an outgoing response is pending. Rejecting an idle request
     // exposes a host state error instead of reporting a successful command with no response data.
-
-    // Check if we are in the correct state
+    // The status matches the protected GET RESPONSE path.
     if (context[CONTEXT_STATE] != STATE_OUTGOING) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
-
-    byte[] apduBuffer = apdu.getBuffer();
 
     // CASE 0 - If the remaining data is EQUAL TO the total data, ignore the INS
     // CASE 1 - If the remaining data is LESS THAN the total data, look for a GET RESPONSE command
     // (clear if it isn't)
-    if (apduBuffer[ISO7816.OFFSET_INS] != INS_GET_RESPONSE
-        && context[CONTEXT_REMAINING] != context[CONTEXT_LENGTH]) {
+    if (!getResponse && context[CONTEXT_REMAINING] != context[CONTEXT_LENGTH]) {
 
       // Clear the apdu buffer
       reset();
 
       // Ignore this and let the applet handle this as a new command
       return;
+    }
+
+    if (!getResponse) {
+      context[CONTEXT_PROTECTION] = (short) protection;
+    } else if (protection != PROTECTION_PLAIN
+        && context[CONTEXT_PROTECTION] != (short) protection) {
+      reset();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
     //
@@ -592,6 +490,7 @@ final class ChainBuffer {
       throws ISOException {
 
     byte[] apduBuffer = apdu.getBuffer();
+    if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) requireGetResponseHeader(apduBuffer);
     short plaintextOffset = (short) 0;
     short plaintextRemaining = (short) 0;
 
@@ -609,7 +508,7 @@ final class ChainBuffer {
         context[CONTEXT_SECURE_OUTGOING] = (short) 1;
       }
     } else if (context[CONTEXT_STATE] != STATE_NONE) {
-      resetAbort();
+      reset();
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     } else {
       if (apduBuffer[ISO7816.OFFSET_INS] == INS_GET_RESPONSE) {
@@ -671,8 +570,33 @@ final class ChainBuffer {
       reset();
       return ISO7816.SW_NO_ERROR;
     }
-    short sw2 =
-        (context[CONTEXT_REMAINING] > (short) 0x00FF) ? (short) 0x00FF : context[CONTEXT_REMAINING];
+    return bytesRemainingStatusWord(context[CONTEXT_REMAINING]);
+  }
+
+  /**
+   * Returns '61 XX' for {@code remaining} (greater than zero) response bytes.
+   *
+   * <p>ISO/IEC 7816-4 Section 5.6: "If SW1 is set to '61', then the process is completed and before
+   * issuing any other command, a get response command may be issued with the same CLA and using SW2
+   * (number of data bytes still available) as short L e field." A short Le of '00' encodes 256, so
+   * 256 or more remaining bytes are reported as '61 00'.
+   */
+  static short bytesRemainingStatusWord(short remaining) {
+    short sw2 = remaining > (short) 0x00FF ? (short) 0x0000 : remaining;
     return (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
+  }
+
+  /**
+   * Rejects a GET RESPONSE whose header is not 'C0 00 00' and abandons the pending response.
+   *
+   * <p>ISO/IEC 7816-4 Section 5.3.4: "With the exception of the first command APDU of the sequence,
+   * all INS P1-P2 bytes of the command APDUs shall be 'C0 00 00' (get response)." Section 11.8.1
+   * Table 120 defines P1-P2 as "'0000' (any other value is RFU)".
+   */
+  private void requireGetResponseHeader(byte[] apduBuffer) {
+    if (Util.getShort(apduBuffer, ISO7816.OFFSET_P1) != (short) 0) {
+      abortOutgoing();
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
   }
 }

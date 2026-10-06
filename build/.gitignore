@@ -11,6 +11,8 @@ ivy2
 jpp-bin
 jpp.jar
 tool-bin
+tool-bin-sam-src
+sam
 debug-cap-classes
 matrix
 sp800-85b-personalization

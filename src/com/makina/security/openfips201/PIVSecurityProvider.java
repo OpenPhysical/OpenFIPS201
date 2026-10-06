@@ -29,7 +29,11 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
+import javacard.framework.PINException;
 import javacard.framework.Util;
+import javacard.security.AESKey;
+import javacard.security.CryptoException;
+import javacard.security.KeyBuilder;
 
 /**
  * Provides all security and cryptographic services required by PIV, including the storage of PIN
@@ -78,6 +82,9 @@ final class PIVSecurityProvider {
   private static final short STATE_PUK_PROVISIONED = (short) 2;
   private static final short LENGTH_PERSISTENT_STATE = (short) 3;
 
+  // One PIN history entry: AES-128 encryption under pinHistoryKey of SHA-256(padded PIN).
+  private static final short LENGTH_PIN_HISTORY_ENTRY = (short) 32;
+
   //
   // Persistent Objects
   //
@@ -89,6 +96,10 @@ final class PIVSecurityProvider {
   private final byte[] pinHistory;
   private final byte[] pinHistoryOccupied;
   private final byte[] pinHistoryCandidate;
+
+  // PERSISTENT - Per-card secret that keys the PIN history entries. Generated at install and never
+  // exported, so a copy of the history array alone does not permit testing candidate PIN values.
+  private final AESKey pinHistoryKey;
 
   // PERSISTENT - Counters related to security operations
   private final byte[] persistentState;
@@ -112,9 +123,13 @@ final class PIVSecurityProvider {
     // Initialise our PIV crypto provider
     PIVCrypto.init();
 
-    // Create our internal state
+    // Create our internal state. SP 800-73-5 Part 2 Section 3.1.1 leaves "all security status
+    // indicators" unchanged when PIV is reselected, while JCRE 3.0.5 Section 5.1 clears
+    // CLEAR_ON_DESELECT objects even when the SELECT "Reselects the same applet". The flags are
+    // therefore CLEAR_ON_RESET; PIV.deselect() clears them on a genuine deselect, and the interface
+    // and secure-channel flags are re-established by select() and by every process() call.
     transientState =
-        JCSystem.makeTransientByteArray(LENGTH_TRANSIENT_STATE, JCSystem.CLEAR_ON_DESELECT);
+        JCSystem.makeTransientByteArray(LENGTH_TRANSIENT_STATE, JCSystem.CLEAR_ON_RESET);
     persistentState = new byte[LENGTH_PERSISTENT_STATE];
 
     //
@@ -135,9 +150,15 @@ final class PIVSecurityProvider {
 
     // Keep history storage compact and allocate it at install time. Command processing must not
     // create persistent objects on Java Card.
-    pinHistory = new byte[(short) (Config.LIMIT_PIN_HISTORY * (short) 32)];
+    pinHistory = new byte[(short) (Config.LIMIT_PIN_HISTORY * LENGTH_PIN_HISTORY_ENTRY)];
     pinHistoryOccupied = new byte[Config.LIMIT_PIN_HISTORY];
-    pinHistoryCandidate = JCSystem.makeTransientByteArray((short) 32, JCSystem.CLEAR_ON_DESELECT);
+    pinHistoryCandidate =
+        JCSystem.makeTransientByteArray(LENGTH_PIN_HISTORY_ENTRY, JCSystem.CLEAR_ON_DESELECT);
+    pinHistoryKey =
+        (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
+    PIVCrypto.doGenerateRandom(pinHistoryCandidate, (short) 0, PIVCrypto.LENGTH_BLOCK_AES);
+    pinHistoryKey.setKey(pinHistoryCandidate, (short) 0);
+    zeroise(pinHistoryCandidate, (short) 0, LENGTH_PIN_HISTORY_ENTRY);
   }
 
   void clearApplicationVerification() {
@@ -155,6 +176,16 @@ final class PIVSecurityProvider {
     // Reset any authenticated keys
     // NOTE: We do NOT reset the secure channel, which is controlled from the applet
     transientState[STATE_AUTH_KEY] = (byte) 0;
+  }
+
+  /**
+   * Sets the security status of one key reference to FALSE, leaving any other credential's status
+   * unchanged.
+   *
+   * @param id The key reference whose authenticated status is cleared
+   */
+  void clearAuthenticatedKey(byte id) {
+    if (transientState[STATE_AUTH_KEY] == id) clearAuthenticatedKey();
   }
 
   boolean getIsPINAlways(boolean globalPinAuthorized) {
@@ -223,12 +254,17 @@ final class PIVSecurityProvider {
     transientState[STATE_IS_SECURE_CHANNEL] = value ? FLAG_TRUE : FLAG_FALSE;
   }
 
-  PIVKeyObject selectKey(byte id, byte mechanism) {
+  /**
+   * Maps the default algorithm reference to the mechanism it denotes. SP 800-78-5 Table 9 assigns
+   * "'00'" to "3 Key Triple DES – ECB (deprecated)", the same algorithm as {@link
+   * PIV#ID_ALG_TDEA_3KEY}.
+   */
+  static byte normalizeMechanism(byte mechanism) {
+    return mechanism == PIV.ID_ALG_DEFAULT ? PIV.ID_ALG_TDEA_3KEY : mechanism;
+  }
 
-    // First, map the default mechanism code to TDEA 3KEY
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+  PIVKeyObject selectKey(byte id, byte mechanism) {
+    mechanism = normalizeMechanism(mechanism);
 
     PIVKeyObject key = selectKey(id);
     if (key != null && key.match(id, mechanism)) return key;
@@ -254,7 +290,7 @@ final class PIVSecurityProvider {
   }
 
   boolean hasUsableManagementKey() {
-    PIVKeyObject key = selectKey((byte) 0x9B);
+    PIVKeyObject key = selectKey(PIVObject.DEFAULT_ADMIN_KEY);
     return key != null && key.hasRole(PIVKeyObject.ROLE_AUTHENTICATE) && key.isInitialised();
   }
 
@@ -278,10 +314,7 @@ final class PIVSecurityProvider {
       byte role,
       byte attributes) {
 
-    // First, map the default mechanism code to TDEA 3KEY
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+    mechanism = normalizeMechanism(mechanism);
 
     if (!FipsPolicy.allowsKeyDefinition(
         id, modeContact, modeContactless, mechanism, role, attributes)) {
@@ -289,13 +322,30 @@ final class PIVSecurityProvider {
     }
 
     if (keyExists(id)) {
-      ISOException.throwIt(PIV.SW_PUT_DATA_OBJECT_EXISTS);
+      ISOException.throwIt(PIV.SW_OBJECT_EXISTS);
     }
 
-    // Create our new key
-    PIVKeyObject key =
-        PIVKeyObject.create(
-            id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
+    if (!PIVCrypto.supportsKeyRole(mechanism, role)) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+    }
+
+    // Create our new key. Its key containers are built here, at definition time. JC 3.0.5 API
+    // KeyBuilder.buildKey throws CryptoException.NO_SUCH_ALGORITHM "if the requested algorithm
+    // associated with the specified type, size of key and key encryption interface is not
+    // supported", which reports the unsupported key length as an unsupported mechanism. The
+    // partially built object is never linked into the key store.
+    PIVKeyObject key;
+    try {
+      key =
+          PIVKeyObject.create(
+              id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
+    } catch (CryptoException e) {
+      if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
+      if (e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+      }
+      throw e;
+    }
 
     // Add it to our linked list
     // NOTE: If this is the first key added, just set our firstKey. Otherwise add it to the head
@@ -312,9 +362,10 @@ final class PIVSecurityProvider {
 
   /** Atomically removes a key from the store, then wipes its detached key material. */
   void deleteKey(byte id, byte mechanism) {
-    if (mechanism == PIV.ID_ALG_DEFAULT) {
-      mechanism = PIV.ID_ALG_TDEA_3KEY;
-    }
+    // The attestation authority is immutable for the life of the applet instance; only deleting
+    // the instance removes it.
+    if (id == PIV.ID_KEY_ATTESTATION) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    mechanism = normalizeMechanism(mechanism);
 
     PIVKeyObject previous = null;
     PIVKeyObject key = firstKey;
@@ -323,7 +374,8 @@ final class PIVSecurityProvider {
       key = (PIVKeyObject) key.getNext();
     }
     if (key == null) {
-      ISOException.throwIt(ISO7816.SW_RECORD_NOT_FOUND);
+      // ISO/IEC 7816-4 Table 7 '6A88' (referenced data or DO not found).
+      ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
       return;
     }
 
@@ -342,36 +394,6 @@ final class PIVSecurityProvider {
 
     key.clear();
     key.runGc();
-  }
-
-  boolean deleteKey(byte id) {
-
-    PIVKeyObject previous = null;
-    PIVKeyObject key = firstKey;
-
-    while (key != null) {
-      PIVKeyObject next = (PIVKeyObject) key.getNext();
-      if (key.match(id)) {
-        if (transientState[STATE_AUTH_KEY] == id) {
-          clearAuthenticatedKey();
-        }
-        JCSystem.beginTransaction();
-        if (previous == null) {
-          firstKey = next;
-        } else {
-          previous.setNext(next);
-        }
-        key.setNext(null);
-        JCSystem.commitTransaction();
-        key.clear();
-        key.runGc();
-        return true;
-      }
-      previous = key;
-      key = next;
-    }
-
-    return false;
   }
 
   void clearKeyMaterialExcept(byte retainedId) {
@@ -535,6 +557,18 @@ final class PIVSecurityProvider {
         && persistentState[STATE_PUK_PROVISIONED] == FLAG_TRUE;
   }
 
+  /**
+   * Returns whether the asymmetric key {@code id} holds usable key material generated on the card.
+   *
+   * @param id key reference
+   */
+  boolean hasGeneratedAsymmetricKey(byte id) {
+    PIVKeyObject key = selectKey(id);
+    return key instanceof PIVKeyObjectPKI
+        && ((PIVKeyObjectPKI) key).isInitialised()
+        && key.isGenerated();
+  }
+
   boolean hasUsableAsymmetricKey(byte id) {
     PIVKeyObject key = firstKey;
     while (key != null) {
@@ -548,73 +582,115 @@ final class PIVSecurityProvider {
     return false;
   }
 
+  /**
+   * Replaces the reference data of a PIN or PUK and records PIN history.
+   *
+   * <p>PIN history (an OpenFIPS201 extension; {@code historyCount} entries, ignored for the PUK)
+   * rejects a value already present with '69 84' before any state changes. The reference data,
+   * provisioning flag and history entry are then written in one transaction. JC 3.0.5 API {@code
+   * OwnerPIN.update}: "If a transaction is in progress, the new pin and try counter update must be
+   * conditional i.e the copy operation must use the transaction facility." A platform refusal of
+   * the update (Global PIN without the CVM Management privilege) leaves all state unchanged and
+   * returns '6A 81'.
+   */
   void updatePIN(byte id, byte[] buffer, short offset, byte length, byte historyCount) {
 
     PIVPIN pin;
+    short provisionedFlag;
 
     switch (id) {
       case PIV.ID_CVM_LOCAL_PIN:
         pin = cardPIN;
-        persistentState[STATE_LOCAL_PIN_PROVISIONED] = FLAG_TRUE;
+        provisionedFlag = STATE_LOCAL_PIN_PROVISIONED;
         break;
 
       case PIV.ID_CVM_GLOBAL_PIN:
         pin = globalPIN;
+        provisionedFlag = (short) -1;
         break;
 
       case PIV.ID_CVM_PUK:
-        // Update the PUK, no history matching required
-        cardPUK.update(buffer, offset, length);
-        persistentState[STATE_PUK_PROVISIONED] = FLAG_TRUE;
-        return;
+        // No history matching for the PUK
+        pin = cardPUK;
+        provisionedFlag = STATE_PUK_PROVISIONED;
+        historyCount = (byte) 0;
+        break;
 
       default:
         ISOException.throwIt(PIV.SW_REFERENCE_NOT_FOUND);
         return; // Keep compiler happy
     }
 
-    // Store only SHA-256 digests. PIN history is an equality check and does not need
-    // recoverable reference data in persistent memory.
-    PIVCrypto.doSha256(buffer, offset, length, pinHistoryCandidate, (short) 0);
+    boolean ownTransaction = JCSystem.getTransactionDepth() == (byte) 0;
+    try {
+      if (historyCount > (byte) 0) {
+        encodePinHistoryEntry(buffer, offset, length);
 
-    // Optionally verify the PIN history
-    // NOTE: Any elements beyond the historyCheck count will not be used at all, so we ignore
-    // their values
-    boolean matched = false;
-
-    // Interate through our history list (which may be zero)
-    for (byte i = 0; i < historyCount; i++) {
-      short historyOffset = (short) (i * (short) 32);
-      if (pinHistoryOccupied[i] != FLAG_FALSE
-          && arrayEqualsConstantTime(
-              pinHistory, historyOffset, pinHistoryCandidate, (short) 0, (short) 32)) {
-        matched = true;
-        break;
+        // Entries beyond historyCount are never consulted. Every slot is compared so the timing
+        // does not depend on the matching position.
+        boolean matched = false;
+        for (byte i = 0; i < historyCount; i++) {
+          if (pinHistoryOccupied[i] != FLAG_FALSE
+              && arrayEqualsConstantTime(
+                  pinHistory,
+                  (short) (i * LENGTH_PIN_HISTORY_ENTRY),
+                  pinHistoryCandidate,
+                  (short) 0,
+                  LENGTH_PIN_HISTORY_ENTRY)) {
+            matched = true;
+          }
+        }
+        // A reused PIN is new reference data that fails the issuer's PIN criteria. SP 800-73-5
+        // Part 2 Sections 3.2.2 and 3.2.3: such new reference data "SHALL return the status word
+        // '6A 80'" and leaves the reference data and retry counter unchanged.
+        if (matched) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
-    }
 
-    // If we got a match, the PIN check fails and we will not update
-    if (matched) {
-      zeroise(pinHistoryCandidate, (short) 0, (short) 32);
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-      return; // Keep compiler happy
-    }
+      if (ownTransaction) JCSystem.beginTransaction();
+      try {
+        pin.update(buffer, offset, length);
+      } catch (PINException e) {
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
+      }
+      if (provisionedFlag >= (short) 0) persistentState[provisionedFlag] = FLAG_TRUE;
 
-    // Update the PIN
-    pin.update(buffer, offset, length);
-
-    // Update the PIN History if enabled
-    if (historyCount > 0) {
-      // Move/Roll to the next position we will write to
-      byte next = persistentState[STATE_HISTORY_NEXT];
-      if (next >= historyCount) next = (byte) 0;
-      short historyOffset = (short) (next * (short) 32);
-      Util.arrayCopy(pinHistoryCandidate, (short) 0, pinHistory, historyOffset, (short) 32);
-      pinHistoryOccupied[next] = FLAG_TRUE;
-      next = (byte) ((byte) (next + (byte) 1) % historyCount);
-      persistentState[STATE_HISTORY_NEXT] = next;
+      if (historyCount > (byte) 0) {
+        // Move/Roll to the next position we will write to
+        byte next = persistentState[STATE_HISTORY_NEXT];
+        if (next >= historyCount) next = (byte) 0;
+        Util.arrayCopy(
+            pinHistoryCandidate,
+            (short) 0,
+            pinHistory,
+            (short) (next * LENGTH_PIN_HISTORY_ENTRY),
+            LENGTH_PIN_HISTORY_ENTRY);
+        pinHistoryOccupied[next] = FLAG_TRUE;
+        next = (byte) ((byte) (next + (byte) 1) % historyCount);
+        persistentState[STATE_HISTORY_NEXT] = next;
+      }
+      if (ownTransaction) JCSystem.commitTransaction();
+    } finally {
+      if (ownTransaction && JCSystem.getTransactionDepth() != (byte) 0) {
+        JCSystem.abortTransaction();
+      }
+      zeroise(pinHistoryCandidate, (short) 0, LENGTH_PIN_HISTORY_ENTRY);
     }
-    zeroise(pinHistoryCandidate, (short) 0, (short) 32);
+  }
+
+  /**
+   * Writes the PIN history entry for a padded PIN value into {@code pinHistoryCandidate}: AES-128
+   * encryption under the per-card {@code pinHistoryKey} of SHA-256 of the value. Equal PIN values
+   * give equal entries, while testing a candidate PIN against a stored entry requires the key.
+   */
+  private void encodePinHistoryEntry(byte[] buffer, short offset, byte length) {
+    PIVCrypto.doSha256(buffer, offset, length, pinHistoryCandidate, (short) 0);
+    PIVCrypto.doAesEcbEncrypt(
+        pinHistoryKey,
+        pinHistoryCandidate,
+        (short) 0,
+        LENGTH_PIN_HISTORY_ENTRY,
+        pinHistoryCandidate,
+        (short) 0);
   }
 
   /**

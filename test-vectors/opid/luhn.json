@@ -1,0 +1,53 @@
+{
+  "schema": "openphysical.opid-vectors/2",
+  "vectors": [
+    {
+      "payload": "12349123412345678",
+      "check": 3
+    },
+    {
+      "payload": "411111111111111",
+      "check": 1
+    },
+    {
+      "payload": "555555555555444",
+      "check": 4
+    },
+    {
+      "payload": "7992739871",
+      "check": 3
+    },
+    {
+      "payload": "0",
+      "check": 0
+    },
+    {
+      "payload": "9",
+      "check": 1
+    },
+    {
+      "payload": "1234567890123",
+      "check": 7
+    },
+    {
+      "payload": "4012888888888",
+      "check": 1
+    },
+    {
+      "payload": "0000000000000000",
+      "check": 0
+    },
+    {
+      "payload": "9999999999999999",
+      "check": 6
+    },
+    {
+      "payload": "1234567890123456",
+      "check": 9
+    },
+    {
+      "payload": "4242424242424242",
+      "check": 6
+    }
+  ]
+}

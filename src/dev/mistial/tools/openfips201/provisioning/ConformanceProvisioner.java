@@ -62,17 +62,52 @@ public final class ConformanceProvisioner {
 
   private ConformanceProvisioner() {}
 
+  /** How the package's asymmetric keys reach the card. */
+  public enum KeySource {
+    /** Every key is defined importable and imported as supplied. */
+    IMPORT,
+
+    /**
+     * PIV Authentication (9A) and Digital Signature (9C) are defined non-importable (ATTR_NONE) and
+     * generated on the card; every other key is imported. FIPS builds refuse importable 9A and 9C
+     * (FIPS 201-3 Section 4.2.2.1 and 4.2.2.4: these keys are generated on the card), so a flow
+     * that needs only working 9A/9C keys uses this source there. The package's 9A/9C certificates
+     * then do not certify the generated keys.
+     */
+    GENERATE_9A_9C;
+
+    /** {@link #GENERATE_9A_9C} for a FIPS build, otherwise {@link #IMPORT}. */
+    public static KeySource forBuild(boolean fipsBuild) {
+      return fipsBuild ? GENERATE_9A_9C : IMPORT;
+    }
+
+    boolean generates(byte slot) {
+      return this == GENERATE_9A_9C && (slot == SLOT_PIV_AUTHENTICATION || slot == SLOT_SIGNATURE);
+    }
+  }
+
+  static final byte SLOT_PIV_AUTHENTICATION = (byte) 0x9A;
+  static final byte SLOT_SIGNATURE = (byte) 0x9C;
+  private static final byte ATTR_NONE = (byte) 0x00;
+
   /** Result summary of a provision run. */
   public static final class ProvisionReport {
     public final String credentialId;
     public final int objectsCreated;
     public final int keysImported;
+    public final int keysGenerated;
     public final List<String> steps;
 
-    ProvisionReport(String credentialId, int objectsCreated, int keysImported, List<String> steps) {
+    ProvisionReport(
+        String credentialId,
+        int objectsCreated,
+        int keysImported,
+        int keysGenerated,
+        List<String> steps) {
       this.credentialId = credentialId;
       this.objectsCreated = objectsCreated;
       this.keysImported = keysImported;
+      this.keysGenerated = keysGenerated;
       this.steps = steps;
     }
   }
@@ -160,18 +195,70 @@ public final class ConformanceProvisioner {
     }
   }
 
-  /** Provisions through SCP03, then verifies through a fresh plain PIV connection. */
+  /**
+   * Provisions through SCP03 with the key source the card's build requires ({@link
+   * #detectKeySource}), then verifies through a fresh plain PIV connection.
+   */
   public static ProvisionReport provision(
       CardConnectionFactory connections, ScpConfig scp, ConformancePackage pkg, PrintStream log)
       throws Exception {
+    return provision(connections, scp, pkg, log, detectKeySource(connections));
+  }
+
+  /**
+   * {@link KeySource#forBuild} of the installed applet's build, read from GET STATUS ({@code 80 CB
+   * FF FF 5C 03 2F 47 53}) tag 87 (FIPS mode, 01 or 00).
+   *
+   * @throws IllegalStateException when the applet does not report its FIPS mode
+   */
+  public static KeySource detectKeySource(CardConnectionFactory connections) throws Exception {
+    try (PlainPivSession piv = PlainPivSession.open(connections, GlobalPlatformSession.PIV_AID)) {
+      ResponseAPDU response =
+          piv.transmit(
+              new CommandAPDU(
+                  0x80, 0xCB, 0xFF, 0xFF, new byte[] {0x5C, 0x03, 0x2F, 0x47, 0x53}, 256));
+      byte[] status = LogicalResponseCollector.collect(piv, response, 0x00, 1024, "GET STATUS");
+      dev.mistial.tools.openfips201.common.BerTlvReader.Tlv outer =
+          dev.mistial.tools.openfips201.common.BerTlvReader.read(status, 0);
+      int offset = outer.tag == 0x53 ? outer.valueOffset : 0;
+      int end = outer.tag == 0x53 ? outer.nextOffset : status.length;
+      while (offset < end) {
+        dev.mistial.tools.openfips201.common.BerTlvReader.Tlv tlv =
+            dev.mistial.tools.openfips201.common.BerTlvReader.read(status, offset, end);
+        if (tlv.tag == 0x87 && tlv.length == 1) {
+          byte mode = status[tlv.valueOffset];
+          if (mode == 0x00 || mode == 0x01) {
+            return KeySource.forBuild(mode == 0x01);
+          }
+        }
+        offset = tlv.nextOffset;
+      }
+      throw new IllegalStateException(
+          "The PIV applet does not report its FIPS mode (GET STATUS tag 87); choose the key source"
+              + " explicitly");
+    }
+  }
+
+  /**
+   * Provisions through SCP03 with {@code keys} deciding how 9A and 9C reach the card, then verifies
+   * through a fresh plain PIV connection.
+   */
+  public static ProvisionReport provision(
+      CardConnectionFactory connections,
+      ScpConfig scp,
+      ConformancePackage pkg,
+      PrintStream log,
+      KeySource keys)
+      throws Exception {
     if (connections == null) throw new IllegalArgumentException("connections are required");
     if (pkg == null) throw new IllegalArgumentException("package is required");
+    if (keys == null) throw new IllegalArgumentException("key source is required");
     ScpConfig config = scp == null ? ScpConfig.defaultTestScp03() : scp;
     ProvisionReport report;
     try (CardTransport transport = CardTransport.own(connections.open());
         GlobalPlatformSession administrative =
             transport.openGlobalPlatformSession(GlobalPlatformSession.PIV_AID, config)) {
-      report = provisionAdministrative(administrative.gp(), pkg, log);
+      report = provisionAdministrative(administrative.gp(), pkg, log, keys);
     }
     try {
       verifyReadback(connections, pkg, log, report.steps);
@@ -213,7 +300,7 @@ public final class ConformanceProvisioner {
 
   /** Applies administrative mutations over an already-open SCP-capable transport. */
   private static ProvisionReport provisionAdministrative(
-      GPSession gp, ConformancePackage pkg, PrintStream log) throws Exception {
+      GPSession gp, ConformancePackage pkg, PrintStream log, KeySource keys) throws Exception {
     IcamCardFolder.ensureProvider();
     List<String> steps = new ArrayList<String>();
     PrintStream out =
@@ -272,8 +359,23 @@ public final class ConformanceProvisioner {
     }
 
     int keysImported = 0;
+    int keysGenerated = 0;
     for (ConformancePackage.KeyMaterial key : pkg.keys) {
-      createKey(gp, key);
+      if (keys.generates(key.slot)) {
+        createKey(gp, key, ATTR_NONE);
+        generateKey(gp, key);
+        keysGenerated++;
+        steps.add(
+            String.format(
+                "Generated key %s on card (slot 0x%02X, alg 0x%02X)",
+                key.label, key.slot & 0xFF, key.algorithm & 0xFF));
+        out.println(
+            String.format(
+                "Generated key %s on card (slot 0x%02X, alg 0x%02X)",
+                key.label, key.slot & 0xFF, key.algorithm & 0xFF));
+        continue;
+      }
+      createKey(gp, key, key.attributes);
       importPrivateKey(gp, key);
       keysImported++;
       steps.add(
@@ -309,7 +411,8 @@ public final class ConformanceProvisioner {
             + keysImported
             + " keys from "
             + pkg.credentialId);
-    return new ProvisionReport(pkg.credentialId, objectsCreated, keysImported, steps);
+    return new ProvisionReport(
+        pkg.credentialId, objectsCreated, keysImported, keysGenerated, steps);
   }
 
   private static void verifyReadback(
@@ -368,7 +471,7 @@ public final class ConformanceProvisioner {
         piv, response, 0x00, maximumLength, "Read back object " + hexId(objectId));
   }
 
-  private static void createKey(GPSession gp, ConformancePackage.KeyMaterial key) {
+  private static void createKey(GPSession gp, ConformancePackage.KeyMaterial key, byte attributes) {
     byte[] definition =
         AdminTlv.tlv(
             0x66,
@@ -378,10 +481,34 @@ public final class ConformanceProvisioner {
                 AdminTlv.tlv(0x8D, new byte[] {key.modeContactless}),
                 AdminTlv.tlv(0x8E, new byte[] {key.algorithm}),
                 AdminTlv.tlv(0x8F, new byte[] {key.role}),
-                AdminTlv.tlv(0x90, new byte[] {key.attributes})));
+                AdminTlv.tlv(0x90, new byte[] {attributes})));
     expect(
         gp.transmit(new CommandAPDU(0x80, 0xDB, 0xFF, 0xFF, definition)),
         "Create key " + key.label);
+  }
+
+  /**
+   * GENERATE ASYMMETRIC KEY PAIR ({@code 47 00 <slot> AC 03 80 01 <alg>}) over the secure channel;
+   * the public-key template is collected and discarded.
+   */
+  private static void generateKey(final GPSession gp, ConformancePackage.KeyMaterial key) {
+    byte[] template = {(byte) 0xAC, 0x03, (byte) 0x80, 0x01, key.algorithm};
+    ResponseAPDU first =
+        gp.transmit(new CommandAPDU(0x80, 0x47, 0x00, key.slot & 0xFF, template, 256));
+    LogicalResponseCollector.collect(
+        new dev.mistial.tools.openfips201.common.CardSession() {
+          @Override
+          public ResponseAPDU transmit(CommandAPDU command) {
+            return gp.transmit(command);
+          }
+
+          @Override
+          public void close() {}
+        },
+        first,
+        0x84,
+        2048,
+        "Generate key " + key.label);
   }
 
   private static void importPrivateKey(GPSession gp, ConformancePackage.KeyMaterial key)

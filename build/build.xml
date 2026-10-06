@@ -28,13 +28,33 @@
   <property name="tool.test.sourcepath" value="src/dev/mistial/tool-tests"/>
   <property name="test.outputpath" value="build/test-bin"/>
   <property name="tool.outputpath" value="build/tool-bin"/>
+  <property name="tool.sam.sourcepath" value="${tool.outputpath}-sam-src"/>
   <property name="test.reportpath" value="build/test-reports"/>
   <property name="coverage.outputpath" value="build/coverage"/>
   <property name="coverage.execfile" value="${coverage.outputpath}/jacoco.exec"/>
   <property name="coverage.xmlfile" value="${coverage.outputpath}/jacoco.xml"/>
   <property name="coverage.htmlpath" value="${coverage.outputpath}/html"/>
   <property name="coverage.instrumented" value="${coverage.outputpath}/instrumented"/>
-  <property name="coverage.minimum.openfips201.line" value="0.80"/>
+  <property name="coverage.sourcepath" value="${coverage.outputpath}/src"/>
+  <property name="coverage.classes" value="${coverage.outputpath}/classes"/>
+  <property name="coverage.launcher.args" value=""/>
+  <property name="coverage.tool.report" value="false"/>
+  <property name="coverage.profile" value="${vci.suite}"/>
+  <!-- Coverage ratchets per measured profile, as CoverageGate rules ([Class:]COUNTER=minimum).
+       Each floor sits just below the measured value; raise it when coverage improves. The
+       security-critical classes carry their own floors so a drop cannot hide in the bundle total.
+       The host-tool floor assumes no SoftHSM2 module; the softhsm-tagged tests add to it. -->
+  <property name="coverage.rules.standard-CS2-attestation"
+            value="LINE=0.88 BRANCH=0.75
+                   PIVPinCommandHandler:LINE=0.83 PIVPinCommandHandler:BRANCH=0.76
+                   PIVSecureMessaging:LINE=0.94 PIVSecureMessaging:BRANCH=0.85
+                   ChainBuffer:LINE=0.91 ChainBuffer:BRANCH=0.87
+                   PIVSecurityProvider:LINE=0.78 PIVSecurityProvider:BRANCH=0.67
+                   PIVAuthenticationCommandHandler:LINE=0.86 PIVAuthenticationCommandHandler:BRANCH=0.80
+                   PIVAttestation:LINE=0.95 PIVAttestation:BRANCH=0.78"/>
+  <property name="coverage.rules.standard-CS7-no-attestation" value="LINE=0.84 BRANCH=0.73"/>
+  <property name="coverage.rules.fips-CS2-attestation" value="LINE=0.88 BRANCH=0.76"/>
+  <property name="coverage.rules.tool" value="LINE=0.66 BRANCH=0.54"/>
   <property name="deps.outputpath" value="build/lib"/>
   <property name="jpp.sourcepath" value="build/vendor/jpp/src/main/java"/>
   <property name="jpp.antpath" value="build/vendor/jpp/src/main/ant"/>
@@ -119,8 +139,10 @@
     <delete dir="${docs.outputpath}"/>
     <delete dir="${test.outputpath}"/>
     <delete dir="${tool.outputpath}"/>
+    <delete dir="${tool.sam.sourcepath}"/>
     <delete dir="${test.reportpath}"/>
     <delete dir="${coverage.outputpath}"/>
+    <antcall target="clean-sam"/>
   </target>
 
   <target name="jpp-build">
@@ -201,11 +223,22 @@
         </and>
       </condition>
     </fail>
+    <!-- The platform identifier is carried in every attestation certificate; the 1024-octet
+         certificate budget assumes at most 32 octets. -->
+    <fail message="build.platform.id must be at most 32 characters, got '${build.platform.id}'">
+      <condition>
+        <length string="${build.platform.id}" when="greater" length="32"/>
+      </condition>
+    </fail>
     <delete dir="${build.sourcepath}"/>
     <mkdir dir="${build.sourcepath}"/>
     <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
     <jpp destdir="${build.sourcepath}" force="true" readonly="false" verbose="false">
-      <fileset dir="${applet.sourcepath}" includes="**/*.java"/>
+      <fileset dir="${applet.sourcepath}" includes="**/*.java">
+        <!-- DERValidator carries no preprocessor directives (the SAM build shares it from the
+             source tree), so builds without attestation omit the file to keep it out of the CAP. -->
+        <exclude name="DERValidator.java" unless="ATTESTATION_ENABLED"/>
+      </fileset>
     </jpp>
     <echo file="${build.sourcepath}/BuildProfile.java">package com.makina.security.openfips201;
 
@@ -260,6 +293,10 @@ platform.id=${build.platform.id}
     </javac>
 
     <javac srcdir="${test.sourcepath}" destdir="${test.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252">
+      <exclude name="com/makina/security/openfips201/PIVAttestationAuthorityCertificateTest.java"
+               unless="ATTESTATION_ENABLED"/>
+      <exclude name="com/makina/security/openfips201/PIVAttestationStateTest.java"
+               unless="ATTESTATION_ENABLED"/>
       <exclude name="com/makina/security/openfips201/PIVAttestationDerValidationTest.java"
                unless="ATTESTATION_ENABLED"/>
       <classpath>
@@ -290,7 +327,30 @@ platform.id=${build.platform.id}
         <pathelement location="${gp.exportjar}"/>
       </classpath>
     </javac>
-    <javac srcdir="${tool.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="windows-1252" excludes="**/nist/**">
+    <!-- The emulator also hosts the Issuer SAM. Its sources and the shared whitelist are staged
+         beside this tool output (never in build/sam), so concurrent matrix profiles never share a
+         staging directory. -->
+    <delete dir="${tool.sam.sourcepath}"/>
+    <mkdir dir="${tool.sam.sourcepath}/dev/mistial/openphysical/sam"/>
+    <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
+    <jpp destdir="${tool.sam.sourcepath}/dev/mistial/openphysical/sam" force="true" readonly="false" verbose="false">
+      <fileset dir="${sam.sourcepath}" includes="**/*.java"/>
+    </jpp>
+    <copy todir="${tool.sam.sourcepath}/dev/mistial/openphysical/sam" overwrite="true">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+      <filterchain>
+        <replacestring from="package com.makina.security.openfips201;"
+                       to="package dev.mistial.openphysical.sam;"/>
+      </filterchain>
+    </copy>
+    <javac srcdir="${tool.sam.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" includeantruntime="false" encoding="UTF-8">
+      <classpath>
+        <pathelement location="${BUILD_SDK}/lib/api_classic-3.0.5.jar"/>
+        <pathelement location="${gp.exportjar}"/>
+      </classpath>
+    </javac>
+    <!-- Line tables let the coverage report attribute host-tool probes to source lines. -->
+    <javac srcdir="${tool.sourcepath}" destdir="${tool.outputpath}" source="1.8" target="1.8" debug="true" includeantruntime="false" encoding="windows-1252" excludes="**/nist/**">
       <classpath>
         <path refid="tool.compile.classpath"/>
         <pathelement location="${tool.outputpath}"/>
@@ -329,12 +389,13 @@ platform.id=${build.platform.id}
       <param name="test.reportpath" value="build/test-reports/CS7-no-attestation"/>
       <param name="attestation.enabled" value="false"/>
     </antcall>
+    <antcall target="test-sam"/>
   </target>
 
   <target name="test-suite" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
 
-    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow">
+    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="slow,softhsm,issuance-e2e">
       <classpath refid="test.runtime.classpath"/>
       <testclasses outputdir="${test.reportpath}">
         <fork>
@@ -357,6 +418,9 @@ platform.id=${build.platform.id}
     <!-- The ZeroMQ bridge is profile-independent and owns native sockets. Run it once after the
          parallel matrix so eight duplicate servers do not compete on constrained CI runners. -->
     <antcall target="test-zmq-integration"/>
+    <antcall target="test-sam"><param name="sam.include.slow" value="true"/></antcall>
+    <!-- SoftHSM custody and issuance end-to-end tests run once, in one JVM, after the matrix. -->
+    <antcall target="test-host"/>
   </target>
 
   <macrodef name="run-verification-profile">
@@ -452,7 +516,32 @@ platform.id=${build.platform.id}
   <target name="test-all-suite" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
 
-    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="transport-integration">
+    <junitlauncher printSummary="true" haltOnFailure="true"
+                   excludeTags="transport-integration,softhsm,issuance-e2e">
+      <classpath refid="test.runtime.classpath"/>
+      <testclasses outputdir="${test.reportpath}">
+        <fork>
+          <sysproperty key="vci.suite" value="${vci.suite}"/>
+          <sysproperty key="attestation.enabled" value="${attestation.enabled}"/>
+          <sysproperty key="fips.mode" value="${fips.mode}"/>
+          <sysproperty key="cap.path" value="${build.outputpath}/${build.outputfile}"/>
+        </fork>
+        <fileset dir="${test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <!-- Host-only tests that need a SoftHSM2 module (OPENFIPS201_SOFTHSM_MODULE or a default
+       install path); they skip when none is found. One JVM, because a SoftHSM2 module reads
+       SOFTHSM2_CONF once per process. The issuance-e2e tests drive the default-profile CAP
+       (standard, CS2, attestation) and the Issuer SAM on two ZeroMQ emulators. -->
+  <target name="test-host" depends="compile-cap,test-compile">
+    <mkdir dir="${test.reportpath}" />
+    <junitlauncher printSummary="true" haltOnFailure="true" includeTags="softhsm,issuance-e2e">
       <classpath refid="test.runtime.classpath"/>
       <testclasses outputdir="${test.reportpath}">
         <fork>
@@ -488,17 +577,127 @@ platform.id=${build.platform.id}
     </junitlauncher>
   </target>
 
-  <target name="coverage" depends="compile,test-compile">
+  <!-- Coverage is measured for three profiles that together compile in every preprocessor branch:
+       VCI_CS2 with ATTESTATION_ENABLED, VCI_CS7 without attestation, and FIPS_MODE. Each profile
+       builds in its own directory, as in the test matrix, and has its own ratchet. -->
+  <macrodef name="run-coverage-profile">
+    <attribute name="id"/>
+    <attribute name="fips"/>
+    <attribute name="suite"/>
+    <attribute name="attestation"/>
+    <attribute name="launcherargs" default=""/>
+    <attribute name="toolreport" default="false"/>
+    <sequential>
+      <mkdir dir="${coverage.outputpath}/@{id}"/>
+      <ant antfile="build/build.xml" target="coverage-profile" inheritAll="false"
+           output="${coverage.outputpath}/@{id}/build.log">
+        <property name="deps.resolved" value="true"/>
+        <property name="fips.mode" value="@{fips}"/>
+        <property name="fips.platform" value="test-jcard"/>
+        <property name="vci.suite" value="@{suite}"/>
+        <property name="attestation.enabled" value="@{attestation}"/>
+        <property name="coverage.profile" value="@{id}"/>
+        <property name="coverage.outputpath" value="${coverage.outputpath}/@{id}"/>
+        <property name="coverage.launcher.args" value="@{launcherargs}"/>
+        <property name="coverage.tool.report" value="@{toolreport}"/>
+        <property name="build.sourcepath"
+                  value="${coverage.outputpath}/@{id}/preprocessed-src/com/makina/security/openfips201"/>
+        <property name="build.outputpath" value="${coverage.outputpath}/@{id}/bin"/>
+        <property name="test.outputpath" value="${coverage.outputpath}/@{id}/test-bin"/>
+        <property name="tool.outputpath" value="${coverage.outputpath}/@{id}/tool-bin"/>
+        <property name="test.reportpath" value="${coverage.outputpath}/@{id}/reports"/>
+        <property name="jpp.outputpath" value="${coverage.outputpath}/@{id}/jpp-bin"/>
+        <property name="jpp.jar" value="${coverage.outputpath}/@{id}/jpp.jar"/>
+      </ant>
+    </sequential>
+  </macrodef>
+
+  <macrodef name="coverage-gate">
+    <attribute name="report"/>
+    <attribute name="rules"/>
+    <sequential>
+      <java classname="CoverageGate" fork="true" failonerror="true">
+        <classpath>
+          <pathelement location="${coverage.outputpath}/gate"/>
+        </classpath>
+        <arg value="@{report}"/>
+        <arg line="@{rules}"/>
+      </java>
+    </sequential>
+  </macrodef>
+
+  <target name="coverage" depends="resolve-test-deps">
+    <delete dir="${coverage.outputpath}"/>
+    <mkdir dir="${coverage.outputpath}/gate"/>
+    <javac srcdir="build/tools"
+           destdir="${coverage.outputpath}/gate"
+           source="1.8"
+           target="1.8"
+           includeantruntime="false"
+           includes="CoverageGate.java" />
+    <!-- The non-default profiles skip the tags that test-all-suite skips; the issuance end-to-end
+         tests drive the default-profile CAP. -->
+    <parallel threadCount="3" failonany="false">
+      <run-coverage-profile id="standard-CS2-attestation" fips="false" suite="CS2" attestation="true"
+                            toolreport="true"/>
+      <run-coverage-profile id="standard-CS7-no-attestation" fips="false" suite="CS7" attestation="false"
+                            launcherargs="--exclude-tag transport-integration --exclude-tag softhsm --exclude-tag issuance-e2e"/>
+      <run-coverage-profile id="fips-CS2-attestation" fips="true" suite="CS2" attestation="true"
+                            launcherargs="--exclude-tag transport-integration --exclude-tag softhsm --exclude-tag issuance-e2e"/>
+    </parallel>
+    <coverage-gate report="${coverage.outputpath}/standard-CS2-attestation/jacoco.xml"
+                   rules="${coverage.rules.standard-CS2-attestation}"/>
+    <coverage-gate report="${coverage.outputpath}/standard-CS7-no-attestation/jacoco.xml"
+                   rules="${coverage.rules.standard-CS7-no-attestation}"/>
+    <coverage-gate report="${coverage.outputpath}/fips-CS2-attestation/jacoco.xml"
+                   rules="${coverage.rules.fips-CS2-attestation}"/>
+    <coverage-gate report="${coverage.outputpath}/standard-CS2-attestation/tool-jacoco.xml"
+                   rules="${coverage.rules.tool}"/>
+  </target>
+
+  <!-- Internal: measures one profile. Invoked by the coverage target with per-profile paths. -->
+  <target name="coverage-profile" depends="compile-cap,test-compile">
     <mkdir dir="${test.reportpath}" />
-    <mkdir dir="${coverage.outputpath}" />
+    <delete dir="${coverage.sourcepath}"/>
+    <delete dir="${coverage.classes}"/>
+    <delete dir="${coverage.instrumented}"/>
 
     <taskdef uri="antlib:org.jacoco.ant"
              resource="org/jacoco/ant/antlib.xml"
              classpathref="jacoco.ant.classpath" />
 
-    <!-- Instrument before jCardEngine transforms applet classes in its simulator class loader. -->
+    <!-- JaCoCo marks a line executed only when a probe after it runs, and a call that throws never
+         reaches one, so every Exception.throwIt line would read as missed. A coverage-only copy of
+         the preprocessed sources throws in place instead, which puts JaCoCo's probe before the
+         athrow. The braces keep if/else binding unchanged, and "if (true)" keeps the following
+         statements reachable for javac. Line numbers are preserved. -->
+    <copy todir="${coverage.sourcepath}/com/makina/security/openfips201">
+      <fileset dir="${build.sourcepath}" includes="**/*.java"/>
+    </copy>
+    <replaceregexp flags="g" encoding="windows-1252">
+      <regexp pattern="\b([A-Z][A-Za-z]*Exception)\.throwIt\(([^;]*)\);"/>
+      <substitution expression="{ if (true) throw new \1(\2); }"/>
+      <fileset dir="${coverage.sourcepath}" includes="**/*.java"/>
+    </replaceregexp>
+    <fail message="the coverage rewrite left an Exception.throwIt call in ${coverage.sourcepath}">
+      <condition>
+        <resourcecount when="greater" count="0">
+          <fileset dir="${coverage.sourcepath}" includes="**/*.java">
+            <containsregexp expression="Exception\.throwIt\("/>
+          </fileset>
+        </resourcecount>
+      </condition>
+    </fail>
+    <mkdir dir="${coverage.classes}"/>
+    <javac srcdir="${coverage.sourcepath}" destdir="${coverage.classes}" source="1.8" target="1.8" debug="true" includeantruntime="false" encoding="windows-1252">
+      <classpath refid="test.compile.classpath"/>
+    </javac>
+
+    <!-- Instrument before jCardEngine transforms applet classes in its simulator class loader.
+         Only applet classes are instrumented and reported; the white-box tests compiled into the
+         applet package stay out of the totals. -->
     <jacoco:instrument destdir="${coverage.instrumented}">
-      <fileset dir="${test.outputpath}">
+      <fileset dir="${coverage.classes}">
         <include name="com/makina/security/openfips201/*.class" />
       </fileset>
     </jacoco:instrument>
@@ -525,20 +724,21 @@ platform.id=${build.platform.id}
       <arg value="dev.mistial.tests.openfips201" />
       <arg value="--select-package" />
       <arg value="dev.mistial.tools.openfips201" />
+      <arg line="${coverage.launcher.args}" />
     </java>
 
     <jacoco:report>
       <executiondata>
         <file file="${coverage.execfile}" />
       </executiondata>
-      <structure name="OpenFIPS201">
+      <structure name="OpenFIPS201 applet ${coverage.profile}">
         <classfiles>
-          <fileset dir="${test.outputpath}">
+          <fileset dir="${coverage.classes}">
             <include name="com/makina/security/openfips201/*.class" />
           </fileset>
         </classfiles>
         <sourcefiles encoding="windows-1252">
-          <fileset dir="${build.sourcepath}">
+          <fileset dir="${coverage.sourcepath}">
             <include name="**/*.java" />
           </fileset>
         </sourcefiles>
@@ -546,23 +746,179 @@ platform.id=${build.platform.id}
       <xml destfile="${coverage.xmlfile}" />
       <html destdir="${coverage.htmlpath}" />
     </jacoco:report>
-
-    <mkdir dir="${coverage.outputpath}/tools" />
-    <javac srcdir="build/tools"
-           destdir="${coverage.outputpath}/tools"
-           source="1.8"
-           target="1.8"
-           includeantruntime="false"
-           includes="CoverageGate.java" />
-    <java classname="CoverageGate" fork="true" failonerror="true">
-      <classpath>
-        <pathelement location="${coverage.outputpath}/tools" />
-      </classpath>
-      <arg value="${coverage.xmlfile}" />
-      <arg value="${coverage.minimum.openfips201.line}" />
-    </java>
-
+    <antcall target="coverage-tool-report"/>
   </target>
+
+  <!-- Internal: the host-tool report. The JaCoCo agent instruments host-tool classes at load
+       time, so the report reads the exact classes in tool-bin. -->
+  <target name="coverage-tool-report" if="${coverage.tool.report}">
+    <taskdef uri="antlib:org.jacoco.ant"
+             resource="org/jacoco/ant/antlib.xml"
+             classpathref="jacoco.ant.classpath" />
+    <jacoco:report>
+      <executiondata>
+        <file file="${coverage.execfile}" />
+      </executiondata>
+      <structure name="OpenFIPS201 host tool">
+        <classfiles>
+          <fileset dir="${tool.outputpath}">
+            <include name="dev/mistial/tools/**/*.class" />
+          </fileset>
+        </classfiles>
+        <sourcefiles encoding="windows-1252">
+          <fileset dir="src">
+            <include name="dev/mistial/tools/**/*.java" />
+          </fileset>
+        </sourcefiles>
+      </structure>
+      <xml destfile="${coverage.outputpath}/tool-jacoco.xml" />
+      <html destdir="${coverage.outputpath}/tool-html" />
+    </jacoco:report>
+  </target>
+
+  <!-- ==================================================================================
+       Issuer SAM applet (dev.mistial.openphysical.sam)
+
+       The SAM is a separate CAP. Shared, profile-independent DER/TLV/EC classes are copied from
+       the PIV package at build time (package rewritten, GENERATED header prepended) rather than
+       shipped as a library CAP. A whitelisted file that contains a JPP directive fails the build,
+       because the copy is not preprocessed against any PIV profile.
+       ================================================================================== -->
+  <property name="sam.sourcepath" value="src/dev/mistial/openphysical/sam"/>
+  <property name="sam.outputpath" value="build/sam"/>
+  <property name="sam.build.sourcepath" value="build/sam/preprocessed-src/dev/mistial/openphysical/sam"/>
+  <property name="sam.test.sourcepath" value="src/dev/mistial/sam-tests"/>
+  <property name="sam.test.outputpath" value="build/sam/test-bin"/>
+  <property name="sam.test.reportpath" value="build/test-reports/sam"/>
+  <!-- ISO/IEC 7816-5 category F: F0 ‖ "OPENPHY" ‖ "SAM"; the applet AID appends a 00 separator,
+       the applet number 01 and three reserved octets. -->
+  <property name="sam.package.aid" value="F04F50454E50485953414D"/>
+  <property name="sam.applet.aid" value="F04F50454E50485953414D0001000000"/>
+  <property name="sam.version" value="0.1"/>
+  <property name="sam.outputfile" value="OpenPhysicalIssuerSam-${sam.version}.cap"/>
+  <property name="sam.shared.includes"
+            value="TLV.java,TLVReader.java,DERWriter.java,DERValidator.java,ECParams.java,ECParamsP256.java,ECPointValidator.java"/>
+  <property name="sam.shared.count" value="7"/>
+  <property name="sam.include.slow" value="false"/>
+
+  <path id="sam.test.runtime.classpath">
+    <pathelement location="${sam.test.outputpath}"/>
+    <pathelement location="${tool.outputpath}"/>
+    <pathelement location="tools/jcard-v26.08.10.jar"/>
+    <fileset dir="${deps.outputpath}">
+      <include name="*.jar"/>
+    </fileset>
+  </path>
+
+  <target name="preprocess-sam" depends="jpp-build">
+    <resourcecount property="sam.shared.present">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+    </resourcecount>
+    <fail message="SAM shared whitelist is incomplete: found ${sam.shared.present} of ${sam.shared.count} files">
+      <condition>
+        <not><equals arg1="${sam.shared.present}" arg2="${sam.shared.count}"/></not>
+      </condition>
+    </fail>
+    <resourcecount property="sam.shared.directives">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}">
+        <contains text="#if"/>
+      </fileset>
+    </resourcecount>
+    <fail message="SAM shared whitelist files must not contain JPP directives (#if)">
+      <condition>
+        <not><equals arg1="${sam.shared.directives}" arg2="0"/></not>
+      </condition>
+    </fail>
+    <delete dir="${sam.outputpath}/preprocessed-src"/>
+    <delete dir="${sam.outputpath}/shared-checksums"/>
+    <mkdir dir="${sam.build.sourcepath}"/>
+    <mkdir dir="${sam.outputpath}/shared-checksums"/>
+    <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
+    <jpp destdir="${sam.build.sourcepath}" force="true" readonly="false" verbose="false">
+      <fileset dir="${sam.sourcepath}" includes="**/*.java"/>
+    </jpp>
+    <echo file="${sam.outputpath}/shared-header.txt">// GENERATED from ${applet.sourcepath} by build/build.xml preprocess-sam. Do not edit; edit
+// the source file instead.
+</echo>
+    <copy todir="${sam.build.sourcepath}" overwrite="true">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+      <filterchain>
+        <replacestring from="package com.makina.security.openfips201;"
+                       to="package dev.mistial.openphysical.sam;"/>
+        <concatfilter prepend="${sam.outputpath}/shared-header.txt"/>
+      </filterchain>
+    </copy>
+    <checksum algorithm="SHA-256" todir="${sam.outputpath}/shared-checksums" pattern="{0}  {1}"
+              fileext=".sha256">
+      <fileset dir="${applet.sourcepath}" includes="${sam.shared.includes}"/>
+    </checksum>
+    <concat destfile="${sam.outputpath}/shared-sources.sha256">
+      <fileset dir="${sam.outputpath}/shared-checksums" includes="*.sha256"/>
+    </concat>
+  </target>
+
+  <target name="compile-sam" depends="preprocess-sam">
+    <mkdir dir="build/bin"/>
+    <taskdef name="javacard" classname="pro.javacard.ant.JavaCard" classpath="tools/ant-javacard.jar"/>
+    <javacard>
+      <cap targetsdk="${TARGET_SDK}" aid="${sam.package.aid}" output="build/bin/${sam.outputfile}"
+           sources="${sam.build.sourcepath}" version="${sam.version}">
+        <applet class="dev.mistial.openphysical.sam.IssuerSam" aid="${sam.applet.aid}"/>
+        <import exps="${gp.home}" jar="${gp.exportjar}"/>
+      </cap>
+    </javacard>
+    <echo file="build/bin/${sam.outputfile}.properties">applet=dev.mistial.openphysical.sam.IssuerSam
+package.aid=${sam.package.aid}
+applet.aid=${sam.applet.aid}
+version=${sam.version}
+</echo>
+  </target>
+
+  <target name="sam-test-compile" depends="resolve-test-deps,tool-compile,preprocess-sam">
+    <delete dir="${sam.test.outputpath}"/>
+    <mkdir dir="${sam.test.outputpath}"/>
+    <!-- SAM applet classes are compiled against the SDK/GP stubs in this step only. -->
+    <javac srcdir="${sam.outputpath}/preprocessed-src" destdir="${sam.test.outputpath}" source="1.8"
+           target="1.8" debug="true" includeantruntime="false" encoding="UTF-8">
+      <classpath refid="test.compile.classpath"/>
+    </javac>
+    <javac srcdir="${sam.test.sourcepath}" destdir="${sam.test.outputpath}" source="1.8"
+           target="1.8" debug="true" includeantruntime="false" encoding="UTF-8">
+      <classpath>
+        <path refid="test.compile.classpath"/>
+        <pathelement location="${tool.outputpath}"/>
+        <pathelement location="${sam.test.outputpath}"/>
+      </classpath>
+    </javac>
+  </target>
+
+  <target name="test-sam" depends="compile-sam,sam-test-compile">
+    <mkdir dir="${sam.test.reportpath}"/>
+    <condition property="sam.exclude.tags" value="transport-integration" else="slow,transport-integration">
+      <equals arg1="${sam.include.slow}" arg2="true"/>
+    </condition>
+    <junitlauncher printSummary="true" haltOnFailure="true" excludeTags="${sam.exclude.tags}">
+      <classpath refid="sam.test.runtime.classpath"/>
+      <testclasses outputdir="${sam.test.reportpath}">
+        <fork>
+          <sysproperty key="sam.cap.path" value="build/bin/${sam.outputfile}"/>
+          <sysproperty key="sam.include.slow" value="${sam.include.slow}"/>
+        </fork>
+        <fileset dir="${sam.test.outputpath}">
+          <include name="**/*Test.class"/>
+        </fileset>
+        <listener type="legacy-brief" sendSysOut="true" sendSysErr="true"/>
+        <listener type="legacy-xml" sendSysOut="true" sendSysErr="true"/>
+      </testclasses>
+    </junitlauncher>
+  </target>
+
+  <target name="clean-sam">
+    <delete dir="${sam.outputpath}"/>
+    <delete file="build/bin/${sam.outputfile}"/>
+    <delete file="build/bin/${sam.outputfile}.properties"/>
+  </target>
+  <!-- ===== end Issuer SAM applet ===== -->
 
   <target name="all" depends="clean,compile,doc"/>
   

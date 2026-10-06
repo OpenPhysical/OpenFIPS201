@@ -47,6 +47,9 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
   private static final byte SLOT_CARD_AUTHENTICATION = (byte) 0x9E;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte ROLE_SIGN = (byte) 0x04;
+  private static final byte ATTR_NONE = (byte) 0x00;
+  private static final byte ATTR_IMPORTABLE = (byte) 0x10;
+  private static final boolean FIPS_MODE = Boolean.getBoolean("fips.mode");
   private static final int P256_FIELD_BYTES = 32;
   private static final int P384_FIELD_BYTES = 48;
 
@@ -171,7 +174,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                 ROLE_SIGN,
                 (byte) 0x90,
                 (byte) 0x01,
-                (byte) 0x10
+                ATTR_NONE
               };
           assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, definition), "Create RSA sign key");
           byte[] generated =
@@ -214,7 +217,11 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
 
   @Test
   void rejectsMismatchedPrivateRotationAndRetainsTheOriginalPair() throws Exception {
-    byte[] publicPoint = provisionEccSignKey(SLOT_SIGNATURE);
+    // FIPS 201-3 Section 4.2.2.4 requires the FIPS profile to generate 9C on the card, so there the
+    // key is not importable and the rotation is refused before any component is compared.
+    byte[] publicPoint =
+        provisionEccKey(
+            SLOT_SIGNATURE, ROLE_SIGN, ALG_ECC_P256, FIPS_MODE ? ATTR_NONE : ATTR_IMPORTABLE);
     KeyPairGenerator generator =
         KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME);
     generator.initialize(new ECGenParameterSpec("secp256r1"));
@@ -224,7 +231,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
     withMockedScp(
         () ->
             assertSw(
-                0x6985,
+                FIPS_MODE ? 0x6982 : 0x6985,
                 transmit(
                     0x84,
                     0x24,
@@ -296,6 +303,11 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
   }
 
   private byte[] provisionEccKey(final byte slot, final byte roles, final byte algorithm) {
+    return provisionEccKey(slot, roles, algorithm, ATTR_NONE);
+  }
+
+  private byte[] provisionEccKey(
+      final byte slot, final byte roles, final byte algorithm, final byte attributes) {
     final byte[][] publicPoint = new byte[1][];
     withMockedScp(
         () -> {
@@ -321,7 +333,7 @@ class OpenFIPS201GeneralAuthenticateSignatureTest extends OpenFIPS201TestSupport
                 roles,
                 (byte) 0x90,
                 (byte) 0x01,
-                (byte) 0x10
+                attributes
               };
           assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, definition), "Create ECC sign key");
           byte[] generated =

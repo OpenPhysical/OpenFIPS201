@@ -32,8 +32,12 @@ The OpenPhysical fork adds and changes the following applet behavior, tooling, a
   operations
 - single-definition key slots, with an explicit delete-and-create operation when the mechanism
   changes
-- PIV-style F9 attestation with SCP-protected authority provisioning, staged authority updates,
-  generated-key provenance, certificate construction, host verification, and issuer tooling
+- PIV-style F9 attestation with an on-card generated, immutable F9 authority, a PKIX chain from the
+  producer root through a per-batch Issuer SAM to each card, generated-key provenance, and host
+  verification
+- an Issuer SAM Java Card applet that allocates 17-digit OPIDs (decimal LCG enciphered with FF1),
+  meters issuance against a root-signed quota, signs the F9 certificate, and keeps a hash-chained
+  audit ledger
 - VCI secure messaging with OPACITY CS2 or CS7 selected when the CAP is built
 - VCI host provisioning, CVC handling, pairing policy, secure-messaging probes, and a ZeroMQ
   emulator bridge
@@ -42,8 +46,10 @@ The OpenPhysical fork adds and changes the following applet behavior, tooling, a
 - stricter APDU, BER-TLV, DER, CVC, object-lifecycle, transaction, and state-transition validation
 - an eight-variant release matrix covering standard and FIPS profiles, CS2 and CS7, and
   attestation enabled and disabled
-- a unified issuer tool for card discovery, CAP installation, SCP key management, attestation,
-  producer profiles, batches, and production receipts
+- a unified issuer tool for card discovery, CAP installation, SCP key management, PKCS#11 custody,
+  a two-station issuance model (a root station that allocates batches and personalizes SAMs, and a
+  production station that produces cards through the SAM), top-up, receipts, ledger audit, trust
+  export and attestation verification
 - Java Card 3.0.5 targeting with maintained build, test, coverage, and dependency tooling
 
 Detailed requirement mappings and residual limits are in
@@ -77,6 +83,15 @@ ant -f build/build.xml compile
 The default build uses the standard profile, VCI cipher suite CS2, and attestation. The CAP and a
 matching `.properties` file are written to `build/bin/`. Keep these two files together. The
 properties file records the profile, VCI suite, attestation setting, and target platform.
+
+Build and test the Issuer SAM applet, and run the SoftHSM custody and issuance end-to-end tests
+(SoftHSM2 required):
+
+```sh
+ant -f build/build.xml compile-sam   # build/bin/OpenPhysicalIssuerSam-0.1.cap
+ant -f build/build.xml test-sam
+ant -f build/build.xml test-host
+```
 
 ### Find a Card and Install the CAP
 
@@ -122,31 +137,70 @@ system.
 
 ## Recommended Issuance Order
 
-1. Build and retain the selected CAP and its `.properties` file.
-2. Install the CAP through an authenticated GlobalPlatform secure channel.
-3. Provision the F9 attestation authority first, if the build and issuer profile use attestation.
-4. Create the required objects and key definitions.
-5. Load cardholder data and import or generate cardholder keys.
-6. Apply the one-way personalization transition.
-7. Verify the card identity, expected objects, attestation chain, and active SCP keys.
+Issuance uses two stations, each with its own PKCS#11 token and OpenFIPS201 home, set up under the
+same producer name (handoff bundles and top-up files name the producer). The root
+station holds the root CA key and the per-IIN FF1 keys and handles only SAMs. The production station
+holds the card master key and the public `root.pem`, and handles SAMs and cards. The root key, FF1
+keys and LCG parameters never reach the production station.
 
-For repeatable production, use the guided producer, batch, and card workflow:
+1. Build and retain the selected CAP and its `.properties` file (attestation enabled), and the
+   Issuer SAM CAP.
+2. Set up both stations (`producer setup --station root|production`), create the production
+   station's handoff key (`station init`) and import it at the root (`station import`).
+3. At the root: create the allocation registry once (`root init`), allocate an (IIN, batch) with its
+   quota (`root allocate`), and personalize the batch SAM (`sam personalize`), which writes a
+   root-signed handoff bundle for the production station.
+4. At the production station: take over the SAM (`sam receive`), which rotates its keys and sets the
+   operator PIN, and creates the batch with a new stock SCP03 key for its cards.
+5. Produce each card with `card produce`: it installs the CAP, has the card generate F9, has the SAM
+   allocate the OPID and certify F9, verifies the chain and the SAM's DECIPHER of the OPID, loads the
+   certificate (which activates F9 and wipes every other key and data object), checks a proof
+   attestation, and rotates the card's SCP keys. The card leaves with an unrecorded random local PIN.
+6. Then provision the cardholder PIN, PUK, `9B`, key `04`, cardholder keys and data objects over
+   the secure channel. In FIPS builds `9A` and `9C` must be generated on the card.
+7. Apply the one-way personalization transition.
+8. Verify the card identity, expected objects, attestation chain (`attestation verify --from-card`),
+   and active SCP keys.
+9. At the end of a batch, `batch close` and then `sam terminate`; give relying parties the output of
+   `producer export-trust`. The root station can replay every OPID of an exported ledger with
+   `root audit-ledger`.
 
 ```sh
-ant -f build/build.xml openfips201-tool \
-  -Dargs='producer setup --name example_issuer'
+# Root station
+ant -f build/build.xml openfips201-tool -Dargs='producer setup --name example_issuer --station root \
+  --pkcs11-module /path/to/pkcs11.so --pkcs11-pin-env HSM_PIN \
+  --root-subject "CN=Example OpenFIPS201 Root" --f9-subject "CN=Example OpenFIPS201 F9"'
+ant -f build/build.xml openfips201-tool -Dargs='root init --producer example_issuer'
+ant -f build/build.xml openfips201-tool -Dargs='root allocate --producer example_issuer \
+  --iin 1234 --batch 1 --quota 1000'
 
-ant -f build/build.xml openfips201-tool \
-  -Dargs='batch create --producer example_issuer --name 2026-08'
+# Production station
+ant -f build/build.xml openfips201-tool -Dargs='producer setup --name example_issuer --station production \
+  --root-pem /transfer/root.pem --pkcs11-module /path/to/pkcs11.so --pkcs11-pin-env HSM_PIN'
+ant -f build/build.xml openfips201-tool -Dargs='station init --producer example_issuer --out /transfer/station.pem'
 
-ant -f build/build.xml openfips201-tool \
-  -Dargs='card produce --producer example_issuer --batch 2026-08 --target pcsc:READER --stock-scp-key HEX_KEY --yes'
+# Root station
+ant -f build/build.xml openfips201-tool -Dargs='station import --producer example_issuer \
+  --name line1 --pub /transfer/station.pem'
+ant -f build/build.xml openfips201-tool -Dargs='sam personalize --producer example_issuer \
+  --iin 1234 --batch 1 --sam pcsc:SAM_READER --station line1 --bundle-out /transfer/sam-handoff.json \
+  --install --sam-cap build/bin/OpenPhysicalIssuerSam-0.1.cap --sam-stock-key-file /secure/sam-stock.key --yes'
+
+# Production station
+ant -f build/build.xml openfips201-tool -Dargs='sam receive --producer example_issuer \
+  --bundle /transfer/sam-handoff.json --sam pcsc:SAM_READER \
+  --operator-pin-file /secure/operator.pin --stock-key-out /secure/stock.key --yes'
+ant -f build/build.xml openfips201-tool -Dargs='card produce --producer example_issuer \
+  --batch 1234-0001 --target pcsc:CARD_READER --sam pcsc:SAM_READER \
+  --stock-scp-key-file /secure/stock.key --operator-pin-file /secure/operator.pin --yes'
 ```
 
-The tool stores issuer state and batch receipts under `~/.openfips201`. Treat this directory as
-sensitive operational data. Protect its access and include it in the issuer's backup plan. See
-[Issuer Tool](docs/OPENFIPS201_TOOL.md) for PKCS#11 support, key rotation, receipts, and recovery
-guidance.
+`producer setup --dev-softhsm` creates a development SoftHSM producer that can issue only to
+emulator targets unless `card produce --allow-dev-custody` is given. Each station keeps its state
+under `~/.openfips201`, owner-only: the root station its registry and the batch LCG records, the
+production station batches, receipts and ledgers. Treat both homes as sensitive and include them in
+the issuer's backup plan. See [Issuer Tool](docs/OPENFIPS201_TOOL.md) for custody, secrets, top-up,
+ledger audit, batch close, trust export and recovery.
 
 ## Administrative Commands
 
@@ -169,22 +223,40 @@ Under GlobalPlatform secure messaging, the secure-channel layer sets the protect
 Administrative `PUT DATA` accepts one operation per command. Submit and verify each operation before
 continuing. This avoids relying on rollback for Java Card allocation or deletion.
 
+Status words follow ISO/IEC 7816-4 §5.6. The applet returns no proprietary `6Exx` or `6Fxx` codes
+other than `6F00`, and SP 800-73-5 codes take precedence where that specification mandates one.
+
+| SW     | Administrative and configuration meaning                                                      |
+| ------ | --------------------------------------------------------------------------------------------- |
+| `6A80` | Malformed or invalid command data: a missing, wrong-length or invalid element in admin `PUT DATA`; an unknown operation; a configuration value that is empty, out of range, inconsistent, FIPS-forbidden or non-canonically encoded; a retired configuration tag; an imported key that fails its pairwise consistency test. |
+| `6A81` | Function not supported: an unimplemented configuration field (OCC policy, PUK restrict-update, restrict-enumeration, RSA CRT) or a mechanism the key object does not support. |
+| `6A88` | Referenced data object or key not found, including delete of an object that does not exist. |
+| `6A89` | The key or data object being created already exists.                                          |
+| `6982` | Security status not satisfied: no secure channel with C-ENC and no authenticated admin key.    |
+| `6985` | Conditions of use not satisfied: wrong lifecycle state, e.g. structural changes after PERSONALIZE. |
+| `6F00` | Internal fault, including an on-card generated key that fails its pairwise consistency test.   |
+
+PIN and PUK commands follow SP 800-73-5 Part 2. For example, a new PIN that appears in the PIN
+history returns `6A80`.
+
 Give each created data object an explicit capacity. If the platform cannot delete persistent
 objects, the first successful write to a dynamically sized object sets the largest reusable buffer.
 Later values cannot exceed that size.
 
 ## Attestation
 
-Attestation-enabled CAPs can provision an ECC P-256 F9 authority and attest keys that were generated
-on the card. Supported target algorithms are RSA-1024 in the standard profile, RSA-2048, RSA-3072,
-ECC P-256, and ECC P-384.
+Attestation-enabled CAPs generate an ECC P-256 F9 authority on the card and attest keys that were
+generated on the card. Supported target algorithms are RSA-1024 in the standard profile, RSA-2048,
+RSA-3072, ECC P-256, and ECC P-384. F9 is never importable.
 
-Provision F9 before cardholder keys. The applet validates the imported F9 key pair before it commits
-the authority, and an authority update is staged so an interrupted operation does not leave mixed
-key and certificate state. Attestation-disabled CAPs do not contain the attestation command path.
+The chain is root CA → Issuer SAM → card F9 → leaf. The card proves possession of F9 to the SAM,
+which allocates the card's OPID and signs the F9 certificate; the host validates the chain before
+the card loads it. Loading the certificate activates F9, wipes every other key and data object, and
+makes F9, its certificate and the OPID immutable. Provision F9 before cardholder keys.
+Attestation-disabled CAPs do not contain the attestation command path.
 
-See [Attestation](docs/ATTESTATION.md) for the certificate profile, provisioning APDUs, host
-verification, and status words.
+See [Attestation](docs/ATTESTATION.md) for the certificate profiles, APDUs, OPID layout and status
+words, and [Issuer SAM](docs/ISSUER_SAM.md) for the SAM applet.
 
 ## VCI Secure Messaging
 
@@ -215,13 +287,20 @@ Run all eight build variants before a release:
 ant -f build/build.xml test-all
 ```
 
-This target covers standard and FIPS profiles, CS2 and CS7, and attestation enabled and disabled.
-The test suite enforces an 80% JaCoCo applet line-coverage floor and includes targeted negative-path
-tests. Formal card-interface and data-model validation still requires the applicable NIST suites and
-the intended card platform.
+This target covers standard and FIPS profiles, CS2 and CS7, and attestation enabled and disabled,
+then runs the ZeroMQ bridge test, `test-sam` with slow tests, and `test-host`.
+
+`ant -f build/build.xml coverage` (a separate CI job) measures JaCoCo coverage for three profiles
+that together compile every preprocessor branch (standard CS2 with attestation, standard CS7
+without, FIPS CS2 with attestation) and the host tool, and enforces line and branch ratchets per
+profile, with separate per-class floors for the security-critical applet classes. The floors are
+defined in `build/build.xml`. Formal card-interface and data-model validation still requires the
+applicable NIST suites and the intended card platform.
 
 Useful references:
 
+- [Attestation](docs/ATTESTATION.md) and [Issuer SAM](docs/ISSUER_SAM.md)
+- [Issuer Tool](docs/OPENFIPS201_TOOL.md) and [Production Qualification](docs/PRODUCTION_QUALIFICATION.md)
 - [Conformance and NPIVP](docs/CONFORMANCE_AND_NPIVP.md)
 - [NPIVP Vendor Evidence](docs/NPIVP_VENDOR_EVIDENCE.md)
 - [Validation Status and Gaps](docs/FIPS_AND_TEST_GAPS.md)
@@ -237,14 +316,19 @@ Configuration fields for OCC, PUK update restriction, enumeration restriction, a
 selection return `6A81` because these behaviors are not implemented. Unsupported fields are not
 accepted as inactive settings.
 
-Incoming TLV lengths must use the shortest valid encoding. The applet also rejects bytes after the
-declared top-level value. Issuer software must send canonical BER-TLV encodings.
+Incoming TLV lengths use BER definite form with at most two subsequent length bytes and must use the
+shortest valid encoding; indefinite and non-minimal lengths (for example `81 05` or `82 00 80`) are
+rejected with `6A80` (`6988` for the data objects of a secure-messaging command). The applet also rejects bytes after the declared top-level value. Issuer
+software must send canonical BER-TLV encodings.
 
 ## Repository Layout
 
 - `src/com/makina/security/openfips201/`: production applet source
+- `src/dev/mistial/openphysical/sam/`: Issuer SAM applet source
 - `src/dev/mistial/tools/openfips201/`: issuer and provisioning tools
-- `src/dev/mistial/tests/`: simulator, conformance, and host-tool tests
+- `src/dev/mistial/tests/`, `src/dev/mistial/tool-tests/`, `src/dev/mistial/sam-tests/`: applet,
+  host-tool and SAM tests
+- `test-vectors/opid/`: OPID, LCG, FF1 and FASC-N vectors shared with OpenPhysical.Net
 - `build/`: Ant build definition and generated output
 - `docs/`: public operational and conformance documentation
 - `tools/piv_test_runner/`: external validation harness and VCI vector runner

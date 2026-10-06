@@ -7,6 +7,9 @@
 
 package dev.mistial.tools.openfips201.producer;
 
+import dev.mistial.tools.openfips201.common.SecureFiles;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -23,6 +26,22 @@ public final class ProducerPaths {
       return Paths.get(override);
     }
     return Paths.get(System.getProperty("user.home"), ".openfips201");
+  }
+
+  /**
+   * Creates {@code directory}. Below {@link #home()} every component from the home directory down
+   * is created or validated as an owner-only (0700) directory with {@link
+   * SecureFiles#createPrivateDirectories(Path, Path)}; a directory elsewhere is chosen by the
+   * operator and is created with the default permissions.
+   *
+   * @return {@code directory}
+   */
+  public static Path createDirectories(Path directory) throws IOException {
+    Path home = home().toAbsolutePath().normalize();
+    if (directory.toAbsolutePath().normalize().startsWith(home)) {
+      return SecureFiles.createPrivateDirectories(home, directory);
+    }
+    return Files.createDirectories(directory);
   }
 
   public static Path producer(String name) {

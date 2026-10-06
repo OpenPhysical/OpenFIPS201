@@ -30,19 +30,23 @@ import dev.mistial.tools.openfips201.common.BerTlvWriter;
 import java.io.ByteArrayOutputStream;
 import java.security.MessageDigest;
 import java.security.PublicKey;
+import java.security.cert.X509Certificate;
 import java.util.Arrays;
-import javax.crypto.Cipher;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.DERBitString;
 import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.asn1.sec.SECNamedCurves;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
+import org.bouncycastle.crypto.BlockCipher;
 import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.macs.CMac;
+import org.bouncycastle.crypto.modes.CBCBlockCipher;
 import org.bouncycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.ParametersWithIV;
 import org.bouncycastle.math.ec.ECPoint;
 
 /**
@@ -616,7 +620,7 @@ final class VciSupport {
     if (response) {
       counter[0] = (byte) (counter[0] | 0x80);
     }
-    return aesEcbBlock(session.skEnc, counter);
+    return aesBlock(session.skEnc, counter);
   }
 
   private static void incrementCounter(byte[] counter) {
@@ -657,27 +661,37 @@ final class VciSupport {
     return out;
   }
 
-  private static byte[] aesEcbBlock(byte[] key, byte[] block) {
-    try {
-      Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
-      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"));
-      return cipher.doFinal(block);
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
+  /**
+   * One application of the AES block cipher. SP 800-73-5 Part 2 Section 4.2.2: the IV is "created
+   * by encrypting the encryption counter with SK_ENC", one 16-byte block. This is the bare block
+   * permutation, not a mode of operation over data.
+   */
+  private static byte[] aesBlock(byte[] key, byte[] block) {
+    if (block.length != 16) {
+      throw new IllegalArgumentException("AES block must be 16 bytes");
     }
+    BlockCipher engine = AESEngine.newInstance();
+    engine.init(true, new KeyParameter(key));
+    byte[] out = new byte[16];
+    engine.processBlock(block, 0, out, 0);
+    return out;
   }
 
+  /**
+   * AES-CBC without padding over block-aligned, ISO-padded SM data. SP 800-73-5 Part 2 Section
+   * 4.2.2 gives every command and response a fresh IV derived from the encryption counter.
+   */
   private static byte[] aesCbc(boolean encrypt, byte[] key, byte[] iv, byte[] input) {
-    try {
-      Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
-      cipher.init(
-          encrypt ? Cipher.ENCRYPT_MODE : Cipher.DECRYPT_MODE,
-          new SecretKeySpec(key, "AES"),
-          new IvParameterSpec(iv));
-      return cipher.doFinal(input);
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
+    if (input.length % 16 != 0) {
+      throw new IllegalArgumentException("CBC input must be a multiple of the AES block size");
     }
+    BlockCipher cbc = CBCBlockCipher.newInstance(AESEngine.newInstance());
+    cbc.init(encrypt, new ParametersWithIV(new KeyParameter(key), iv));
+    byte[] out = new byte[input.length];
+    for (int offset = 0; offset < input.length; offset += 16) {
+      cbc.processBlock(input, offset, out, offset);
+    }
+    return out;
   }
 
   private static byte[] isoPad(byte[] input) {
@@ -717,8 +731,84 @@ final class VciSupport {
     return tlv == null ? null : new int[] {tlv.tagOffset, tlv.valueOffset, tlv.length};
   }
 
-  static byte[] issuerIdFromPublicKey(PublicKey signerPublicKey) {
-    // issuer-id = SHA-256(SubjectPublicKeyInfo)[0:8]
-    return Arrays.copyOf(sha256(signerPublicKey.getEncoded()), 8);
+  /**
+   * Returns the CVC Issuer Identification Number for a content signing certificate.
+   *
+   * <p>SP 800-73-5 Part 2 Table 19, tag 0x42: "The leftmost 8 bytes of the subjectKeyIdentifier in
+   * the content signing certificate needed to verify the signature on C_ICC".
+   *
+   * @throws IllegalArgumentException if the certificate has no subjectKeyIdentifier of at least 8
+   *     bytes
+   */
+  static byte[] issuerIdFromCertificate(X509Certificate signerCertificate) {
+    byte[] extension = signerCertificate.getExtensionValue(Extension.subjectKeyIdentifier.getId());
+    if (extension == null) {
+      throw new IllegalArgumentException(
+          "VCI signer certificate has no subjectKeyIdentifier (SP 800-73-5 Part 2 Table 19)");
+    }
+    byte[] keyIdentifier =
+        SubjectKeyIdentifier.getInstance(ASN1OctetString.getInstance(extension).getOctets())
+            .getKeyIdentifier();
+    if (keyIdentifier.length < 8) {
+      throw new IllegalArgumentException(
+          "VCI signer subjectKeyIdentifier is shorter than the 8-byte CVC IIN");
+    }
+    return Arrays.copyOf(keyIdentifier, 8);
+  }
+
+  /**
+   * Derives the subjectKeyIdentifier the VCI tool places in a signer certificate it generates: the
+   * leftmost 160 bits of SHA-256 over the DER SubjectPublicKeyInfo.
+   *
+   * <p>RFC 5280 Section 4.2.1.2: "For CA certificates, subject key identifiers SHOULD be derived
+   * from the public key or a method that generates unique values." and "Other methods of generating
+   * unique numbers are also acceptable." The leftmost 8 bytes, which become the CVC IIN, equal
+   * {@code SHA-256(SPKI)[0:8]}, the IIN derivation of the .NET middleware's CVC issuer.
+   */
+  static byte[] subjectKeyIdentifierFor(PublicKey signerPublicKey) {
+    return Arrays.copyOf(sha256(signerPublicKey.getEncoded()), 20);
+  }
+
+  /** Returns the 7F49/06 named-curve OID content SP 800-73-5 Part 2 Table 19 assigns the suite. */
+  static byte[] curveOid(byte suite) {
+    if (isCs2(suite)) {
+      return CURVE_OID_P256.clone();
+    }
+    if (isCs7(suite)) {
+      return CURVE_OID_P384.clone();
+    }
+    throw new IllegalArgumentException(
+        "Unsupported cipher suite 0x" + Integer.toHexString(suite & 0xFF));
+  }
+
+  /**
+   * Applies the host checks SP 800-73-5 Part 2 Table 15 places on the card's OPACITY response
+   * before key derivation.
+   *
+   * <p>H4: "Check that CB_ICC is 0x00 ... Return an authentication error if check fails." H5:
+   * "Verify that the domain parameters of the subject public key in C_ICC are the same as the
+   * domain parameters for Q_eH by checking the Algorithm OID".
+   *
+   * @throws IllegalArgumentException if CB_ICC is not 0x00, or the C_ICC 7F49 Algorithm OID or
+   *     public point does not match the suite the host used for Q_eH
+   */
+  static void checkCardResponse(byte cbIcc, byte[] cvc, byte suite) {
+    if (cbIcc != 0x00) {
+      throw new IllegalArgumentException(
+          String.format("CB_ICC is 0x%02X, not 0x00 (Table 15 H4)", cbIcc & 0xFF));
+    }
+    int[] outer = locateTlv(cvc, 0, TAG_CVC);
+    int[] keyTemplate = outer == null ? null : locateTlv(cvc, outer[1], TAG_CVC_PUBLIC_KEY);
+    int[] oid = keyTemplate == null ? null : locateTlv(cvc, keyTemplate[1], TAG_CVC_PUBLIC_KEY_OID);
+    int[] point = keyTemplate == null ? null : locateTlv(cvc, keyTemplate[1], TAG_CVC_PUBLIC_POINT);
+    if (oid == null || point == null) {
+      throw new IllegalArgumentException("C_ICC lacks the 7F49 Algorithm OID or public point");
+    }
+    if (!Arrays.equals(Arrays.copyOfRange(cvc, oid[1], oid[1] + oid[2]), curveOid(suite))
+        || point[2] != 1 + 2 * coordLength(suite)) {
+      throw new IllegalArgumentException(
+          String.format(
+              "C_ICC public key domain does not match suite 0x%02X (Table 15 H5)", suite & 0xFF));
+    }
   }
 }

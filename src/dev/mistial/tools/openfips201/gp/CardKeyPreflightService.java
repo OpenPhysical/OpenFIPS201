@@ -27,18 +27,26 @@ public final class CardKeyPreflightService {
     this.issuerKeys = issuerKeys;
   }
 
+  /**
+   * Validates a rotation without mutating the card. The KDD is always read from the card; a
+   * supplied {@link Request#kdd} is only an expectation and a mismatch is refused before any
+   * EXTERNAL AUTHENTICATE.
+   */
   public Result preflight(Request request) throws Exception {
-    if (request.current == null) {
-      throw new IllegalArgumentException("current SCP keys are required");
-    }
-    if (!request.allowSameVersion
-        && request.targetKeys == null
-        && request.profile != null
-        && request.current.keyVersion == request.profile.cardKeys.newKeyVersion) {
-      throw new IllegalArgumentException(
-          "Refusing same-version GP key rotation; choose a different target key version");
-    }
-    byte[] kdd = request.kdd == null ? kddService.readKdd(request.target).kdd : request.kdd.clone();
+    requireRotationArguments(request);
+    byte[] kdd =
+        CardDiversificationDataService.requireExpectedKdd(
+            kddService.readKdd(request.target).kdd, request.kdd);
+    return preflightWithCardKdd(request, kdd);
+  }
+
+  /**
+   * Preflight for a caller in this package that has already read {@code cardKdd} from the card and
+   * checked {@link Request#kdd} against it.
+   */
+  Result preflightWithCardKdd(Request request, byte[] cardKdd) throws Exception {
+    requireRotationArguments(request);
+    byte[] kdd = cardKdd.clone();
     DerivedScpKeys target = request.targetKeys;
     if (target == null) {
       if (request.profile == null) {
@@ -73,7 +81,21 @@ public final class CardKeyPreflightService {
         authenticated,
         target,
         rollbackCommand(request, kdd, authenticatedVersion),
-        request.stockScpKey != null);
+        request.stockScpKey != null || request.stockScpKeySupplied);
+  }
+
+  private static void requireRotationArguments(Request request) {
+    if (request.current == null) {
+      throw new IllegalArgumentException("current SCP keys are required");
+    }
+    int targetVersion =
+        request.targetKeys != null
+            ? request.targetKeys.config.keyVersion
+            : request.profile != null ? request.profile.cardKeys.newKeyVersion : -1;
+    if (!request.allowSameVersion && request.current.keyVersion == targetVersion) {
+      throw new IllegalArgumentException(
+          "Refusing same-version GP key rotation; choose a different target key version");
+    }
   }
 
   static String rollbackCommand(Request request, byte[] kdd, int authenticatedVersion) {
@@ -103,6 +125,10 @@ public final class CardKeyPreflightService {
     public byte[] kdd;
     public DerivedScpKeys targetKeys;
     public String stockScpKey;
+
+    /** The stock key was supplied by the operator rather than resolved from the profile. */
+    public boolean stockScpKeySupplied;
+
     public boolean allowSameVersion;
   }
 

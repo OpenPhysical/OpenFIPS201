@@ -47,7 +47,7 @@ class TLVWriterBoundaryTest {
     TLVWriter writer = writer();
 
     writer.init(output, (short) 0, (short) 3, PIV.CONST_TAG_DATA);
-    writer.writeNull((short) Byte.toUnsignedInt(PIV.CONST_TAG_AUTH_CHALLENGE));
+    writer.write(PIV.CONST_TAG_AUTH_CHALLENGE, new byte[0], (short) 0, (short) 0);
 
     assertEquals(4, writer.finish());
     assertArrayEquals(new byte[] {0x53, 0x02, (byte) 0x81, 0x00, 0x00}, output);

@@ -20,7 +20,6 @@ import dev.mistial.tools.openfips201.gp.CardKeyDerivationService;
 import dev.mistial.tools.openfips201.gp.CardKeyPreflightService;
 import dev.mistial.tools.openfips201.gp.CardKeyRotationService;
 import dev.mistial.tools.openfips201.gp.DerivedScpKeys;
-import dev.mistial.tools.openfips201.producer.BatchCreateService;
 import dev.mistial.tools.openfips201.producer.ProducerPaths;
 import dev.mistial.tools.openfips201.profiles.ProfileLoader;
 import java.io.BufferedReader;
@@ -56,20 +55,56 @@ class OpenFIPS201UnifiedToolTest {
     assertTrue(help.contains("card"));
     assertTrue(help.contains("Discover available PC/SC smart-card readers."));
     assertTrue(help.contains("Install the OpenFIPS201 CAP on a GlobalPlatform card."));
-    assertTrue(help.contains("Prepare issuer cardstock from an issuer profile."));
+    assertTrue(help.contains("deprecated; use 'card produce'"));
+    assertTrue(help.contains("sam"));
+    assertTrue(help.contains("ledger"));
+    assertTrue(help.contains("root"));
+    assertTrue(help.contains("station"));
+    assertTrue(help.contains("Root station: allocation registry"), help);
   }
 
   @Test
-  void cardstockHelpExposesPkcs11Options() {
+  void cardstockPrepareIsAnAliasRequiringTheSam() {
     CommandLine commandLine = new CommandLine(new OpenFips201Tool());
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     commandLine.setOut(new PrintWriter(out, true));
 
     assertEquals(0, commandLine.execute("cardstock", "prepare", "--help"));
     String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
-    assertTrue(help.contains("--pkcs11-module"));
-    assertTrue(help.contains("--pkcs11-key-alias"));
-    assertTrue(help.contains("--signer"));
+    assertTrue(help.contains("--sam"));
+    assertTrue(help.contains("--producer"));
+    assertTrue(help.contains("--stock-scp-key-file"));
+    assertTrue(!help.contains("--signer"), "there is no host signer to choose");
+
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+    CommandLine missingSam = new CommandLine(new OpenFips201Tool());
+    missingSam.setErr(new PrintWriter(err, true));
+    assertNotEquals(
+        0,
+        missingSam.execute(
+            "cardstock", "prepare", "--producer", "p", "--batch", "b", "--target", "zmq:x"));
+    assertTrue(new String(err.toByteArray(), StandardCharsets.UTF_8).contains("--sam"));
+  }
+
+  @Test
+  void samLedgerAndRootCommandsExposeTheirOptions() {
+    String[][] commands = {
+      {"sam", "personalize", "--help"},
+      {"sam", "status", "--help"},
+      {"sam", "top-up", "--help"},
+      {"root", "sign-top-up", "--help"},
+      {"ledger", "verify", "--help"},
+      {"ledger", "reconcile", "--help"},
+      {"batch", "show", "--help"}
+    };
+    for (String[] command : commands) {
+      CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      commandLine.setOut(new PrintWriter(out, true));
+      assertEquals(0, commandLine.execute(command), String.join(" ", command));
+      String help = new String(out.toByteArray(), StandardCharsets.UTF_8);
+      assertTrue(help.contains("--producer"), String.join(" ", command));
+    }
   }
 
   @Test
@@ -123,6 +158,85 @@ class OpenFIPS201UnifiedToolTest {
     incomplete.scpEncKey = KEY_A;
     incomplete.scpMacKey = KEY_B;
     assertThrows(IllegalArgumentException.class, incomplete::scp);
+  }
+
+  @Test
+  void literalScpKeysAreRefusedForPcscTargetsOnly() {
+    ProvisionCommand physical = new ProvisionCommand();
+    physical.target = "pcsc:Issuer Reader";
+    physical.scpKey = KEY_A;
+    IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, physical::scp);
+    assertTrue(failure.getMessage().contains("secrets on argv are refused"));
+    assertTrue(failure.getMessage().contains("--scp-key-env"));
+    assertTrue(!failure.getMessage().contains(KEY_A));
+
+    ProvisionCommand emulator = new ProvisionCommand();
+    emulator.target = "zmq:tcp://127.0.0.1:5555";
+    emulator.scpKey = KEY_A;
+    assertArrayEquals(HexUtil.parse(KEY_A), emulator.scp().encKey);
+  }
+
+  @Test
+  void scpKeyFileMustBeOwnerOnly(@TempDir Path tempDir) throws Exception {
+    org.junit.jupiter.api.Assumptions.assumeTrue(
+        dev.mistial.tools.openfips201.common.SecureFiles.isPosix(tempDir));
+    Path keyFile = tempDir.resolve("scp.key");
+    Files.write(keyFile, (KEY_B + "\n").getBytes(StandardCharsets.UTF_8));
+    Files.setPosixFilePermissions(
+        keyFile, java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"));
+    ProvisionCommand provision = new ProvisionCommand();
+    provision.target = "pcsc:Issuer Reader";
+    provision.scpKeyFile = keyFile.toString();
+    assertThrows(RuntimeException.class, provision::scp);
+
+    Files.setPosixFilePermissions(
+        keyFile, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+    assertArrayEquals(HexUtil.parse(KEY_B), provision.scp().macKey);
+  }
+
+  @Test
+  void cardProduceRefusesLiteralStockKeyForPcscWithoutEchoingIt() {
+    CommandLine commandLine = new CommandLine(new OpenFips201Tool());
+    ByteArrayOutputStream err = new ByteArrayOutputStream();
+    commandLine.setErr(new PrintWriter(err, true));
+    commandLine.setExecutionExceptionHandler(
+        (exception, parsed, result) -> {
+          parsed.getErr().println("Error: " + OpenFips201Tool.errorMessage(exception));
+          return 1;
+        });
+
+    int exit =
+        commandLine.execute(
+            "card",
+            "produce",
+            "--producer",
+            "p",
+            "--batch",
+            "b",
+            "--target",
+            "pcsc:Issuer Reader",
+            "--sam",
+            "pcsc:SAM Reader",
+            "--stock-scp-key",
+            KEY_C,
+            "--yes");
+
+    String text = new String(err.toByteArray(), StandardCharsets.UTF_8);
+    assertNotEquals(0, exit);
+    assertTrue(text.contains("secrets on argv are refused"), text);
+    assertTrue(text.contains("--stock-scp-key-file"), text);
+    assertTrue(!text.contains(KEY_C), text);
+  }
+
+  @Test
+  void errorMessageRedactsLongHexRuns() {
+    Exception failure =
+        new IllegalStateException(
+            "outer", new IllegalArgumentException("bad key " + KEY_A + KEY_B + " at 9000"));
+
+    String message = OpenFips201Tool.errorMessage(failure);
+
+    assertEquals("outer: bad key <redacted> at 9000", message);
   }
 
   @Test
@@ -236,18 +350,14 @@ class OpenFIPS201UnifiedToolTest {
   }
 
   @Test
-  void interactiveDryRunBuildsCardstockCommand() throws Exception {
-    Path profile = Files.createTempFile("openfips201-profile", ".json");
-    Files.write(
-        profile,
-        ("{"
-                + "\"name\":\"emulator-dev\","
-                + "\"stockScp\":{},"
-                + "\"cardKeys\":{},"
-                + "\"pkcs11\":{}"
-                + "}")
-            .getBytes(StandardCharsets.UTF_8));
-    String input = profile + "\n" + "zmq\n" + "tcp://127.0.0.1:35963\n" + "ephemeral\n";
+  void interactiveDryRunBuildsSamBackedProduceCommand() throws Exception {
+    String input =
+        "bigcorp_01\n"
+            + "batch_001\n"
+            + "zmq\n"
+            + "tcp://127.0.0.1:35963\n"
+            + "zmq\n"
+            + "tcp://127.0.0.1:35964\n";
     ByteArrayOutputStream out = new ByteArrayOutputStream();
 
     int exit =
@@ -259,10 +369,25 @@ class OpenFIPS201UnifiedToolTest {
 
     assertEquals(0, exit);
     String text = new String(out.toByteArray(), StandardCharsets.UTF_8);
-    assertTrue(text.contains("openfips201 cardstock prepare"));
-    assertTrue(text.contains("--profile " + profile));
+    assertTrue(text.contains("openfips201 card produce"), text);
+    assertTrue(text.contains("--producer bigcorp_01"));
     assertTrue(text.contains("--target zmq:tcp://127.0.0.1:35963"));
-    assertTrue(text.contains("--signer ephemeral"));
+    assertTrue(text.contains("--sam zmq:tcp://127.0.0.1:35964"));
+    assertTrue(!text.contains("ephemeral"), "no ephemeral signer exists");
+  }
+
+  @Test
+  void interactivePhysicalCardRequiresConfirmation() throws Exception {
+    String input = "p\nb\npcsc\nCard Reader\npcsc\nSAM Reader\nno\n";
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    int exit =
+        new OpenFips201Tool.Interactive()
+            .run(
+                new BufferedReader(new StringReader(input)),
+                new PrintStream(out, true, StandardCharsets.UTF_8.name()),
+                true);
+    assertEquals(1, exit);
+    assertTrue(new String(out.toByteArray(), StandardCharsets.UTF_8).contains("Cancelled."));
   }
 
   @Test
@@ -297,46 +422,6 @@ class OpenFIPS201UnifiedToolTest {
     assertEquals(first.macKcv, second.macKcv);
     assertEquals(first.dekKcv, second.dekKcv);
     assertNotEquals(first.encKcv, different.encKcv);
-  }
-
-  @Test
-  void batchCreateWritesMetadataAndCsvWithoutRawStockKey(@TempDir Path tempDir) throws Exception {
-    String previous = System.getProperty("openfips201.home");
-    System.setProperty("openfips201.home", tempDir.toString());
-    try {
-      Path producer = ProducerPaths.producer("bigcorp_01");
-      Files.createDirectories(producer);
-      Files.write(
-          producer.resolve("producer.json"),
-          "{\"name\":\"bigcorp_01\"}".getBytes(StandardCharsets.UTF_8));
-
-      BatchCreateService.Result result = new BatchCreateService().create("bigcorp_01", "batch_001");
-
-      String metadata =
-          new String(
-              Files.readAllBytes(result.directory.resolve("batch.json")), StandardCharsets.UTF_8);
-      String csv =
-          new String(
-              Files.readAllBytes(result.directory.resolve("receipts.csv")), StandardCharsets.UTF_8);
-      assertTrue(metadata.contains("\"stockScpKcv\""));
-      assertTrue(metadata.contains("\"stockScpKeyVersion\": 1"));
-      assertTrue(metadata.contains("\"receiptsCsv\""));
-      String expectedHeader =
-          "timestamp,producer,batch,target,status,cplc,kdd,new_key_version,enc_kcv,mac_kcv,dek_kcv,"
-              + "root_subject,instance_id,f9_subject,f9_serial_hex,f9_spki_sha256,f9_cert_sha256,"
-              + "proof_slot,proof_key_deleted,proof_issuer_matched\n";
-      assertEquals(expectedHeader, csv);
-      assertTrue(csv.contains("instance_id"));
-      assertTrue(csv.contains("proof_issuer_matched"));
-      assertTrue(result.stockScpKey.matches("[0-9A-F]{32}"));
-      assertTrue(!metadata.contains(result.stockScpKey));
-    } finally {
-      if (previous == null) {
-        System.clearProperty("openfips201.home");
-      } else {
-        System.setProperty("openfips201.home", previous);
-      }
-    }
   }
 
   @Test

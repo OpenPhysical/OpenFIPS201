@@ -15,6 +15,12 @@ import javacard.framework.PIN;
 final class PIVPinCommandHandler {
   private static final byte ZERO = (byte) 0;
   private static final byte PIN_PADDING_BYTE = (byte) 0xFF;
+
+  // SP 800-73-5 Part 2 Sections 3.2.2 and 3.2.3 fix Lc at '10' for CHANGE REFERENCE DATA and RESET
+  // RETRY COUNTER: two eight-byte fields for the PIN, PUK and new reference data. Configured PIN
+  // length limits constrain the significant value before 'FF' padding, never the field width.
+  private static final byte LENGTH_REFERENCE_FIELD = Config.LIMIT_PIN_MAX_LENGTH;
+
   private static final byte ID_CVM_GLOBAL_PIN = PIV.ID_CVM_GLOBAL_PIN;
   private static final byte ID_CVM_LOCAL_PIN = PIV.ID_CVM_LOCAL_PIN;
   private static final byte ID_CVM_PUK = PIV.ID_CVM_PUK;
@@ -94,9 +100,7 @@ final class PIVPinCommandHandler {
     // comparison shall not be made, and the security status and the retry counter of the key
     // reference shall remain unchanged.
     byte intermediateRetries = config.getIntermediatePINRetries();
-    short usableRetries =
-        usableRetries(pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
-    if (usableRetries <= (short) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
+    requireUsableRetries(pin, intermediateRetries);
 
     //
     // EXECUTION STEPS
@@ -104,11 +108,7 @@ final class PIVPinCommandHandler {
 
     // Verify the PIN
     if (!pin.check(buffer, offset, (byte) length)) {
-      short remaining =
-          usableRetries(pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
-
-      // Return the number of retries remaining
-      ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
+      throwRetriesRemaining(pin, intermediateRetries);
     }
 
     // Verified, set the PIN ALWAYS flag
@@ -144,29 +144,95 @@ final class PIVPinCommandHandler {
     requireEnabledPinReference(id);
     requirePinInterface();
 
-    // If P1='00', and Lc and the command data field are absent, the command can be used to retrieve
-    // the number of further retries allowed ('63 CX'), or to check whether verification is not
-    // needed ('90 00').
-
-    // SP 800-73-5 Part 2 Section 3.2.1 applies the contactless intermediate retry
-    // limit to every VERIFY form, including an empty status request.
-    short remaining =
-        usableRetries(
-            pin.getTriesRemaining(), config.getIntermediatePINRetries(), cspPIV.getIsContactless());
-    if (remaining <= (short) 0) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
+    // SP 800-73-5 Part 2 Section 3.2.1: "If P1='00' and Lc and the command data field are absent,
+    // the command CAN be used to retrieve the number of further retries allowed ('63 CX') or to
+    // check whether verification is not needed ('90 00')." The contactless intermediate-retry
+    // '69 83' rule applies when "Lc and the command data field are present", so the status form
+    // reports the retries usable on this interface (63C0 at the reserve) and returns '69 83' only
+    // for a retry counter of zero.
+    if (pin.getTriesRemaining() == ZERO) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
 
     // If we are not validated
     if (!pin.isValidated()) {
-      // Return the number of retries remaining
-      ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
+      throwRetriesRemaining(pin, config.getIntermediatePINRetries());
     }
 
     // If we got this far we are authenticated, so just return (9000)
   }
 
+  /**
+   * Returns the retries usable on the current interface. Over contactless, SP 800-73-5 Part 2
+   * Section 3.2.1 reserves the issuer-specified intermediate retry value for the contact interface.
+   * The result is never negative.
+   */
   static short usableRetries(byte triesRemaining, byte intermediateRetries, boolean contactless) {
     short remaining = (short) (triesRemaining & 0xFF);
-    return contactless ? (short) (remaining - (short) (intermediateRetries & 0xFF)) : remaining;
+    if (contactless) remaining -= (short) (intermediateRetries & 0xFF);
+    return remaining < (short) 0 ? (short) 0 : remaining;
+  }
+
+  private short usableRetries(PIN pin, byte intermediateRetries) {
+    return usableRetries(pin.getTriesRemaining(), intermediateRetries, cspPIV.getIsContactless());
+  }
+
+  /**
+   * Throws '69 83' when the reference is blocked, or over contactless when its retry counter is at
+   * or below the intermediate retry value. SP 800-73-5 Part 2 Sections 3.2.1, 3.2.2 and 3.2.3 apply
+   * this before any comparison, leaving the security status and retry counter unchanged.
+   */
+  private void requireUsableRetries(PIN pin, byte intermediateRetries) {
+    if (usableRetries(pin, intermediateRetries) <= (short) 0) {
+      ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
+    }
+  }
+
+  /** Throws '63 CX' with the retries usable on the current interface after a failed comparison. */
+  private void throwRetriesRemaining(PIN pin, byte intermediateRetries) {
+    ISOException.throwIt((short) (SW_RETRIES_REMAINING | usableRetries(pin, intermediateRetries)));
+  }
+
+  /**
+   * Replaces reference data after a successful comparison against {@code authenticator}.
+   *
+   * <p>PIN history is evaluated inside {@link PIVSecurityProvider#updatePIN} after the comparison,
+   * so a history match is never reported to a caller that has not proven the current PIN or PUK.
+   * When history or the platform rejects the update, the reference data is unchanged and both the
+   * retry counter and the security status of the authenticator return to their values before the
+   * comparison.
+   *
+   * <p>A successful comparison resets the retry counter to its maximum. The counter is returned to
+   * {@code triesBefore} by presenting, once per lost decrement, the authentication data at {@code
+   * authOffset} with its first byte inverted; that value differs from the reference data that just
+   * matched, so each presentation fails and decrements the counter by one. The authentication data
+   * is restored afterwards. JC 3.0.5 API {@code OwnerPIN.check}: "Even if a transaction is in
+   * progress, update of internal state - the try counter, the validated flag, and the blocking
+   * state, shall not participate in the transaction." The restore is therefore not atomic: a tear
+   * part way through leaves the counter between {@code triesBefore} and the maximum, which only
+   * benefits a caller that has already presented the correct reference data.
+   */
+  private void commitReferenceData(
+      byte id,
+      PIN authenticator,
+      boolean wasValidated,
+      byte triesBefore,
+      byte[] buffer,
+      short authOffset,
+      short offset) {
+    try {
+      cspPIV.updatePIN(
+          id, buffer, offset, LENGTH_REFERENCE_FIELD, config.readValue(Config.CONFIG_PIN_HISTORY));
+    } catch (ISOException e) {
+      byte excess = (byte) (authenticator.getTriesRemaining() - triesBefore);
+      if (excess > (byte) 0) {
+        buffer[authOffset] = (byte) ~buffer[authOffset];
+        for (; excess > (byte) 0; excess--) {
+          authenticator.check(buffer, authOffset, LENGTH_REFERENCE_FIELD);
+        }
+        buffer[authOffset] = (byte) ~buffer[authOffset];
+      }
+      if (!wasValidated) authenticator.reset();
+      ISOException.throwIt(e.getReason());
+    }
   }
 
   /**
@@ -241,42 +307,31 @@ final class PIVPinCommandHandler {
    * command using Key Reference 0x98 for the pairing code).
    */
   private void verifyPairingCode(byte[] buffer, short offset, short length) {
-    if (length != (short) 8) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    for (short i = ZERO; i < (short) 8; i++) {
-      byte value = buffer[(short) (offset + i)];
-      if (value < (byte) 0x30 || value > (byte) 0x39) {
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      }
+    if (length != PIVDataCommandHandler.PAIRING_CODE_LENGTH
+        || !PIVDataCommandHandler.isDecimalDigits(buffer, offset, length)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // Read the Pairing Code Reference Data Container (Tag 0x5FC123) defined in
     // SP 800-73-5 Part 1 Section 3.3.8 / Table 44.
-    scratch[ZERO] = (byte) 0x5F;
-    scratch[(short) 1] = (byte) 0xC1;
-    scratch[(short) 2] = (byte) 0x23;
-    PIVDataObject object = dataStore.find(scratch, ZERO, (short) 3);
-    if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-
-    // The container data is BER-TLV structured with Tag 0x53 (Part 1 Section 3.3.8 Table 44)
-    if (object.getLength() != (short) 14 || object.content[ZERO] != PIV.CONST_TAG_DATA) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    }
-
-    // Inside tag 0x53, the pairing code value is carried under tag 0x99 with length 0x08
-    short contentLength = TLVReader.getLength(object.content, ZERO);
-    short contentOffset = TLVReader.getDataOffset(object.content, ZERO);
-    if (contentLength != (short) 12
-        || object.content[contentOffset] != (byte) 0x99
-        || object.content[(short) (contentOffset + 1)] != (byte) 0x08
-        || object.content[(short) (contentOffset + 10)] != (byte) 0xFE
-        || object.content[(short) (contentOffset + 11)] != (byte) 0x00) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    // SP 800-73-5 Part 2 Section 3.2.1: "If any key reference value is specified that CANNOT be
+    // verified by the PIV Card Application, then the PIV Card Application SHALL return the status
+    // word '6A 88'." Absent or malformed reference data leaves key reference '98' unverifiable.
+    PIVDataObject object = dataStore.find(PIV.ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) 3);
+    if (object == null
+        || !object.isInitialised()
+        || !PIVDataCommandHandler.isValidPairingCodeContainer(object)) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
 
     // SP 800-73-5 Part 2 / SP 800-85A-4 AS05.16A-R4 require 63 00 for a
     // well-formed but non-matching pairing code. Pairing has no retry counter.
     if (!PIVSecurityProvider.arrayEqualsConstantTime(
-        object.content, (short) (contentOffset + 2), buffer, offset, (short) 8)) {
+        object.content,
+        PIVDataCommandHandler.PAIRING_CODE_OFFSET,
+        buffer,
+        offset,
+        PIVDataCommandHandler.PAIRING_CODE_LENGTH)) {
       // SP 800-73-5 Part 2 Section 3.2.1.3 requires a 63 00 pairing failure to set the
       // pairing-code security status to FALSE. The secure-messaging session remains established.
       secureMessaging.resetPairingVerified();
@@ -339,50 +394,18 @@ final class PIVPinCommandHandler {
     // or the VCI, then the card command shall fail. In each case, the security status and the
     // retry counter of the key reference shall remain unchanged.
 
-    // NOTE: This is handled in the switch statement and is configurable at compile-time
     byte intermediateRetries;
     boolean puk = false;
 
     switch (id) {
       case ID_CVM_GLOBAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_GLOBAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-        if (!owner.isGlobalPinAdvertised()) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-
-        // Check whether we are allowed to operate over contactless if applicable
-        if (cspPIV.getIsContactless()
-            && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)
-                || !owner.isVciSatisfied())) {
-          // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
-          // key references 00/80 only over VCI.
-          ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-        }
-
-        // NOTE: This will only work if the 'CVM Management' applet privilege has been set
-        intermediateRetries = config.getIntermediatePINRetries();
-        break;
-
       case ID_CVM_LOCAL_PIN:
-        // Make sure CONFIG_PIN_ENABLE_LOCAL is set
-        if (!config.readFlag(Config.CONFIG_PIN_ENABLE_LOCAL)) {
-          ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-        }
-
-        // Check whether we are allowed to operate over contactless if applicable
-        if (cspPIV.getIsContactless()
-            && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && (!config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)
-                || !owner.isVciSatisfied())) {
-          // SP 800-73-5 Part 2 Table 2 permits contactless CHANGE REFERENCE DATA for
-          // key references 00/80 only over VCI.
-          ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-        }
-
+        // Key references '00' and '80' share the VERIFY enablement rule and the Table 2 rule that
+        // permits them over contactless only through the VCI. A Global PIN change additionally
+        // requires the platform CVM Management privilege; PIVSecurityProvider.updatePIN reports
+        // its absence.
+        requireEnabledPinReference(id);
+        requirePinInterface();
         intermediateRetries = config.getIntermediatePINRetries();
         break;
 
@@ -392,10 +415,10 @@ final class PIVPinCommandHandler {
           ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
         }
 
-        // Check whether we are allowed to operate over contactless if applicable
-        if (cspPIV.getIsContactless()
-            && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-            && !config.readFlag(Config.CONFIG_PUK_PERMIT_CONTACTLESS)) {
+        // SP 800-73-5 Part 2 Section 3.2.2: "If key reference '81' is specified and the command is
+        // not submitted over the contact interface, then the card command SHALL fail." The
+        // contactless PUK configuration flag does not relax this.
+        if (cspPIV.getIsContactless()) {
           ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
         }
 
@@ -417,15 +440,7 @@ final class PIVPinCommandHandler {
     // intermediate retry value (see Section 3.2.1),
     // then the reference data associated with the key reference shall not be changed and the PIV
     // Card Application shall return the status word '69 83'.
-    if (cspPIV.getIsContactless()) {
-      if (pin.getTriesRemaining() <= intermediateRetries) {
-        ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
-      }
-    } else {
-      if (pin.getTriesRemaining() <= ZERO) {
-        ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
-      }
-    }
+    requireUsableRetries(pin, intermediateRetries);
 
     // If the authentication data in the command data field does not match the current value of the
     // reference data or if either the authentication data or the new reference data in the command
@@ -457,47 +472,35 @@ final class PIVPinCommandHandler {
     // criteria in Section 2.4.3, then the PIV Card Application shall return the status word '6A
     // 80'.
 
-    // SP 800-73-5 fixes both command fields at eight bytes. Configuration limits the significant
-    // PIN value before FF padding; it never changes the command encoding.
-    byte pinLength = Config.LIMIT_PIN_MAX_LENGTH;
-    if (length != (short) (pinLength + pinLength)) {
+    if (length != (short) (LENGTH_REFERENCE_FIELD + LENGTH_REFERENCE_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // SP 800-73-5 Part 2 Section 3.2.2 requires a 6A80 format/policy failure for the new
     // reference data to leave both security status and retry state unchanged. Validate the new
     // PIN before pin.check(), because a successful OwnerPIN check changes both states.
-    short newReferenceOffset = (short) (offset + pinLength);
+    short newReferenceOffset = (short) (offset + LENGTH_REFERENCE_FIELD);
     if (!puk) {
-      if (!verifyPinFormat(buffer, newReferenceOffset, pinLength)) {
+      if (!verifyPinFormat(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
-      if (!verifyPinRules(buffer, newReferenceOffset, pinLength)) {
+      if (!verifyPinRules(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
     }
 
     // Verify the authentication reference data (old PIN/PUK) format
-    if (!puk && !verifyPinFormat(buffer, offset, pinLength)) {
+    if (!puk && !verifyPinFormat(buffer, offset, LENGTH_REFERENCE_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // Verify the authentication reference data (old PIN/PUK) value
-    if (!pin.check(buffer, offset, pinLength)) {
-      short remaining = pin.getTriesRemaining();
-
-      // For contactless, we reduce the retries by the difference between contact and contactless
-      if (cspPIV.getIsContactless()) {
-        remaining -= intermediateRetries;
-      }
-
-      // Return the number of retries remaining
-      ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
+    boolean wasValidated = pin.isValidated();
+    byte triesBefore = pin.getTriesRemaining();
+    if (!pin.check(buffer, offset, LENGTH_REFERENCE_FIELD)) {
+      throwRetriesRemaining(pin, intermediateRetries);
     }
-
-    // Move to the already validated new reference data.
-    offset = newReferenceOffset;
 
     //
     // EXECUTION STEPS
@@ -507,12 +510,14 @@ final class PIVPinCommandHandler {
     // TRUE and the retry counter associated with the key reference shall be set to the reset retry
     // value associated with the key reference.
 
-    // STEP 1 - Update the PIN
-    cspPIV.updatePIN(id, buffer, offset, pinLength, config.readValue(Config.CONFIG_PIN_HISTORY));
+    // STEP 1 - Update the reference data
+    commitReferenceData(id, pin, wasValidated, triesBefore, buffer, offset, newReferenceOffset);
 
-    // STEP 2 - Verify the new PIN, which will have the effect of setting it to TRUE and resetting
-    // the retry counter
-    pin.check(buffer, offset, pinLength);
+    // STEP 2 - Verify the new reference data, which sets the security status to TRUE and resets the
+    // retry counter. The update succeeded, so a mismatch is an internal failure.
+    if (!pin.check(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
+    }
 
     // STEP 3 - Set the PIN ALWAYS flag as this is now verified (if it is not the PUK)
     if (!puk) {
@@ -548,29 +553,22 @@ final class PIVPinCommandHandler {
     }
 
     // PRE-CONDITION 2 - The PUK must be enabled
+    // A disabled PUK has no reset retry counter reference data, so the command reports '6A 88'
+    // (ISO/IEC 7816-4 Table 6: "Referenced data, reference data or DO not found"), the same status
+    // word that CHANGE REFERENCE DATA returns for key reference '81' in this configuration.
     if (!config.readFlag(Config.CONFIG_PUK_ENABLED)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
 
-    // PRE-CONDITION 3 - Check if we are permitted to use this command over the contactless
-    // interface.
-    // NOTE: We must check this for both the PIN and the PUK
-    /*
-      Truth table because there are a few balls in the air here:
-      IS_CTLESS	IGNORE_ACL	PIN_PERMIT	PUK_PERMIT	RESULT
-      ----------------------------------------------------
-      FALSE		X			X			X			FALSE
-      TRUE		TRUE		X			X			FALSE
-      TRUE		FALSE		TRUE		TRUE		FALSE
-      TRUE		FALSE		TRUE		FALSE		TRUE
-      TRUE		FALSE		FALSE		TRUE		TRUE
-      TRUE		FALSE		FALSE		FALSE		TRUE
-    */
-    if (cspPIV.getIsContactless()
-        && !config.readFlag(Config.OPTION_IGNORE_CONTACTLESS_ACL)
-        && !(config.readFlag(Config.CONFIG_PIN_PERMIT_CONTACTLESS)
-            && config.readFlag(Config.CONFIG_PUK_PERMIT_CONTACTLESS))) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    // PRE-CONDITION 3 - The command is never performed over the contactless interface.
+    // SP 800-73-5 Part 2 Table 2 marks RESET RETRY COUNTER "No" for the contactless interface:
+    // "The PIV Card Application shall return the status word of '6A 81' (Function not supported)
+    // when it receives a card command on the contactless interface marked "No" in the Contactless
+    // Interface column in Table 2." Its only exception is card management meeting FIPS 201-2
+    // Section 2.9.2, which a PUK-authorized cardholder reset is not, so the contactless PIN and PUK
+    // configuration flags do not enable it.
+    if (cspPIV.getIsContactless()) {
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
     // PRE-CONDITION 4 - The supplied ID must be the Card PIN
@@ -584,13 +582,11 @@ final class PIVPinCommandHandler {
       return; // Keep compiler happy
     }
 
-    // SP 800-73 defines RESET RETRY COUNTER as two fixed eight-byte fields. Configured
-    // significant-value limits do not change the wire representation.
-    byte pinLength = Config.LIMIT_PIN_MAX_LENGTH;
-    byte pukLength = Config.LIMIT_PIN_MAX_LENGTH;
-    short expectedLength = (short) (pukLength + pinLength);
-
-    if (length != expectedLength) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    // The command dispatcher rejects any other Lc with 6A80 before this handler runs; the same
+    // status word applies to a direct call.
+    if (length != (short) (LENGTH_REFERENCE_FIELD + LENGTH_REFERENCE_FIELD)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
 
     // PRE-CONDITION 6 - The PUK must not be blocked
     // If the current value of the PUK's retry counter is zero, then the PIN's retry counter shall
@@ -602,65 +598,44 @@ final class PIVPinCommandHandler {
     }
 
     byte intermediateRetries = config.getIntermediatePUKRetries();
-    if (cspPIV.getIsContactless()) {
-      if (puk.getTriesRemaining() <= intermediateRetries)
-        ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
-    } else {
-      if (puk.getTriesRemaining() == ZERO) ISOException.throwIt(SW_AUTHENTICATION_METHOD_BLOCKED);
-    }
+    requireUsableRetries(puk, intermediateRetries);
 
-    // PRE-CONDITION 7 - Verify the PUK value
-    // If the reset retry counter authentication data (PUK) in the command data field of the command
-    // does not match reference data associated with the PUK, then the PIV Card Application shall
-    // return the status word '63 CX'.
-    if (!puk.check(buffer, offset, pukLength)) {
-
-      // Reset the PIN's security condition (see paragraph below for explanation)
-      pin.reset();
-
-      short remaining = puk.getTriesRemaining();
-
-      // For contactless, we reduce the retries by the difference between contact and contactless
-      if (cspPIV.getIsContactless()) {
-        remaining -= intermediateRetries;
-      }
-
-      // Return the number of retries remaining
-      ISOException.throwIt((short) (SW_RETRIES_REMAINING | remaining));
-    }
-
-    // Move to the start of the new PIN
-    offset += pukLength;
-
-    // PRE-CONDITION 8 - Check the format of the NEW pin value
+    // PRE-CONDITION 7 - Check the format and rules of the NEW PIN value before the PUK comparison
     // If the new reference data (PIN) in the command data field of the command does not satisfy the
     // criteria in Section 2.4.3, then the PIV Card Application shall return the status word '6A
-    // 80'.
-    if (!verifyPinFormat(buffer, offset, pinLength)) {
+    // 80'. If the PIV Card Application returns status word '6A 80', then the retry counter
+    // associated with the PIN shall not be reset, the security status of the PIN's key reference
+    // shall remain unchanged, and the PUK's retry counter shall remain unchanged.
+    // A successful OwnerPIN check resets the PUK retry counter, so these checks precede it. When
+    // the PUK is also wrong, the specification permits either '6A 80' or '63 CX'; this card
+    // returns '6A 80'.
+    short newReferenceOffset = (short) (offset + LENGTH_REFERENCE_FIELD);
+    if (!verifyPinFormat(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // Since this will be the new value, apply our PIN complexity rules
-    if (!verifyPinRules(buffer, offset, pinLength)) {
+    if (!verifyPinRules(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
+    // PRE-CONDITION 8 - Verify the PUK value
     // If the reset retry counter authentication data (PUK) in the command data field of the command
-    // does not match reference data associated with the PUK and the new reference data (PIN) in the
-    // command data field of the command does not satisfy the criteria in Section 2.4.3, then the
-    // PIV Card Application shall return either status word '6A 80' or '63 CX'. If the PIV Card
-    // Application returns status word '6A 80', then the retry counter associated with the PIN shall
-    // not be reset, the security status of the PIN's key reference shall remain unchanged, and the
-    // PUK's retry counter shall remain unchanged.11 If the PIV Card Application returns status word
-    // '63 CX', then the retry counter associated with the PIN shall not be reset, the security
-    // status of the PIN's key reference shall be set to FALSE, and the PUK's retry counter shall
-    // be decremented by one.
+    // does not match reference data associated with the PUK, then the PIV Card Application shall
+    // return the status word '63 CX'. If the PIV Card Application returns status word '63 CX', then
+    // the retry counter associated with the PIN shall not be reset, the security status of the
+    // PIN's key reference shall be set to FALSE, and the PUK's retry counter shall be decremented
+    // by one.
+    boolean pukWasValidated = puk.isValidated();
+    byte pukTriesBefore = puk.getTriesRemaining();
+    if (!puk.check(buffer, offset, LENGTH_REFERENCE_FIELD)) {
+      pin.reset();
+      throwRetriesRemaining(puk, intermediateRetries);
+    }
 
-    // NOTES:
-    // - We implicitly decrement the PUK counter if the PUK is incorrect (63CX)
-    // - Because we validate the PIN format before checking the PUK, we return WRONG DATA (6A80) in
-    // this case
-    // - If the PUK check fails, we explicitly reset the PIN's security condition
+    //
+    // EXECUTION STEPS
+    //
 
     // If the card command succeeds, then the PIN's retry counter shall be set to its reset retry
     // value. Optionally, the PUK's retry counter may be set to its initial reset retry value.
@@ -672,11 +647,12 @@ final class PIVPinCommandHandler {
     boolean wasValidated = pin.isValidated();
 
     // Update, reset and unblock the PIN.
-    cspPIV.updatePIN(id, buffer, offset, pinLength, config.readValue(Config.CONFIG_PIN_HISTORY));
+    commitReferenceData(
+        id, puk, pukWasValidated, pukTriesBefore, buffer, offset, newReferenceOffset);
 
     // SP 800-73-5 Part 2 Section 3.2.3 requires successful RESET RETRY COUNTER to
     // leave the PIN security status unchanged. OwnerPIN.update clears validation.
-    if (wasValidated && !pin.check(buffer, offset, pinLength)) {
+    if (wasValidated && !pin.check(buffer, newReferenceOffset, LENGTH_REFERENCE_FIELD)) {
       ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
   }

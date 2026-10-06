@@ -9,6 +9,7 @@ package com.makina.security.openfips201;
 
 import static com.makina.security.openfips201.PIV.*;
 
+import javacard.framework.CardRuntimeException;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.Util;
@@ -23,7 +24,6 @@ final class PIVAuthenticationCommandHandler {
   private final PIVAuthenticationContext authenticationContext;
   private final ECPointValidator ecPointValidator;
   private final byte[] scratch;
-  private final byte[] smCommand;
   private final byte[] smResponse;
   private final PIVOpacity opacity;
   // #if ATTESTATION_ENABLED
@@ -39,13 +39,11 @@ final class PIVAuthenticationCommandHandler {
       PIVAuthenticationContext authenticationContext,
       ECPointValidator ecPointValidator,
       byte[] scratch,
-      byte[] smCommand,
       byte[] smResponse,
       PIVOpacity opacity
           // #if ATTESTATION_ENABLED
           ,
-      PIVAttestation attestation,
-      byte[] attestationResponse
+      PIVAttestation attestation
       // #endif
       ) {
     this.owner = owner;
@@ -55,12 +53,11 @@ final class PIVAuthenticationCommandHandler {
     this.authenticationContext = authenticationContext;
     this.ecPointValidator = ecPointValidator;
     this.scratch = scratch;
-    this.smCommand = smCommand;
     this.smResponse = smResponse;
     this.opacity = opacity;
     // #if ATTESTATION_ENABLED
     this.attestation = attestation;
-    this.attestationResponse = attestationResponse;
+    this.attestationResponse = attestation.getResponseBuffer();
     // #endif
   }
 
@@ -76,9 +73,29 @@ final class PIVAuthenticationCommandHandler {
   }
 
   /**
+   * Abandons a failed GENERAL AUTHENTICATE: discards any pending challenge or witness, sets the
+   * security status of the referenced key to FALSE, and wipes the scratch buffer.
+   *
+   * @param keyReference The key reference (P2) of the failed command
+   */
+  private void abandonAuthentication(byte keyReference) {
+    authenticateReset();
+    cspPIV.clearAuthenticatedKey(keyReference);
+    PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+  }
+
+  /**
    * The GENERAL AUTHENTICATE card command performs a cryptographic operation, such as an
    * authentication protocol, using the data provided in the data field of the command and returns
    * the result of the cryptographic operation in the response data field.
+   *
+   * <p>SP 800-73-5 Part 2 Section 2.4.2: "An aborted or failed execution of an authentication
+   * protocol SHALL set the security status indicator associated with the credential used in the
+   * protocol to FALSE." Every failing command therefore abandons the exchange through {@link
+   * #abandonAuthentication(byte)}, so a pending challenge or witness is accepted only by the
+   * command that immediately follows its request, and an earlier authentication of the same key
+   * does not survive a failed step. A provider {@code CryptoException} is reported as {@code 6A80},
+   * the only data-field error status Section 3.2.4 defines for this command.
    *
    * @param buffer The incoming APDU buffer
    * @param offset The offset of the CDATA element
@@ -86,6 +103,20 @@ final class PIVAuthenticationCommandHandler {
    * @return The length of the return data
    */
   short generalAuthenticate(byte[] buffer, short offset, short length) throws ISOException {
+    try {
+      return processGeneralAuthenticate(buffer, offset, length);
+    } catch (CryptoException e) {
+      abandonAuthentication(buffer[ISO7816.OFFSET_P2]);
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      return ZERO; // Keep compiler happy
+    } catch (CardRuntimeException e) {
+      abandonAuthentication(buffer[ISO7816.OFFSET_P2]);
+      throw e;
+    }
+  }
+
+  private short processGeneralAuthenticate(byte[] buffer, short offset, short length)
+      throws ISOException {
 
     //
     // COMMAND CHAIN HANDLING
@@ -148,22 +179,24 @@ final class PIVAuthenticationCommandHandler {
       return ZERO; // Keep compiler happy
     }
 
-    // PRE-CONDITION 5 - The Dynamic Authentication Template tag must be present in the data
-    if (!reader.find(CONST_TAG_AUTH_TEMPLATE)) {
-      PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+    // PRE-CONDITION 5 - SP 800-73-5 Part 2 Section 3.2.4 defines the data field as the dynamic
+    // authentication template, "See Table 7", and Table 7 lists its only data objects: Witness
+    // '80', Challenge '81', Response '82' and Exponentiation '85'. The template must occupy the
+    // whole data field, and each Table 7 object may appear at most once, so that one byte string
+    // has exactly one interpretation. Anything else is "Incorrect parameter in command data field".
+    if (scratch[ZERO] != CONST_TAG_AUTH_TEMPLATE
+        || TLV.objectEnd(scratch, ZERO, length) != length) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       return ZERO; // Keep compiler happy
     }
-
-    // Move into the content of the template
-    reader.moveInto();
 
     //
     // EXECUTION STEPS
     //
 
     //
-    // STEP 1 - Traverse the TLV to determine what combination of elements exist
+    // STEP 1 - Record the offset and length of each Table 7 object. Every child value starts after
+    // the template header, so an offset of zero means the object is absent.
     //
     short challengeOffset = ZERO;
     short witnessOffset = ZERO;
@@ -175,31 +208,42 @@ final class PIVAuthenticationCommandHandler {
     short responseLength = ZERO;
     short exponentiationLength = ZERO;
 
-    // Save the offset in the TLV object
-    offset = reader.getOffset();
-
-    // Loop through all tags
-    do {
-      if (reader.match(CONST_TAG_AUTH_CHALLENGE)) {
-        challengeOffset = reader.getDataOffset();
-        challengeLength = reader.getLength();
-      } else if (reader.match(CONST_TAG_AUTH_CHALLENGE_RESPONSE)) {
-        responseOffset = reader.getDataOffset();
-        responseLength = reader.getLength();
-      } else if (reader.match(CONST_TAG_AUTH_WITNESS)) {
-        witnessOffset = reader.getDataOffset();
-        witnessLength = reader.getLength();
-      } else if (reader.match(CONST_TAG_AUTH_EXPONENTIATION)) {
-        exponentiationOffset = reader.getDataOffset();
-        exponentiationLength = reader.getLength();
-      } else {
-        // We have come across an unknown tag value. Other implementations ignore these and so shall
-        // we.
+    offset = TLV.dataOffset(scratch, ZERO, length);
+    while (offset < length) {
+      short valueOffset = TLV.dataOffset(scratch, offset, length);
+      short valueLength = TLV.readLength(scratch, offset, length);
+      switch (scratch[offset]) {
+        case CONST_TAG_AUTH_WITNESS:
+          if (witnessOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          witnessOffset = valueOffset;
+          witnessLength = valueLength;
+          break;
+        case CONST_TAG_AUTH_CHALLENGE:
+          if (challengeOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          challengeOffset = valueOffset;
+          challengeLength = valueLength;
+          break;
+        case CONST_TAG_AUTH_CHALLENGE_RESPONSE:
+          if (responseOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          responseOffset = valueOffset;
+          responseLength = valueLength;
+          break;
+        case CONST_TAG_AUTH_EXPONENTIATION:
+          if (exponentiationOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          exponentiationOffset = valueOffset;
+          exponentiationLength = valueLength;
+          break;
+        default:
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
-    } while (reader.moveNext());
+      offset = TLV.objectEnd(scratch, offset, length);
+    }
 
-    // Restore the offset in the TLV object
-    reader.setOffset(offset);
+    // Presence of each object, for the exact combinations that select an authentication case.
+    final boolean witness = witnessOffset != ZERO;
+    final boolean challenge = challengeOffset != ZERO;
+    final boolean response = responseOffset != ZERO;
+    final boolean exponentiation = exponentiationOffset != ZERO;
 
     //
     // STEP 2 - Process the appropriate GENERAL AUTHENTICATE case
@@ -231,10 +275,13 @@ final class PIVAuthenticationCommandHandler {
     // 4) If the key type is RSA or ECC and the key has the SIGNATURE role, it is Variant B
     // 5) If the key type is RSA and the key has the KEY_ESTABLISH role, it is Variant C
     // 6) If the key type is TDEA or AES and the key has the AUTHENTICATE role, it is Variant D
-    if (challengeOffset != 0
+    // 7) No WITNESS or EXPONENTIATION is present (a WITNESS with data selects Case 5)
+    if (challenge
         && challengeLength != 0
-        && responseOffset != 0
-        && responseLength == 0) {
+        && response
+        && responseLength == 0
+        && !witness
+        && !exponentiation) {
       // Variant A - Secure Messaging
       if (isSecureMessagingAuthenticateKey(key)) {
         return generalAuthenticateCase1A((PIVKeyObjectECC) key, challengeOffset, challengeLength);
@@ -277,12 +324,11 @@ final class PIVAuthenticationCommandHandler {
     // 1) A CHALLENGE is present but empty; AND
     // 2) The key type is SYMMETRIC
     // 3) The key has the AUTHENTICATE role set; AND
-    // 4) The key attribute MUTUAL ONLY is not set
+    // 4) The key attribute MUTUAL ONLY is not set; AND
+    // 5) No other object is present
 
     // The client requests a CHALLENGE from the CARD, which returns the CHALLENGE in plaintext
-    else if (challengeOffset != 0
-        && challengeLength == 0
-        && !(witnessOffset != 0 && witnessLength == 0)) {
+    else if (challenge && challengeLength == 0 && !witness && !response && !exponentiation) {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase2((PIVKeyObjectSYM) key);
       } else {
@@ -302,8 +348,9 @@ final class PIVAuthenticationCommandHandler {
     // 2) The key type is SYMMETRIC
     // 3) The key has the AUTHENTICATE role set; AND
     // 4) The key attribute MUTUAL ONLY is not set; AND
-    // 5) A successful EXTERNAL AUTHENTICATE REQUEST has immediately preceded this command
-    else if (responseOffset != 0 && responseLength != 0) {
+    // 5) A successful EXTERNAL AUTHENTICATE REQUEST has immediately preceded this command; AND
+    // 6) No other object is present
+    else if (response && responseLength != 0 && !witness && !challenge && !exponentiation) {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase3((PIVKeyObjectSYM) key, responseOffset, responseLength);
       } else {
@@ -320,9 +367,14 @@ final class PIVAuthenticationCommandHandler {
     //
     // Pre-Conditions:
     // 1) A WITNESS is present but empty
-    // 2) The key has the AUTHENTICATE role set
+    // 2) The key has the AUTHENTICATE role set; AND
+    // 3) No RESPONSE or EXPONENTIATION is present, and any CHALLENGE is empty
     //
-    else if (witnessOffset != 0 && witnessLength == 0) {
+    else if (witness
+        && witnessLength == 0
+        && !response
+        && !exponentiation
+        && (!challenge || challengeLength == 0)) {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase4((PIVKeyObjectSYM) key);
       } else {
@@ -342,11 +394,16 @@ final class PIVAuthenticationCommandHandler {
     // 1) A WITNESS is present with data; AND
     // 2) A CHALLENGE is present with data; AND
     // 3) The key type is SYMMETRIC
-    // 4) A successful MUTUAL AUTHENTICATE REQUEST has immediately preceded this command
-    else if ((witnessOffset != 0)
-        && (witnessLength != 0)
-        && (challengeOffset != 0)
-        && (challengeLength != 0)) {
+    // 4) A successful MUTUAL AUTHENTICATE REQUEST has immediately preceded this command; AND
+    // 5) Any RESPONSE is empty and no EXPONENTIATION is present. SP 800-73-5 Part 2 Appendix A.2,
+    //    Table 23 sends this step as '7C … 80 … 81 … 82 00'; the empty Response requests the
+    //    encrypted challenge.
+    else if (witness
+        && witnessLength != 0
+        && challenge
+        && challengeLength != 0
+        && (!response || responseLength == 0)
+        && !exponentiation) {
       if (key instanceof PIVKeyObjectSYM) {
         return generalAuthenticateCase5(
             (PIVKeyObjectSYM) key, witnessOffset, witnessLength, challengeOffset, challengeLength);
@@ -364,8 +421,13 @@ final class PIVAuthenticationCommandHandler {
     // Pre-Conditions:
     // 1) An EXPONENTIATION parameter is present with data
     // 2) The key type is ECC
-    // 3) The key has the KEY_ESTABLISH role
-    else if (exponentiationOffset != 0 && (exponentiationLength != 0)) {
+    // 3) The key has the KEY_ESTABLISH role; AND
+    // 4) Any RESPONSE is empty and no WITNESS or CHALLENGE is present
+    else if (exponentiation
+        && exponentiationLength != 0
+        && (!response || responseLength == 0)
+        && !witness
+        && !challenge) {
       if (key instanceof PIVKeyObjectECC) {
         return generalAuthenticateCase6(
             (PIVKeyObjectECC) key, exponentiationOffset, exponentiationLength);
@@ -382,6 +444,25 @@ final class PIVAuthenticationCommandHandler {
 
     // Done
     return ZERO; // Keep compiler happy
+  }
+
+  /**
+   * Returns whether the identifier names an asymmetric key-pair mechanism of SP 800-78-5 Table 9
+   * (RSA '05', '06', '07'; ECC '11', '14'; secure-messaging cipher suites '27', '2E').
+   */
+  private static boolean isAsymmetricMechanism(byte mechanism) {
+    switch (mechanism) {
+      case ID_ALG_RSA_1024:
+      case ID_ALG_RSA_2048:
+      case ID_ALG_RSA_3072:
+      case ID_ALG_ECC_P256:
+      case ID_ALG_ECC_P384:
+      case ID_ALG_ECC_CS2:
+      case ID_ALG_ECC_CS7:
+        return true;
+      default:
+        return false;
+    }
   }
 
   private boolean isSecureMessagingAuthenticateKey(PIVKeyObject key) {
@@ -421,25 +502,29 @@ final class PIVAuthenticationCommandHandler {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
-    // Suite geometry from field length (Table 18).
-    final short field = key.getKeyLengthBytes(); // 32 (CS2) or 48 (CS7)
-    final short pointLen = (short) (1 + field + field); // uncompressed Q_eH
-    final short nLen = (short) (field / 2); // N_ICC
-    final short sessionKeyLen = (short) (field - 16); // AES-128 or AES-256
+    // Suite geometry (Table 18), shared with the OPACITY KDA self-test. The mechanism check above
+    // binds the key to the compiled suite, so its field length is PIVOpacity.FIELD_LENGTH.
+    final short field = PIVOpacity.FIELD_LENGTH;
+    final short pointLen = PIVOpacity.POINT_LENGTH; // uncompressed Q_eH
+    final short nLen = PIVOpacity.NONCE_LENGTH; // N_ICC
+    final short sessionKeyLen = PIVOpacity.SESSION_KEY_LENGTH; // AES-128 or AES-256
     final short xyLen = (short) (field + field); // Q_eH without leading 0x04
 
-    // Witness: CB_H(1,0x00) || ID_sH(8) || Q_eH
+    // Challenge: CB_H(1) || ID_sH(8) || Q_eH. Table 16 C2: "CB_ICC = CB_H & 'F0'", which
+    // indicates "that persistent binding has not been used in the transaction even if CB_H
+    // indicates that the client application supports it"; C3: "Return an error ('6A 80') if
+    // CB_ICC is not 0x00." The encoding of Q_eH is checked by the canonical point validator (C4).
+    final byte hostControlByte = scratch[challengeOffset];
     if (challengeLength != (short) (9 + pointLen)
-        || scratch[challengeOffset] != (byte) 0
-        || scratch[(short) (challengeOffset + 9)] != PIVCrypto.CONST_EC_POINT_UNCOMPRESSED) {
+        || (byte) (hostControlByte & (byte) 0xF0) != (byte) 0) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    final short offIdH = ZERO;
-    final short offQeh = (short) 8;
-    final short offZ = (short) (offQeh + pointLen);
-    final short offN = (short) (offZ + field);
-    final short offIdSicc = (short) (offN + nLen);
+    final short offIdH = PIVOpacity.OFFSET_ID_H;
+    final short offQeh = PIVOpacity.OFFSET_Q_EH;
+    final short offZ = PIVOpacity.OFFSET_Z;
+    final short offN = PIVOpacity.OFFSET_N;
+    final short offIdSicc = PIVOpacity.OFFSET_ID_SICC;
 
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 1), smResponse, offIdH, (short) 8);
     Util.arrayCopyNonAtomic(scratch, (short) (challengeOffset + 9), smResponse, offQeh, pointLen);
@@ -451,30 +536,15 @@ final class PIVAuthenticationCommandHandler {
     PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
 
     // C1: ID_sICC = T_8(SHA-256(C_ICC)) — always SHA-256, both suites
+    // The challenge was copied to smResponse above, so scratch holds the transient CVC copy, which
+    // fits for both suites (LENGTH_SCRATCH exceeds the CS7 CVC limit).
     short cvcLen = key.getSmCvcLength();
-    // #if VCI_CS2
     key.getSmCvc(scratch, ZERO);
     PIVCrypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
-    // #else
-    // CS7 permits SM CVCs larger than the 284-byte scratch buffer. Use the APDU work buffer for
-    // this transient copy and clear it immediately after hashing.
-    key.getSmCvc(smCommand, ZERO);
-    PIVCrypto.doSha256(smCommand, ZERO, cvcLen, smResponse, offIdSicc);
-    PIVSecurityProvider.zeroise(smCommand, ZERO, cvcLen);
-    // #endif
+    PIVSecurityProvider.zeroise(scratch, ZERO, cvcLen);
 
     // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
-    opacity.deriveSessionKeys(
-        field,
-        sessionKeyLen,
-        OPACITY_KDF_ALG_ID,
-        OPACITY_HASH_TMP,
-        offZ,
-        offN,
-        nLen,
-        offIdH,
-        offQeh,
-        offIdSicc);
+    opacity.deriveSuiteSessionKeys(hostControlByte);
     secureMessaging.setSessionKeys(scratch, ZERO, sessionKeyLen);
     PIVSecurityProvider.zeroise(scratch, ZERO, (short) (sessionKeyLen * 4));
     PIVSecurityProvider.zeroise(smResponse, offZ, field);
@@ -483,13 +553,20 @@ final class PIVAuthenticationCommandHandler {
     secureMessaging.computeConfirmationMac(scratch, ZERO, authLen, scratch, ZERO);
     secureMessaging.clearConfirmationKey();
 
-    // C11: CB_ICC || N_ICC || AuthCryptogram_ICC(16) || C_ICC
+    // C11: CB_ICC || N_ICC || AuthCryptogram_ICC(16) || C_ICC. The template length is exact so
+    // that both lengths take the shortest form (ISO/IEC 7816-4 Section 6.3 recommends "the
+    // shortest possible coding of the length field, according to DER encoding rules").
+    final short responseLength = (short) (1 + nLen + 16 + cvcLen);
     TLVWriter writer = TLVWriter.getInstance();
-    writer.init(smResponse, ZERO, LENGTH_SM_RESPONSE, CONST_TAG_AUTH_TEMPLATE);
+    writer.init(
+        smResponse,
+        ZERO,
+        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, responseLength),
+        CONST_TAG_AUTH_TEMPLATE);
     writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
-    writer.writeLength((short) (1 + nLen + 16 + cvcLen));
+    writer.writeLength(responseLength);
     short out = writer.getOffset();
-    smResponse[out++] = (byte) 0;
+    smResponse[out++] = (byte) (hostControlByte & (byte) 0xF0); // CB_ICC, 0x00 by C3
     out = Util.arrayCopyNonAtomic(smResponse, offN, smResponse, out, nLen);
     out = Util.arrayCopyNonAtomic(scratch, ZERO, smResponse, out, (short) 16);
     out = key.getSmCvc(smResponse, out);
@@ -698,46 +775,42 @@ final class PIVAuthenticationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    //
-    // IMPLEMENTATION NOTE:
-    //
-    // Since our input and output data is structured the same way, we make use of the same
-    // scratch buffer and perform the cipher in-place. This saves us from using the APDU
-    // buffer as a temporary working space and performing an extra copy.
-    //
+    // Respond with the enciphered CHALLENGE as 7C { 82 <block> }
+    return sendEncipheredBlock(
+        CONST_TAG_AUTH_CHALLENGE_RESPONSE, key, scratch, challengeOffset, challengeLength);
+  }
 
-    // Write out the response TLV, passing through the challenge length as an indicative maximum
+  /**
+   * Builds and queues the symmetric dynamic-authentication response {@code 7C { tag L E(K, in) }}
+   * in the scratch buffer. Failures propagate to {@link #generalAuthenticate}, which abandons the
+   * exchange.
+   *
+   * <p>JCAPI 3.0.5 {@code Cipher.doFinal}: "if inBuff and outBuff are the same array, then the
+   * output data area must not partially overlap the input data area such that the input data is
+   * modified before it is used". An input block held in scratch is therefore first moved to the
+   * output position and enciphered in place.
+   *
+   * @param tag The response element tag
+   * @param key The symmetric key to encipher with
+   * @param in The buffer holding the single input block
+   * @param inOffset The offset of the input block
+   * @param inLength The length of the input block, equal to the key's block length
+   * @return The length of the queued response
+   */
+  private short sendEncipheredBlock(
+      byte tag, PIVKeyObjectSYM key, byte[] in, short inOffset, short inLength) {
     TLVWriter writer = TLVWriter.getInstance();
-    writer.init(
-        scratch,
-        ZERO,
-        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, challengeLength),
-        CONST_TAG_AUTH_TEMPLATE);
-
-    // Create the RESPONSE tag
-    writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
-    writer.writeLength(challengeLength);
-
-    // Encrypt the CHALLENGE data
+    writer.init(scratch, ZERO, TLVWriter.encodedLength(tag, inLength), CONST_TAG_AUTH_TEMPLATE);
+    writer.writeTag(tag);
+    writer.writeLength(inLength);
     short offset = writer.getOffset();
-    try {
-      offset += key.encrypt(scratch, challengeOffset, challengeLength, scratch, offset);
-    } catch (ISOException e) {
-      authenticateReset();
-      throw e;
-    } catch (CryptoException e) {
-      authenticateReset();
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    if (in == scratch && inOffset != offset) {
+      Util.arrayCopyNonAtomic(scratch, inOffset, scratch, offset, inLength);
+      inOffset = offset;
     }
-
-    // Finalise the TLV object and get the entire data object length
-    writer.setOffset(offset);
+    writer.setOffset((short) (offset + key.encrypt(in, inOffset, inLength, scratch, offset)));
     short length = writer.finish();
-
-    // Set up the outgoing command chain
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
-
-    // Done, return the length of data we are sending
     return length;
   }
 
@@ -914,34 +987,19 @@ final class PIVAuthenticationCommandHandler {
     short length = key.getBlockLength();
     PIVCrypto.doGenerateRandom(authenticationContext.buffer(), OFFSET_AUTH_CHALLENGE, length);
 
-    // Write out the response TLV, passing through the block length as an indicative maximum
-    TLVWriter writer = TLVWriter.getInstance();
-    writer.init(
-        scratch,
-        ZERO,
-        TLVWriter.encodedLength(CONST_TAG_AUTH_WITNESS, length),
-        CONST_TAG_AUTH_TEMPLATE);
-
-    // Create the WITNESS tag
-    writer.writeTag(CONST_TAG_AUTH_WITNESS);
-    writer.writeLength(length);
-
-    // Encrypt the WITNESS data and write it to the output buffer
-    short offset = writer.getOffset();
-    offset +=
-        key.encrypt(authenticationContext.buffer(), OFFSET_AUTH_CHALLENGE, length, scratch, offset);
-    writer.setOffset(offset); // Update the TLV offset value
-
-    // Finalise the TLV object and get the entire data object length
-    length = writer.finish();
+    // Respond with the enciphered WITNESS as 7C { 80 <block> }
+    length =
+        sendEncipheredBlock(
+            CONST_TAG_AUTH_WITNESS,
+            key,
+            authenticationContext.buffer(),
+            OFFSET_AUTH_CHALLENGE,
+            length);
 
     // Update our authentication status, id and mechanism
     authenticationContext.buffer()[OFFSET_AUTH_STATE] = AUTH_STATE_MUTUAL;
     authenticationContext.buffer()[OFFSET_AUTH_ID] = key.getId();
     authenticationContext.buffer()[OFFSET_AUTH_MECHANISM] = key.getMechanism();
-
-    // Set up the outgoing command chain
-    chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
     // Done, return the length of data we are sending
     return length;
@@ -1003,37 +1061,15 @@ final class PIVAuthenticationCommandHandler {
 
     // > Client application requests encryption of CHALLENGE data from the card using the
     // > same key.
-
-    // Write out the response TLV, passing through the block length as an indicative maximum
-    TLVWriter writer = TLVWriter.getInstance();
-    writer.init(
-        scratch,
-        ZERO,
-        TLVWriter.encodedLength(CONST_TAG_AUTH_CHALLENGE_RESPONSE, challengeLength),
-        CONST_TAG_AUTH_TEMPLATE);
-
-    // Create the RESPONSE tag
-    writer.writeTag(CONST_TAG_AUTH_CHALLENGE_RESPONSE);
-    writer.writeLength(challengeLength);
-    short offset = writer.getOffset();
-
-    // Encrypt the CHALLENGE data
-    offset += key.encrypt(scratch, challengeOffset, challengeLength, scratch, offset);
-
-    // Update the TLV offset value
-    writer.setOffset(offset);
-
-    // Finalise the TLV object and get the entire data object length
-    short length = writer.finish();
+    short length =
+        sendEncipheredBlock(
+            CONST_TAG_AUTH_CHALLENGE_RESPONSE, key, scratch, challengeOffset, challengeLength);
 
     // Set this key's authentication state
     cspPIV.setAuthenticatedKey(key.getId());
 
     // Clear our authentication state
     authenticateReset();
-
-    // Set up the outgoing command chain
-    chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
     // < PIV Card Application indicates successful authentication and sends back the encrypted
     // challenge.
@@ -1062,12 +1098,11 @@ final class PIVAuthenticationCommandHandler {
 
     // PRE-CONDITION 1 - The key must have the correct role
     if (!key.hasRole(PIVKeyObject.ROLE_KEY_ESTABLISH)) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      failAuthentication(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
     }
 
-    // PRE-CONDITION 2 - The EXPONENTIATION tag length must be the same as our block length
-    // TODO: Should put this into the PIVKeyObjectECC class
-    short length = (short) (key.getBlockLength() * (short) 2 + (short) 1);
+    // PRE-CONDITION 2 - The EXPONENTIATION tag must carry an uncompressed point on the key's curve
+    short length = ECPointValidator.encodedLength(key.getKeyLengthBytes());
     if (exponentiationLength != length) {
       failAuthentication(ISO7816.SW_WRONG_DATA);
     }
@@ -1150,13 +1185,12 @@ final class PIVAuthenticationCommandHandler {
     TLVReader reader = TLVReader.getInstance();
     reader.init(buffer, offset, length);
     short limit = (short) (offset + length);
-    if (buffer[offset] != CONST_TAG_TEMPLATE
-        || TLV.objectEnd(buffer, offset, limit, false) != limit) {
+    if (buffer[offset] != CONST_TAG_TEMPLATE || TLV.objectEnd(buffer, offset, limit) != limit) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     short templateEnd = limit;
-    offset = TLV.dataOffset(buffer, offset, limit, false);
+    offset = TLV.dataOffset(buffer, offset, limit);
 
     // PRE-CONDITION 2 - The 'MECHANISM' tag must be present in the supplied buffer
     if (offset >= templateEnd || buffer[offset] != CONST_TAG_MECHANISM) {
@@ -1164,29 +1198,38 @@ final class PIVAuthenticationCommandHandler {
     }
 
     // PRE-CONDITION 3 - The 'MECHANISM' tag must have a length of 1
-    if (TLV.readLength(buffer, offset, templateEnd, false) != (short) 1) {
+    if (TLV.readLength(buffer, offset, templateEnd) != (short) 1) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
-    short mechanismOffset = TLV.dataOffset(buffer, offset, templateEnd, false);
-    short next = TLV.objectEnd(buffer, offset, templateEnd, false);
+    short mechanismOffset = TLV.dataOffset(buffer, offset, templateEnd);
+    short next = TLV.objectEnd(buffer, offset, templateEnd);
 
-    // Tag 81 is the only conditional element in the control reference template.
+    // Tag 81 is the only conditional element in the control reference template. Its value is
+    // checked against the key's mechanism in PRE-CONDITION 5B.
+    short parameterOffset = ZERO;
     if (next < templateEnd) {
-      if (buffer[next] != (byte) 0x81
-          || TLV.objectEnd(buffer, next, templateEnd, false) != templateEnd) {
+      if (buffer[next] != (byte) 0x81 || TLV.objectEnd(buffer, next, templateEnd) != templateEnd) {
         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
+      parameterOffset = next;
     }
 
-    //
-    // NOTE: We ignore the existence of the 'PARAMETER' tag, because according to SP800-78-4 the
-    // RSA public exponent is now fixed to 65537 (Section 3.1 PIV Cryptographic Keys).
-    // ECC keys have no parameter.
-
-    // PRE-CONDITION 4A - F9 is the imported attestation authority and must never be generated.
+    // PRE-CONDITION 4A - F9 is generated only under an encrypted and MACed GlobalPlatform secure
+    // channel (prior 9B authentication is not sufficient) and only while the authority is still
+    // provisionable: no certificate accepted and the applet not yet PERSONALIZED.
+    // #if ATTESTATION_ENABLED
+    if (keyReference == ID_KEY_ATTESTATION) {
+      if (!cspPIV.getIsSecureChannel()) {
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      }
+      owner.completeAttestationActivation();
+      attestation.requireAuthorityProvisionable();
+    }
+    // #else
     if (keyReference == ID_KEY_ATTESTATION) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
+    // #endif
 
     // PRE-CONDITION 4B - The key reference and mechanism must exist (key test)
     if (!cspPIV.keyExists(keyReference)) {
@@ -1197,9 +1240,13 @@ final class PIVAuthenticationCommandHandler {
     // PRE-CONDITION 4C - The key reference and mechanism must exist (mechanism test)
     PIVKeyObject key = cspPIV.selectKey(keyReference, buffer[mechanismOffset]);
     if (key == null) {
-      // NOTE: The error message we return here is different dependant on whether the key is bad
-      // (6A86), or the mechanism is bad (6A80) (See SP800-73-4 3.3.2 Generate Asymmetric Key pair).
-      // The mechanism is bad
+      // SP 800-73-5 Part 2 Section 3.3.2 status words: '6A 86' "Incorrect parameter P2; the
+      // cryptographic mechanism of the reference data to be generated is different than the
+      // cryptographic mechanism of the reference data of a given key reference", and '6A 80'
+      // "Incorrect parameter in command data field (e.g., unrecognized cryptographic mechanism)".
+      if (isAsymmetricMechanism(buffer[mechanismOffset])) {
+        ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+      }
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
@@ -1207,6 +1254,20 @@ final class PIVAuthenticationCommandHandler {
     if (!(key instanceof PIVKeyObjectPKI)) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
       return ZERO; // Keep static analyser happy
+    }
+
+    // PRE-CONDITION 5B - SP 800-73-5 Part 1 Section 5.3 Table 6 defines parameter '81' as
+    // "Optional public exponent encoded big-endian" for RSA and "None" for ECC, and SP 800-78-5
+    // Section 3.1 requires that "RSA keys must be generated using a public exponent of 65537". The
+    // only parameter the card can honour is therefore the RSA exponent '01 00 01'; any other is an
+    // "Incorrect parameter in command data field".
+    if (parameterOffset != ZERO
+        && !(key instanceof PIVKeyObjectRSA
+            && PIVKeyObjectRSA.isPivPublicExponent(
+                buffer,
+                TLV.dataOffset(buffer, parameterOffset, templateEnd),
+                TLV.readLength(buffer, parameterOffset, templateEnd)))) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     // PRE-CONDITION 6 - The access rules must be satisfied for administrative access
@@ -1218,10 +1279,18 @@ final class PIVAuthenticationCommandHandler {
     // EXECUTION STEPS
     //
 
-    // STEP 1 - Generate the key pair
+    // STEP 1 - Generate the key pair. For F9 the authority is reset to NONE first and becomes
+    // GENERATED only after the pair passed its pairwise consistency test and is marked generated,
+    // so a tear at any point leaves either NONE or a complete generated pair.
     PIVKeyObjectPKI keyPair = (PIVKeyObjectPKI) key;
+    // #if ATTESTATION_ENABLED
+    if (keyReference == ID_KEY_ATTESTATION) attestation.beginAuthorityGeneration();
+    // #endif
     length = keyPair.generate(scratch, ZERO);
     keyPair.markGenerated();
+    // #if ATTESTATION_ENABLED
+    if (keyReference == ID_KEY_ATTESTATION) attestation.completeAuthorityGeneration();
+    // #endif
 
     chainBuffer.setOutgoing(scratch, ZERO, length, true);
 
@@ -1238,7 +1307,7 @@ final class PIVAuthenticationCommandHandler {
    * <p>- {@code slot} must be one of the standard PIV authentication/signature/key-management slots
    * or retired key-management slots.
    *
-   * <p>- F9 must be an active imported P-256 attestation authority.
+   * <p>- F9 must be an active, on-card generated P-256 attestation authority.
    *
    * <p>- The target key must exist, be generated on-card, and satisfy its configured contact or
    * contactless access policy. This intentionally makes ATTEST obey the same interface restrictions
@@ -1278,6 +1347,39 @@ final class PIVAuthenticationCommandHandler {
     chainBuffer.setOutgoing(attestationResponse, ZERO, length, true);
   }
 
+  /**
+   * Signs the F9 proof-of-possession message {@code "OPF9POP" || N || F9pub}.
+   *
+   * <p>Status words, in check order: {@code 6982} without an encrypted and MACed GlobalPlatform
+   * secure channel, {@code 6700} when the nonce is not 16 through 64 octets, {@code 6A88} when F9
+   * is not defined, and {@code 6985} unless the authority is GENERATED, F9 holds a generated pair,
+   * and the applet is still SELECTABLE. Proof is permanently unavailable once a certificate has
+   * been accepted.
+   *
+   * @param buffer command data buffer
+   * @param offset first nonce octet
+   * @param length nonce length
+   */
+  void proveAuthority(byte[] buffer, short offset, short length) {
+    if (!cspPIV.getIsSecureChannel()) {
+      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+    if (length < PIVAttestation.LENGTH_POP_NONCE_MIN
+        || length > PIVAttestation.LENGTH_POP_NONCE_MAX) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+    PIVKeyObject key = cspPIV.selectKey(ID_KEY_ATTESTATION);
+    if (!(key instanceof PIVKeyObjectECC)) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
+      return;
+    }
+    owner.completeAttestationActivation();
+    attestation.requireAuthorityProvisionable();
+    short signatureLength =
+        attestation.signPossessionProof((PIVKeyObjectECC) key, buffer, offset, length, scratch);
+    chainBuffer.setOutgoing(scratch, ZERO, signatureLength, true);
+  }
+
   private PIVKeyObjectPKI selectAttestableTarget(byte slot) {
     PIVKeyObject target = cspPIV.selectKey(slot);
     if (target instanceof PIVKeyObjectPKI) return (PIVKeyObjectPKI) target;
@@ -1291,10 +1393,7 @@ final class PIVAuthenticationCommandHandler {
    * attestable target.
    */
   private static boolean isAttestableSlot(byte slot) {
-    if (slot == (byte) 0x9A || slot == (byte) 0x9C || slot == (byte) 0x9D || slot == (byte) 0x9E) {
-      return true;
-    }
-    return slot >= (byte) 0x82 && slot <= (byte) 0x95;
+    return PIV.isStandardAsymmetricKey(slot) || PIV.isRetiredKeyManagementKey(slot);
   }
   // #endif
 }

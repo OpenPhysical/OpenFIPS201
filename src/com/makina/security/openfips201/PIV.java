@@ -65,15 +65,16 @@ final class PIV {
 
   // Data Objects
   static final byte ID_DATA_DISCOVERY = (byte) 0x7E;
-  private static final byte INS_PUT_DATA = (byte) 0xDB;
-  private static final byte[] ID_DATA_PAIRING_CODE_REFERENCE = {
-    (byte) 0x5F, (byte) 0xC1, (byte) 0x23
-  };
+  static final byte[] ID_DATA_PAIRING_CODE_REFERENCE = {(byte) 0x5F, (byte) 0xC1, (byte) 0x23};
 
   // PIV Secure Messaging key reference.
   static final byte ID_KEY_SECURE_MESSAGING = (byte) 0x04;
   // Optional attestation authority key reference.
   static final byte ID_KEY_ATTESTATION = (byte) 0xF9;
+  // SP 800-73-5 Part 1 Table 5 assigns key references '82' through '95' to the "Retired Key
+  // Management Key".
+  static final byte ID_KEY_RETIRED_FIRST = (byte) 0x82;
+  static final byte ID_KEY_RETIRED_LAST = (byte) 0x95;
 
   // Keys
   static final byte ID_ALG_DEFAULT = (byte) 0x00; // This maps to TDEA_3KEY
@@ -104,8 +105,6 @@ final class PIV {
   static final byte ID_CVM_GLOBAL_PIN = (byte) 0x00;
   static final byte ID_CVM_LOCAL_PIN = (byte) 0x80;
   static final byte ID_CVM_PUK = (byte) 0x81;
-  static final byte ID_CVM_OCC_PRI = (byte) 0x96;
-  static final byte ID_CVM_OCC_SEC = (byte) 0x97;
   static final byte ID_CVM_PAIRING_CODE = (byte) 0x98;
 
   // General Authenticate Tags
@@ -128,30 +127,10 @@ final class PIV {
    */
   static final short SW_REFERENCE_NOT_FOUND = (short) 0x6A88;
 
-  static final short SW_PUT_DATA_COMMAND_MISSING = (short) 0x6E10;
-  static final short SW_PUT_DATA_COMMAND_INVALID_LENGTH = (short) 0x6E11;
-  static final short SW_PUT_DATA_OP_MISSING = (short) 0x6E12;
-  static final short SW_PUT_DATA_OP_INVALID_LENGTH = (short) 0x6E13;
-  static final short SW_PUT_DATA_OP_INVALID_VALUE = (short) 0x6E14;
-  static final short SW_PUT_DATA_ID_MISSING = (short) 0x6E15;
-  static final short SW_PUT_DATA_ID_INVALID_LENGTH = (short) 0x6E16;
-  static final short SW_PUT_DATA_MODE_CONTACT_MISSING = (short) 0x6E17;
-  static final short SW_PUT_DATA_MODE_CONTACT_INVALID_LENGTH = (short) 0x6E18;
-  static final short SW_PUT_DATA_MODE_CONTACT_INVALID_VALUE = (short) 0x6E19;
-  static final short SW_PUT_DATA_MODE_CONTACTLESS_MISSING = (short) 0x6E1A;
-  static final short SW_PUT_DATA_MODE_CONTACTLESS_INVALID_LENGTH = (short) 0x6E1B;
-  static final short SW_PUT_DATA_MODE_CONTACTLESS_INVALID_VALUE = (short) 0x6E1C;
-  static final short SW_PUT_DATA_MODE_ADMIN_KEY_INVALID_LENGTH = (short) 0x6E1D;
-  static final short SW_PUT_DATA_KEY_MECHANISM_MISSING = (short) 0x6E1E;
-  static final short SW_PUT_DATA_KEY_MECHANISM_INVALID_LENGTH = (short) 0x6E1F;
-  static final short SW_PUT_DATA_KEY_ROLE_MISSING = (short) 0x6E20;
-  static final short SW_PUT_DATA_KEY_ROLE_INVALID_LENGTH = (short) 0x6E21;
-  static final short SW_PUT_DATA_KEY_ATTR_MISSING = (short) 0x6E22;
-  static final short SW_PUT_DATA_KEY_ATTR_INVALID_LENGTH = (short) 0x6E23;
-  static final short SW_PUT_DATA_CONFIG_MISSING = (short) 0x6E24;
-  static final short SW_PUT_DATA_CONFIG_WRONG_LENGTH = (short) 0x6E25;
-  static final short SW_PUT_DATA_CONFIG_INVALID_VALUE = (short) 0x6E26;
-  static final short SW_PUT_DATA_OBJECT_EXISTS = (short) 0x6E27;
+  // ISO/IEC 7816-4 Table 7 '6A89' (file already exists): a create request names a data object or
+  // key reference that is already defined. javacard.framework.ISO7816 has no constant for it.
+  // Every other administrative PUT DATA failure uses an interindustry status word from ISO7816.
+  static final short SW_OBJECT_EXISTS = (short) 0x6A89;
 
   // The current authentication stage
   static final short OFFSET_AUTH_STATE = ZERO;
@@ -209,11 +188,6 @@ final class PIV {
   private final ECCurveRegistry curves;
   // TRANSIENT - Holds any authentication related intermediary state
   private final PIVAuthenticationContext authenticationContext;
-  // #if ATTESTATION_ENABLED
-  // TRANSIENT - Response buffer for attestation certificates. Allocated once per applet
-  // selection (CLEAR_ON_DESELECT) and reused for all attestations in the session.
-  private byte[] attestationResponse;
-  // #endif
   // TRANSIENT - Reusable response/work buffer for OPACITY (CS2/CS7) establishment.
   private final byte[] smResponse;
   // TRANSIENT - Reassembled secure-messaging command data.
@@ -236,7 +210,7 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests() : null;
+    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests(curves, ecPointValidator) : null;
 
     // Create our configuration provider
     config = new Config();
@@ -252,10 +226,10 @@ final class PIV {
     dataCommands = new PIVDataCommandHandler(config, cspPIV, dataStore, chainBuffer, scratch);
 
     // #if ATTESTATION_ENABLED
-    // Attestation profile state and response buffer are allocated at install time; strict
-    // JavaCard platforms may reject transient allocations during APDU processing.
+    // Attestation authority state, certificate container, and response buffer are allocated at
+    // install time; strict JavaCard platforms may reject transient allocations during APDU
+    // processing.
     attestation = new PIVAttestation();
-    attestationResponse = PIVAttestation.allocateResponseBuffer();
     // #endif
 
     secureMessaging = new PIVSecureMessaging();
@@ -271,13 +245,11 @@ final class PIV {
             authenticationContext,
             ecPointValidator,
             scratch,
-            smCommand,
             smResponse,
             opacity
             // #if ATTESTATION_ENABLED
             ,
-            attestation,
-            attestationResponse
+            attestation
             // #endif
             );
     administrationCommands =
@@ -288,8 +260,7 @@ final class PIV {
             dataStore,
             chainBuffer,
             secureMessaging,
-            scratch,
-            smCommand
+            scratch
             // #if ATTESTATION_ENABLED
             ,
             attestation
@@ -326,7 +297,7 @@ final class PIV {
     try {
       return fipsSelfTest.run(scratch) && opacity.runCryptographicAlgorithmSelfTest();
     } finally {
-      PIVSecurityProvider.zeroise(scratch, ZERO, (short) 64);
+      PIVSecurityProvider.zeroise(scratch, ZERO, FipsPowerUpSelfTests.LENGTH_SCRATCH);
     }
   }
 
@@ -392,6 +363,21 @@ final class PIV {
     PIVSecurityProvider.zeroise(smResponse, ZERO, (short) smResponse.length);
   }
 
+  /** Discards an incomplete protected logical command; the session and its MCVs are kept. */
+  void abandonSecureMessagingCommandStream() {
+    secureMessaging.clearRejectedCommandStream();
+  }
+
+  /**
+   * Abandons any pending command or response chain and its staged object update, as a command that
+   * interrupts ISO/IEC 7816-4 chaining does.
+   */
+  void abandonChains() {
+    abortOutgoingResponse();
+    chainBuffer.abort();
+    dataStore.abortPendingUpdates();
+  }
+
   void abortOutgoingResponse() {
     if (secureMessaging.isResponseStreamActive()) {
       secureMessaging.abortResponseStream();
@@ -404,12 +390,23 @@ final class PIV {
     try {
       return unwrapSecureMessagingCommandChecked(buffer, offset, length);
     } catch (ISOException ex) {
-      if (ex.getReason() != ISO7816.SW_NO_ERROR) clearSecureMessaging();
-      throw ex;
+      short reason = ex.getReason();
+      if (reason == ISO7816.SW_NO_ERROR) throw ex;
+      // SP 800-73-5 Part 2 Section 4.2.7: an unsuccessful secure messaging exchange SHALL return
+      // '68 82', '69 82', '69 87' or '69 88' "without performing further secure messaging".
+      // Reassembly failures from the shared chain buffer are incorrect secure messaging data.
+      clearSecureMessaging();
+      ISOException.throwIt(PIVSecureMessaging.toProcessingStatus(reason));
+      return ZERO;
     } catch (javacard.security.CryptoException ex) {
       clearSecureMessaging();
       ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
       return ZERO;
+    } catch (RuntimeException ex) {
+      // SP 800-73-5 Part 2 Section 4.3 zeroizes the session keys when "an error occurs in secure
+      // messaging"; a runtime fault is such an error whatever status the JCRE reports for it.
+      clearSecureMessaging();
+      throw ex;
     }
   }
 
@@ -430,7 +427,7 @@ final class PIV {
         secureMessaging.isRejectedCommandStreamActive()
             || (mustRejectContactlessPutData()
                 && commandChaining
-                && buffer[ISO7816.OFFSET_INS] == INS_PUT_DATA);
+                && buffer[ISO7816.OFFSET_INS] == OpenFIPS201.INS_PIV_PUT_DATA);
     if (streamRejectedPutData) {
       // Section 4.2.4 says the card "reconstructs and processes the entire command." Authenticate
       // and decrypt every frame before Table 2 supplies protected status 6A81. The bounded parser
@@ -445,7 +442,18 @@ final class PIV {
     }
 
     Util.arrayCopyNonAtomic(buffer, ZERO, smCommand, ZERO, (short) 5);
-    length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
+    if (buffer[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE
+        && chainBuffer.isSecureOutgoingActive()) {
+      // SP 800-73-5 Part 2 Section 4.2.6: GET RESPONSE retrieves the next part of the pending
+      // protected response. The chain buffer holds that response, so a protected GET RESPONSE is
+      // a single-frame command unwrapped directly from the APDU buffer.
+      if (commandChaining || length > (short) (smCommand.length - 5)) {
+        ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
+      }
+      Util.arrayCopyNonAtomic(buffer, offset, smCommand, (short) 5, length);
+    } else {
+      length = chainBuffer.processIncomingAPDU(buffer, offset, length, smCommand, (short) 5);
+    }
     if (length == ZERO && commandChaining) ISOException.throwIt(ISO7816.SW_NO_ERROR);
 
     length = secureMessaging.unwrapCommand(smCommand, (short) 5, length, smResponse, ZERO);
@@ -485,14 +493,23 @@ final class PIV {
       ISOException.throwIt(sw);
     }
 
-    if (apdu.getBuffer()[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE
-        && !chainBuffer.isOutgoingActive()) {
+    boolean getResponse = apdu.getBuffer()[ISO7816.OFFSET_INS] == OpenFIPS201.INS_GP_GET_RESPONSE;
+    if (getResponse && isSecureMessagingResponseActive()) {
+      // SP 800-73-5 Part 2 Section 4.2.6 continues a response under PIV secure messaging with GET
+      // RESPONSE (Figure 7: "an APDU of '00 C0 00 00 00' will be sent to request the second
+      // response"). The dispatcher routes that plaintext form and the protected form to the
+      // secure-messaging continuation, so a GET RESPONSE reaching this path carries GP SCP
+      // protection and must not release the response outside secure messaging.
+      abortOutgoingResponse();
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    if (getResponse && !chainBuffer.isOutgoingActive()) {
       // An idle GET RESPONSE cannot continue an incoming command. Roll back its staging
       // just like any other command that interrupts ISO/IEC 7816-4 command chaining.
       chainBuffer.abort();
       dataStore.abortPendingUpdates();
     }
-    chainBuffer.processOutgoing(apdu);
+    chainBuffer.processOutgoing(apdu, currentProtection());
   }
 
   void processOutgoingSecure(APDU apdu, short sw) {
@@ -510,6 +527,11 @@ final class PIV {
     } catch (javacard.security.CryptoException ex) {
       clearSecureMessaging();
       ISOException.throwIt(PIVSecureMessaging.SW_SM_OBJECTS_INCORRECT);
+    } catch (RuntimeException ex) {
+      // SP 800-73-5 Part 2 Section 4.3: any status other than '61 XX' or '90 00' is an error in
+      // secure messaging, after which the session keys SHALL be zeroized.
+      clearSecureMessaging();
+      throw ex;
     }
   }
 
@@ -521,13 +543,15 @@ final class PIV {
   }
 
   /**
-   * Called when this applet is selected, returning the APT object
+   * Called when this applet is selected. Places the APT in the outgoing response chain.
    *
-   * @param buffer The APDU buffer to write the APT to
-   * @param offset The starting offset of the CDATA section
-   * @return The length of the returned APT object
+   * <p>SP 800-73-5 Part 2 Section 3.1.1: "Upon selection, the PIV Card Application SHALL return the
+   * application property template described in Table 3." A response longer than Ne is continued
+   * with '61 XX' and GET RESPONSE (ISO/IEC 7816-4 Section 5.3.4), not truncated.
+   *
+   * @return The length of the APT object
    */
-  short select(byte[] buffer, short offset) {
+  short select() {
 
     //
     // PRE-CONDITIONS
@@ -563,7 +587,9 @@ final class PIV {
     }
 
     // STEP 2 - Return the APT
-    return buildApplicationPropertyTemplate(buffer, offset);
+    short length = buildApplicationPropertyTemplate(scratch, ZERO);
+    chainBuffer.setOutgoing(scratch, ZERO, length, false);
+    return length;
   }
 
   private short buildApplicationPropertyTemplate(byte[] buffer, short offset) {
@@ -619,11 +645,15 @@ final class PIV {
     return getSecureMessagingKey() != null;
   }
 
-  /** Returns the initialised SM key (CS2 or CS7), or null if VCI is off / key not ready. */
+  /**
+   * Returns the initialised SM key (CS2 or CS7), or null when key 04 or its CVC is not ready.
+   *
+   * <p>Secure messaging is available whenever key 04 holds key material and its CVC, independent of
+   * the VCI configuration, so the APT advertisement follows the key alone. SP 800-73-5 Part 2
+   * Section 3.1.1: "Tag 0xAC SHALL be present and indicate algorithm identifier 0x27 or 0x2E (but
+   * not both) when the PIV Card Application supports secure messaging."
+   */
   private PIVKeyObject getSecureMessagingKey() {
-    if (!isVciConfigured()) {
-      return null;
-    }
     PIVKeyObject key = cspPIV.selectKey(ID_KEY_SECURE_MESSAGING, ID_ALG_ECC_SM);
     return (key != null && key.isInitialised()) ? key : null;
   }
@@ -648,6 +678,7 @@ final class PIV {
 
     // Reset all security conditions in the security provider
     cspPIV.clearAuthenticatedKey();
+    cspPIV.clearPINAlways();
     cspPIV.clearApplicationVerification();
     chainBuffer.abort();
     dataStore.abortPendingUpdates();
@@ -658,13 +689,13 @@ final class PIV {
   /**
    * Completes an interrupted attestation-authority activation before command processing resumes.
    *
-   * <p>The pending flag is persistent. Repeating the data and key clearing operations is safe, so
-   * selection can finish a power-interrupted destructive rotation before F9 becomes active.
+   * <p>The ACTIVATING state is persistent. Repeating the data and key clearing operations is safe,
+   * so selection can finish a power-interrupted activation before F9 becomes active.
    */
   void completeAttestationActivation() {
     if (!attestation.isAuthorityActivationPending()) return;
     // Clearing is intentionally idempotent and outside a transaction. If power is lost, the
-    // persistent pending flag survives and selection resumes before F9 can become active.
+    // persistent ACTIVATING state survives and selection resumes before F9 can become active.
     dataStore.clearContents();
     cspPIV.clearKeyMaterialExcept(ID_KEY_ATTESTATION);
     attestation.completeAuthorityActivation();
@@ -676,16 +707,15 @@ final class PIV {
   }
 
   boolean isVciSatisfied() {
-    short policy = dataCommands.getDiscoveryPolicy();
-    return policy >= (short) 0
-        && (((byte) (policy >> 8) & (byte) 0x08) != (byte) 0)
+    return PIVDataCommandHandler.hasPolicyBits(
+            dataCommands.getDiscoveryPolicy(), PIVDataCommandHandler.PIN_POLICY_VCI)
         && isSecureMessagingCommand()
         && secureMessaging.isVciEstablished();
   }
 
   boolean isDiscoveryPairingRequired() {
-    short policy = dataCommands.getDiscoveryPolicy();
-    return policy < (short) 0 || (((byte) (policy >> 8) & (byte) 0x04) == (byte) 0);
+    return !PIVDataCommandHandler.hasPolicyBits(
+        dataCommands.getDiscoveryPolicy(), PIVDataCommandHandler.PIN_POLICY_VCI_WITHOUT_PAIRING);
   }
 
   boolean isPairingCodeReferenceEnabled() {
@@ -694,9 +724,10 @@ final class PIV {
   }
 
   static boolean isPairingCodeReferenceEnabled(byte vciMode, short policy) {
-    if (vciMode != Config.VCI_MODE_PAIRING_CODE || policy < (short) 0) return false;
-    byte pinUsagePolicy = (byte) (policy >> 8);
-    return (pinUsagePolicy & (byte) 0x08) != (byte) 0 && (pinUsagePolicy & (byte) 0x04) == (byte) 0;
+    return vciMode == Config.VCI_MODE_PAIRING_CODE
+        && PIVDataCommandHandler.hasPolicyBits(policy, PIVDataCommandHandler.PIN_POLICY_VCI)
+        && !PIVDataCommandHandler.hasPolicyBits(
+            policy, PIVDataCommandHandler.PIN_POLICY_VCI_WITHOUT_PAIRING);
   }
 
   boolean isPairingCodeVerified() {
@@ -711,8 +742,13 @@ final class PIV {
     // SP 800-73-5 Part 1, Table 1 requires these seven data objects. The
     // certification profile also requires its PIN, PUK, 9A, and 9E material
     // to be issuer-provisioned before the lifecycle becomes irreversible.
+    // FIPS 201-3 Section 4.2.2.1: "This key SHALL be generated on the PIV Card." (PIV
+    // authentication key) and Section 4.2.2.4: "The PIV digital signature key SHALL be generated
+    // on the PIV Card." The optional 9C key is checked only when present.
     if (!cspPIV.areMandatoryCvmsProvisioned()
-        || !cspPIV.hasUsableAsymmetricKey((byte) 0x9A)
+        || !cspPIV.hasGeneratedAsymmetricKey((byte) 0x9A)
+        || (cspPIV.hasUsableAsymmetricKey((byte) 0x9C)
+            && !cspPIV.hasGeneratedAsymmetricKey((byte) 0x9C))
         || !cspPIV.hasUsableAsymmetricKey((byte) 0x9E)
         || !hasStructurallyValidMandatoryObject((byte) 0x07)
         || !hasStructurallyValidMandatoryObject((byte) 0x02)
@@ -723,30 +759,41 @@ final class PIV {
         || !hasStructurallyValidMandatoryObject((byte) 0x06)) {
       return false;
     }
+    // SP 800-73-5 Part 1 Section 3.3.2: "PIV Card Applications that implement the VCI or for
+    // which the Global PIN or OCC satisfy the PIV ACRs for PIV data object access and command
+    // execution SHALL implement the Discovery Object." A stored Discovery Object must use a Table 1
+    // value and advertise only the PIN, Global PIN, OCC and VCI features this card provides.
+    byte vciMode = config.readValue(Config.CONFIG_VCI_MODE);
+    boolean discoveryStored = hasInitialisedDataObject(ID_DATA_DISCOVERY, (byte) 0, (byte) 0);
+    if ((discoveryStored || isVciConfigured())
+        && !PIVDataCommandHandler.isDiscoveryPolicyConsistent(
+            dataCommands.getDiscoveryPolicy(),
+            config.readFlag(Config.CONFIG_PIN_ENABLE_GLOBAL),
+            vciMode)) {
+      return false;
+    }
     if (isVciConfigured()) {
-      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI;
-      // Discovery carries the advertised VCI and pairing policy.
-      PIVKeyObject smKey = getSecureMessagingKey();
-      if (!(smKey instanceof PIVKeyObjectECC)
-          || ((PIVKeyObjectECC) smKey).getSmCvcLength() == (short) 0
-          || !hasInitialisedDataObject((byte) 0x7E, (byte) 0, (byte) 0)
+      // SP 800-73-5 Part 2, Section 4 requires the SM key and CVC for VCI. An initialised SM key
+      // holds both (PIVKeyObjectECC.hasPrivateMaterial requires the CVC for CS2 and CS7).
+      if (getSecureMessagingKey() == null
           // SP 800-73-5 Part 1 Section 3.3.7 requires 5FC122 when SM protects
           // non-card-management operations.
           || !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x22)) {
         return false;
       }
-      short policy = dataCommands.getDiscoveryPolicy();
-      if (policy < (short) 0) return false;
-      byte first = (byte) (policy >> 8);
-      boolean discoveryVci = (first & (byte) 0x08) != (byte) 0;
-      boolean discoveryPairing = (first & (byte) 0x04) == (byte) 0;
-      boolean configuredPairing =
-          config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE;
-      if (!discoveryVci || discoveryPairing != configuredPairing) return false;
-      if (config.readValue(Config.CONFIG_VCI_MODE) == Config.VCI_MODE_PAIRING_CODE
-          && !hasInitialisedDataObject((byte) 0x5F, (byte) 0xC1, (byte) 0x23)) {
+      // SP 800-73-5 Part 1 Section 3.3.8 requires the Pairing Code Reference Data Container when
+      // the pairing code is used. VERIFY 98 compares against it, so its Table 44 structure is
+      // checked before the irreversible transition.
+      if (vciMode == Config.VCI_MODE_PAIRING_CODE
+          && !PIVDataCommandHandler.isValidPairingCodeContainer(
+              dataStore.find(ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) 3))) {
         return false;
       }
+    }
+    // SP 800-73-5 Part 1 Section 3.3.3: "The Key History object SHALL be present in the PIV Card
+    // Application if the PIV Card Application contains any retired key management private keys".
+    if (hasRetiredKeyManagementKey() && !hasStructurallyValidMandatoryObject((byte) 0x0C)) {
+      return false;
     }
     // #if ATTESTATION_ENABLED
     if (!attestation.isAuthorityActive()) return false;
@@ -767,6 +814,28 @@ final class PIV {
     }
     PIVDataObject object = dataStore.find(scratch, ZERO, length);
     return object != null && object.isInitialised();
+  }
+
+  /** Returns whether any retired key management reference '82' to '95' holds a private key. */
+  private boolean hasRetiredKeyManagementKey() {
+    for (byte id = ID_KEY_RETIRED_FIRST; id <= ID_KEY_RETIRED_LAST; id++) {
+      if (cspPIV.hasUsableAsymmetricKey(id)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Returns whether {@code id} is one of the SP 800-73-5 Part 1 Table 5 cardholder asymmetric key
+   * references: '9A' PIV Authentication, '9C' Digital Signature, '9D' Key Management or '9E' Card
+   * Authentication.
+   */
+  static boolean isStandardAsymmetricKey(byte id) {
+    return id == (byte) 0x9A || id == (byte) 0x9C || id == (byte) 0x9D || id == (byte) 0x9E;
+  }
+
+  /** Returns whether {@code id} is a Table 5 retired key management reference '82' to '95'. */
+  static boolean isRetiredKeyManagementKey(byte id) {
+    return id >= ID_KEY_RETIRED_FIRST && id <= ID_KEY_RETIRED_LAST;
   }
 
   private boolean hasStructurallyValidMandatoryObject(byte suffix) {
@@ -801,10 +870,71 @@ final class PIV {
    * @param length The length of the CDATA section
    */
   short getData(byte[] buffer, short offset, short length) throws ISOException {
-    // SP 800-73-5 Part 1 Sections 3.3.2 and 5.5 require an issuer-controlled Discovery Object
-    // for VCI. The fallback response must not advertise policy that cannot satisfy the ACR.
-    return dataCommands.getData(buffer, offset, length, isVciSatisfied(), false);
+    // #if ATTESTATION_ENABLED
+    if (isAttestationAuthorityObject(buffer, offset, length)) {
+      return getAttestationAuthorityContainer();
+    }
+    // #endif
+    return dataCommands.getData(buffer, offset, length, isVciSatisfied());
   }
+
+  // #if ATTESTATION_ENABLED
+  /** Returns whether a GET DATA tag list names the read-only F9 certificate object 5FFF01. */
+  private static boolean isAttestationAuthorityObject(byte[] buffer, short offset, short length) {
+    return length == (short) 5
+        && buffer[offset] == (byte) 0x5C
+        && buffer[(short) (offset + 1)] == (byte) 0x03
+        && buffer[(short) (offset + 2)] == (byte) 0x5F
+        && buffer[(short) (offset + 3)] == (byte) 0xFF
+        && buffer[(short) (offset + 4)] == (byte) 0x01;
+  }
+
+  /**
+   * Serves the F9 certificate container as virtual read-only data object 5FFF01.
+   *
+   * <p>The object is the public attestation-authority certificate in the PIV X.509 certificate
+   * container layout (tags 70, 71, and FE). It exists only once the authority is ACTIVE and is
+   * readable without authentication on every interface; PUT DATA and CREATE OBJECT cannot reach it.
+   *
+   * @return container length
+   */
+  private short getAttestationAuthorityContainer() {
+    if (!attestation.isAuthorityActive()) ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
+    short length = attestation.getAuthorityContainerLength();
+    chainBuffer.setOutgoing(attestation.getAuthorityContainer(), ZERO, length, false);
+    return length;
+  }
+
+  /**
+   * Returns the stored F9 certificate for {@code 00 F9 F9 00}.
+   *
+   * <p>The certificate is public and needs no access control, but exists only once the authority is
+   * ACTIVE.
+   *
+   * @throws ISOException with {@link ISO7816#SW_CONDITIONS_NOT_SATISFIED} before activation
+   */
+  void getAttestationAuthorityCertificate() {
+    if (!attestation.isAuthorityActive()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    chainBuffer.setOutgoing(
+        attestation.getAuthorityContainer(),
+        PIVAttestation.CERT_STORE_OFFSET,
+        attestation.getCertificateLength(),
+        false);
+  }
+
+  /**
+   * Signs the F9 proof-of-possession message for the issuer nonce in the command data.
+   *
+   * @param buffer command data buffer
+   * @param offset first nonce octet
+   * @param length nonce length
+   */
+  void proveAttestationAuthority(byte[] buffer, short offset, short length) {
+    authenticationCommands.proveAuthority(buffer, offset, length);
+  }
+  // #endif
 
   void putData(byte[] buffer, short offset, short length) throws ISOException {
     dataCommands.putData(buffer, offset, length, isVciSatisfied(), currentProtection());

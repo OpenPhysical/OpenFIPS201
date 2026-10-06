@@ -48,8 +48,8 @@ final class Config {
       };
   static final short LENGTH_APPLICATION_NAME = (short) 24;
   static final byte VERSION_MAJOR = (byte) 1;
-  static final byte VERSION_MINOR = (byte) 10;
-  static final byte VERSION_REVISION = (byte) 2;
+  static final byte VERSION_MINOR = (byte) 11;
+  static final byte VERSION_REVISION = (byte) 0;
   static final byte VERSION_DEBUG = (byte) 0; // If set to 1, this build is considered DEBUG
 
   ///////////////////////////////////////////////////////////////////////////
@@ -105,7 +105,7 @@ final class Config {
         // #if FIPS_MODE
         (byte) 0x89,
         // #else
-        (byte) 0x92,
+        (byte) 0x8F,
         // #endif
 
         // 2 + 11 bytes - Application identifier of application (TAG '4F')
@@ -229,12 +229,12 @@ final class Config {
         'd',
         'f',
 
-        // 2 + 33 - Cryptographic Algorithm Identifier Template (Tag 'AC')
+        // 2 + 30 - Cryptographic Algorithm Identifier Template (Tag 'AC')
         (byte) 0xAC,
         // #if FIPS_MODE
         (byte) 0x18,
         // #else
-        (byte) 0x21,
+        (byte) 0x1E,
         // #endif
 
         // Supported mechanisms
@@ -256,12 +256,10 @@ final class Config {
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_AES_256,
-        // #if FIPS_MODE
-        // #else
-        (byte) 0x80,
-        (byte) 0x01,
-        PIV.ID_ALG_RSA_1024,
-        // #endif
+        // SP 800-73-5 Part 2 Section 3.1.1: "Tag 0xAC encodes the cryptographic algorithms
+        // supported by the PIV Card Application." RSA-1024 ('06') is omitted: SP 800-78-5 Table 10
+        // admits it only on retired key-management references, which keep it for compatibility,
+        // and no other key reference accepts it.
         (byte) 0x80,
         (byte) 0x01,
         PIV.ID_ALG_RSA_2048,
@@ -318,24 +316,23 @@ final class Config {
   static final byte CONFIG_PUK_LENGTH = (byte) 14;
   static final byte CONFIG_PUK_RETRIES_CONTACT = (byte) 15;
   static final byte CONFIG_PUK_RETRIES_CONTACTLESS = (byte) 16;
-  static final byte CONFIG_PUK_RESTRICT_UPDATE = (byte) 17;
+  // 17 is reserved for the PUK restrict-update option, which update() rejects as unsupported.
 
   // VCI Policy
 
   static final byte CONFIG_VCI_MODE = (byte) 18;
-  static final byte CONFIG_OCC_MODE = (byte) 19;
+  // 19 is reserved for the OCC mode, whose policy update() rejects as unsupported.
 
   // Options
   static final byte OPTION_RESTRICT_CONTACTLESS_GLOBAL = (byte) 20;
   static final byte OPTION_RESTRICT_CONTACTLESS_ADMIN = (byte) 21;
-  static final byte OPTION_RESTRICT_ENUMERATION = (byte) 22;
+  // 22 is reserved for the restrict-enumeration option, which update() rejects as unsupported.
   // 23 is reserved for the former restrict-single-key option. The one-key-per-reference rule is
   // now an invariant in PIVSecurityProvider, not configurable policy.
   static final byte OPTION_IGNORE_CONTACTLESS_ACL = (byte) 24;
   // 25 is reserved for the former configurable empty-object response. SP 800-73 requires the
   // zero-length data container unconditionally.
-  static final byte OPTION_READ_EMPTY_DATA_OBJECT_RESERVED = (byte) 25;
-  static final byte OPTION_USE_RSA_CRT = (byte) 26;
+  // 26 is reserved for the RSA CRT option, which update() rejects as unsupported.
 
   //
   // Defaults and Limits
@@ -347,7 +344,6 @@ final class Config {
   static final byte LIMIT_PIN_MAX_RETRIES = (byte) 10;
   static final byte LIMIT_PIN_HISTORY = (byte) 12;
 
-  static final byte LIMIT_PUK_MIN_LENGTH = (byte) 6;
   static final byte LIMIT_PUK_MAX_LENGTH = (byte) 16;
   // SP 800-73-5 caps PUK retry counters at 10.
   static final byte LIMIT_PUK_MAX_RETRIES = (byte) 10;
@@ -364,15 +360,6 @@ final class Config {
   private static final byte DEFAULT_PUK_RETRIES_CONTACTLESS = (byte) 9;
 
   //
-  // Enumeration - PIN Mode
-  //
-  static final byte PIN_MODE_DISABLED = (byte) 0;
-  static final byte PIN_MODE_LOCAL_ONLY = (byte) 1;
-  static final byte PIN_MODE_GLOBAL_ONLY = (byte) 2;
-  static final byte PIN_MODE_LOCAL_PREFERRED = (byte) 3;
-  static final byte PIN_MODE_GLOBAL_PREFERRED = (byte) 4;
-
-  //
   // Enumeration - PIN Character Set
   //
   static final byte PIN_CHARSET_NUMERIC = (byte) 0;
@@ -386,11 +373,6 @@ final class Config {
   static final byte VCI_MODE_DISABLED = (byte) 0;
   static final byte VCI_MODE_ENABLED = (byte) 1;
   static final byte VCI_MODE_PAIRING_CODE = (byte) 2;
-
-  //
-  // Enumeration - OCC Mode
-  //
-  static final byte OCC_MODE_DISABLED = (byte) 0;
 
   //
   // ASN.1 TAGS - Constructed (Container)
@@ -425,7 +407,6 @@ final class Config {
   private static final byte TAG_PUK_RESTRICT_UPDATE = (byte) 0x85;
 
   private static final byte TAG_VCI_MODE = (byte) 0x80;
-  private static final byte TAG_OCC_MODE = (byte) 0x80;
 
   private static final byte TAG_RESTRICT_CONTACTLESS_GLOBAL = (byte) 0x80;
   private static final byte TAG_RESTRICT_CONTACTLESS_ADMIN = (byte) 0x81;
@@ -499,6 +480,9 @@ final class Config {
     validateUpdateEncoding(reader);
 
     // NOTES:
+    // - Status words follow ISO/IEC 7816-4 Table 7: an empty, out-of-range, inconsistent or
+    //   retired value is '6A80' (incorrect parameters in the command data field); a recognized
+    //   setting this applet does not implement is '6A81' (function not supported).
     // - Due to all configuration parameters being optional, pre-conditions are evaluated
     //   in each section on-the-fly rather than all prior to execution.
     // - To save on validation code, any boolean value is just stored as a byte and any
@@ -511,12 +495,17 @@ final class Config {
 
       // Sanity check for empty constructed tag
       if (reader.isNull()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
       reader.moveInto();
 
       // Enable Local
+      // SP 800-73-5 Part 2 Section 3.2.1: "Key reference '80' SHALL be able to be verified by the
+      // PIV Card Application VERIFY command." Part 1 Section 5.1: "The access control rules for PIV
+      // data object access SHALL reference the PIV Card Application PIN". The mandatory PIN
+      // therefore cannot be disabled; only the enabled value is accepted.
       if (reader.match(TAG_PIN_ENABLE_LOCAL)) {
+        if (reader.toByte() == TLV.FALSE) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         setBoolean(CONFIG_PIN_ENABLE_LOCAL, reader.toByte());
         reader.moveNext();
       }
@@ -551,7 +540,7 @@ final class Config {
       if (reader.match(TAG_PIN_MIN_LENGTH)) {
         byte value = reader.toByte();
         if (value < LIMIT_PIN_MIN_LENGTH || value > LIMIT_PIN_MAX_LENGTH) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         minLength = value;
         lengthChanged = true;
@@ -563,7 +552,7 @@ final class Config {
       if (reader.match(TAG_PIN_MAX_LENGTH)) {
         byte value = reader.toByte();
         if (value < LIMIT_PIN_MIN_LENGTH || value > LIMIT_PIN_MAX_LENGTH) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         maxLength = value;
         lengthChanged = true;
@@ -573,7 +562,7 @@ final class Config {
       // Validate and update the PIN values if necessary
       if (lengthChanged) {
         if (minLength > maxLength) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PIN_MIN_LENGTH] = minLength;
         config[CONFIG_PIN_MAX_LENGTH] = maxLength;
@@ -585,7 +574,7 @@ final class Config {
       if (reader.match(TAG_PIN_RETRIES_CONTACT)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PIN_MAX_RETRIES) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         retriesContact = value;
         reader.moveNext();
@@ -596,13 +585,13 @@ final class Config {
         byte value = reader.toByte();
         // Pre-condition - Boundary check
         if (value < (byte) 0 || value > LIMIT_PIN_MAX_RETRIES) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         // Pre-condition - Cannot be greater than RETRIES_CONTACT
         retriesContactless = value;
         reader.moveNext();
       }
-      if (retriesContactless > retriesContact) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      if (retriesContactless > retriesContact) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       config[CONFIG_PIN_RETRIES_CONTACT] = retriesContact;
       config[CONFIG_PIN_RETRIES_CONTACTLESS] = retriesContactless;
 
@@ -610,10 +599,10 @@ final class Config {
       if (reader.match(TAG_PIN_CHARSET)) {
         byte value = reader.toByte();
         if (value < PIN_CHARSET_NUMERIC || value > PIN_CHARSET_RAW) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         if (FipsPolicy.ENABLED && value != PIN_CHARSET_NUMERIC) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PIN_CHARSET] = value;
         reader.moveNext();
@@ -623,7 +612,7 @@ final class Config {
       if (reader.match(TAG_PIN_HISTORY)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PIN_HISTORY) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PIN_HISTORY] = value;
         reader.moveNext();
@@ -633,7 +622,7 @@ final class Config {
       if (reader.match(TAG_PIN_RULE_SEQUENCE)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PIN_MAX_LENGTH) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PIN_RULE_SEQUENCE] = value;
         reader.moveNext();
@@ -643,7 +632,7 @@ final class Config {
       if (reader.match(TAG_PIN_RULE_DISTINCT)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PIN_MAX_LENGTH) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PIN_RULE_DISTINCT] = value;
         reader.moveNext();
@@ -657,7 +646,7 @@ final class Config {
 
       // Sanity check for empty constructed tag
       if (reader.isNull()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
       reader.moveInto();
 
@@ -678,7 +667,7 @@ final class Config {
         byte value = reader.toByte();
         // SP 800-73 fixes the RESET RETRY COUNTER PUK field at eight bytes.
         if (value != DEFAULT_PUK_LENGTH) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PUK_LENGTH] = value;
         reader.moveNext();
@@ -690,7 +679,7 @@ final class Config {
       if (reader.match(TAG_PUK_RETRIES_CONTACT)) {
         byte value = reader.toByte();
         if (value < (byte) 0 || value > LIMIT_PUK_MAX_RETRIES) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         retriesContact = value;
         reader.moveNext();
@@ -701,13 +690,13 @@ final class Config {
         byte value = reader.toByte();
         // Pre-condition - Boundary check
         if (value < (byte) 0 || value > LIMIT_PUK_MAX_RETRIES) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         // Pre-condition - Must not be more than PUK_RETRIES_CONTACT
         retriesContactless = value;
         reader.moveNext();
       }
-      if (retriesContactless > retriesContact) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      if (retriesContactless > retriesContact) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       config[CONFIG_PUK_RETRIES_CONTACT] = retriesContact;
       config[CONFIG_PUK_RETRIES_CONTACTLESS] = retriesContactless;
 
@@ -723,7 +712,7 @@ final class Config {
     if (reader.match(TAG_VCI_POLICY)) {
       // Sanity check for empty constructed tag
       if (reader.isNull()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
       reader.moveInto();
 
@@ -733,7 +722,7 @@ final class Config {
         if (value != VCI_MODE_DISABLED
             && value != VCI_MODE_ENABLED
             && value != VCI_MODE_PAIRING_CODE) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_VCI_MODE] = value;
         reader.moveNext();
@@ -754,7 +743,7 @@ final class Config {
 
       // Sanity check for empty constructed tag
       if (reader.isNull()) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
       reader.moveInto();
 
@@ -768,7 +757,7 @@ final class Config {
       if (reader.match(TAG_RESTRICT_CONTACTLESS_ADMIN)) {
         byte value = reader.toByte();
         if (FipsPolicy.ENABLED && value == (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         setBoolean(OPTION_RESTRICT_CONTACTLESS_ADMIN, value);
         reader.moveNext();
@@ -782,14 +771,14 @@ final class Config {
       // Former restrict-single-key option. This is now a hard key-store invariant, not issuer
       // policy, so stale config data is rejected instead of silently ignored.
       if (reader.match(TAG_RESTRICT_SINGLE_KEY_RESERVED)) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_CONFIG_INVALID_VALUE);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       // Ignore Contactless ACL
       if (reader.match(TAG_IGNORE_CONTACTLESS_ACL)) {
         byte value = reader.toByte();
         if (FipsPolicy.ENABLED && value != (byte) 0) {
-          ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         setBoolean(OPTION_IGNORE_CONTACTLESS_ACL, value);
         reader.moveNext();
@@ -797,7 +786,7 @@ final class Config {
 
       // Former empty-object response option. Empty objects now have one conformant encoding.
       if (reader.match(TAG_READ_EMPTY_DATA_OBJECT)) {
-        ISOException.throwIt(PIV.SW_PUT_DATA_CONFIG_INVALID_VALUE);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       // Use RSA CRT
@@ -815,7 +804,7 @@ final class Config {
    * and prevents a later parser stage from ignoring trailing policy data.
    *
    * @param reader reader positioned at the first policy TLV
-   * @throws ISOException with {@link ISO7816#SW_DATA_INVALID} if the encoding is not canonical
+   * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} if the encoding is not canonical
    */
   private static void validateUpdateEncoding(TLVReader reader) {
     byte[] data = reader.getBuffer();
@@ -829,18 +818,18 @@ final class Config {
           || policy > (short) (TAG_OPTIONS & 0xFF)
           || policy <= previousPolicy
           || (data[cursor] & TLV.MASK_CONSTRUCTED) == (byte) 0) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
-      short policyEnd = TLV.objectEnd(data, cursor, end, false);
-      short child = TLV.dataOffset(data, cursor, policyEnd, false);
-      if (child == policyEnd) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      short policyEnd = TLV.objectEnd(data, cursor, end);
+      short child = TLV.dataOffset(data, cursor, policyEnd);
+      if (child == policyEnd) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       validatePolicyChildren(data, child, policyEnd, (byte) policy);
       previousPolicy = policy;
       cursor = policyEnd;
     }
 
-    if (cursor != end) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (cursor != end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
   }
 
   /**
@@ -853,7 +842,7 @@ final class Config {
    * @param cursor offset of the first child TLV
    * @param end exclusive end offset of the policy
    * @param policy enclosing policy tag
-   * @throws ISOException with {@link ISO7816#SW_DATA_INVALID} if a child is malformed or unknown
+   * @throws ISOException with {@link ISO7816#SW_WRONG_DATA} if a child is malformed or unknown
    */
   private static void validatePolicyChildren(byte[] data, short cursor, short end, byte policy) {
     short previousTag = (short) 0x7F;
@@ -873,7 +862,7 @@ final class Config {
         maximumTag = (short) (TAG_USE_RSA_CRT & 0xFF);
         break;
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         return;
     }
 
@@ -883,12 +872,12 @@ final class Config {
           || tag > maximumTag
           || tag <= previousTag
           || (data[cursor] & TLV.MASK_CONSTRUCTED) != (byte) 0
-          || TLV.readLength(data, cursor, end, false) != (short) 1) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+          || TLV.readLength(data, cursor, end) != (short) 1) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
       previousTag = tag;
-      cursor = TLV.objectEnd(data, cursor, end, false);
+      cursor = TLV.objectEnd(data, cursor, end);
     }
-    if (cursor != end) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (cursor != end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
   }
 }

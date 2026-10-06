@@ -78,9 +78,9 @@ jobs:
           if-no-files-found: ignore
 
   coverage:
-    name: Coverage ratchet
+    name: Coverage ratchets
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v7
@@ -100,15 +100,28 @@ jobs:
             build/lib
           key: ivy-${{ runner.os }}-jdk17-${{ hashFiles('build/ivy.xml', 'build/ivysettings.xml') }}
 
-      - name: Enforce 80 percent applet line coverage
+      # The softhsm-tagged host-tool tests find the module at /usr/lib/softhsm/libsofthsm2.so.
+      - name: Install SoftHSM2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2
+
+      # Measures the standard CS2 attestation, standard CS7 no-attestation, and FIPS CS2
+      # attestation profiles plus the host tool, and enforces each line, branch, and class floor.
+      - name: Enforce coverage ratchets
         run: tools/ant/bin/ant -f build/build.xml coverage
 
-      - name: Upload coverage report
+      - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
-          path: build/coverage/
+          path: |
+            build/coverage/*/build.log
+            build/coverage/*/jacoco.xml
+            build/coverage/*/html/
+            build/coverage/*/tool-jacoco.xml
+            build/coverage/*/tool-html/
           if-no-files-found: error
 
   verify:

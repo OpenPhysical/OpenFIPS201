@@ -58,15 +58,25 @@ class GsaIcam46HeadlessSmokeTest {
     assumeTrue(Files.isDirectory(ICAM_46), "ICAM card 46 not present at " + ICAM_46);
     ConformancePackage profile = IcamCardFolder.load(ICAM_46);
     ConformancePackage.KeyMaterial cardAuthentication = findKey(profile, (byte) 0x9E);
+    boolean fips = Boolean.getBoolean("fips.mode");
+    if (fips) {
+      // Card 46 ships pre-issued 9A/9C certificates for imported keys; a FIPS build refuses them.
+      assertImportOf9a9cRefused(profile);
+    }
 
     JavaCardEngine engine = JavaCardEngine.create();
     AID aid = new AID(PIV_AID, (short) 0, (byte) PIV_AID.length);
     engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
     ConformanceProvisioner.ProvisionReport report =
         ConformanceProvisioner.provision(
-            () -> engine.connect("T=1", true), ScpConfig.defaultTestScp03(), profile, null);
+            () -> engine.connect("T=1", true),
+            ScpConfig.defaultTestScp03(),
+            profile,
+            null,
+            ConformanceProvisioner.KeySource.forBuild(fips));
     assertEquals(11, report.objectsCreated);
-    assertEquals(4, report.keysImported);
+    assertEquals(4, report.keysImported + report.keysGenerated);
+    assertEquals(fips ? restrictedKeys(profile) : 0, report.keysGenerated);
 
     try (BIBO bibo = engine.connect("T=1", true)) {
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256)));
@@ -115,16 +125,26 @@ class GsaIcam46HeadlessSmokeTest {
     }
   }
 
+  /**
+   * In a FIPS build each vendored FIPS profile's imported 9A/9C is refused; with 9A/9C generated on
+   * the card every object and the remaining imported keys provision and read back.
+   */
   private static void provisionAndReadCoreObjects(Path path, String card) throws Exception {
     ConformancePackage profile = IcamCardFolder.load(path);
+    assertImportOf9a9cRefused(profile);
     JavaCardEngine engine = JavaCardEngine.create();
     AID aid = new AID(PIV_AID, (short) 0, (byte) PIV_AID.length);
     engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
     ConformanceProvisioner.ProvisionReport report =
         ConformanceProvisioner.provision(
-            () -> engine.connect("T=1", true), ScpConfig.defaultTestScp03(), profile, null);
+            () -> engine.connect("T=1", true),
+            ScpConfig.defaultTestScp03(),
+            profile,
+            null,
+            ConformanceProvisioner.KeySource.GENERATE_9A_9C);
     assertEquals(profile.dataObjects.size(), report.objectsCreated, card);
-    assertEquals(profile.keys.size(), report.keysImported, card);
+    assertEquals(restrictedKeys(profile), report.keysGenerated, card);
+    assertEquals(profile.keys.size(), report.keysImported + report.keysGenerated, card);
     try (BIBO bibo = engine.connect("T=1", true)) {
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0xA4, 0x04, 0x00, PIV_AID, 256)));
       assertSw(0x9000, transmit(bibo, new CommandAPDU(0x00, 0x20, 0x00, 0x80, profile.pin)));
@@ -132,6 +152,36 @@ class GsaIcam46HeadlessSmokeTest {
       assertObjectReadable(bibo, "5FC102");
       assertObjectReadable(bibo, "5FC101");
     }
+  }
+
+  /** Importing the profile's 9A (and 9C) as supplied fails with 6A80 at the key definition. */
+  private static void assertImportOf9a9cRefused(ConformancePackage profile) {
+    assertTrue(restrictedKeys(profile) > 0, "profile carries 9A or 9C");
+    JavaCardEngine engine = JavaCardEngine.create();
+    AID aid = new AID(PIV_AID, (short) 0, (byte) PIV_AID.length);
+    engine.installApplet(aid, OpenFIPS201.class, new byte[0]);
+    IllegalStateException refused =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            IllegalStateException.class,
+            () ->
+                ConformanceProvisioner.provision(
+                    () -> engine.connect("T=1", true),
+                    ScpConfig.defaultTestScp03(),
+                    profile,
+                    null,
+                    ConformanceProvisioner.KeySource.IMPORT));
+    assertTrue(refused.getMessage().contains("Create key"), refused.getMessage());
+    assertTrue(refused.getMessage().contains("0x6A80"), refused.getMessage());
+  }
+
+  private static int restrictedKeys(ConformancePackage profile) {
+    int count = 0;
+    for (ConformancePackage.KeyMaterial key : profile.keys) {
+      if (key.slot == (byte) 0x9A || key.slot == (byte) 0x9C) {
+        count++;
+      }
+    }
+    return count;
   }
 
   private static void assertObjectReadable(BIBO bibo, String objectId) throws Exception {

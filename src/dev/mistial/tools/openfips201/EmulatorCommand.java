@@ -1,6 +1,7 @@
 package dev.mistial.tools.openfips201;
 
 import dev.mistial.tools.openfips201.common.HexUtil;
+import dev.mistial.tools.openfips201.emulator.EmulatedApplet;
 import dev.mistial.tools.openfips201.emulator.ZmqApduServer;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
@@ -32,14 +33,25 @@ final class EmulatorCommand implements Callable<Integer> {
     @Option(names = "--scp03-key", description = "SCP03 master key hex; defaults to GP test key.")
     String scp03Key;
 
+    @Option(
+        names = "--applet",
+        defaultValue = "piv",
+        description = "Applet package to register: piv (OpenFIPS201) or sam (Issuer SAM).")
+    String applet;
+
     @Override
     public Integer call() {
       byte[] key = scp03Key == null ? PlaintextKeys.DEFAULT_KEY() : HexUtil.parse(scp03Key);
-      try (ZmqApduServer server = new ZmqApduServer(key)) {
+      final EmulatedApplet emulated = EmulatedApplet.named(applet);
+      try (ZmqApduServer server = new ZmqApduServer(key, emulated)) {
         server.run(
             endpoint,
             bound -> {
-              System.out.println("OpenFIPS201 emulator serving on " + bound);
+              System.out.println(
+                  "OpenFIPS201 emulator ("
+                      + applet.toLowerCase(java.util.Locale.ROOT)
+                      + ") serving on "
+                      + bound);
               Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
             });
       }

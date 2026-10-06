@@ -10,8 +10,17 @@ package com.makina.security.openfips201;
 import javacard.framework.JCSystem;
 import javacard.framework.Util;
 
-/** Validates uncompressed prime-field EC points before scalar multiplication. */
+/**
+ * Validates uncompressed prime-field EC points before scalar multiplication.
+ *
+ * <p>This is the single definition of the uncompressed encoding {@code 04 || X || Y} (ANSI X9.62,
+ * SEC 1 Section 2.3.3) and of the SP 800-56A Section 5.6.2.3.3 partial public-key validation used
+ * by OPACITY (SP 800-73-5 Part 2 Table 16 step C4) and generic ECDH.
+ */
 final class ECPointValidator {
+  /** Leading octet of an uncompressed point encoding. */
+  static final byte POINT_UNCOMPRESSED = (byte) 0x04;
+
   private static final short MAX_FIELD_LENGTH = (short) 48;
   private static final short SLOT_COUNT = (short) 7;
   static final short WORKSPACE_LENGTH = (short) (MAX_FIELD_LENGTH * SLOT_COUNT);
@@ -34,10 +43,18 @@ final class ECPointValidator {
     this.workspace = workspace;
   }
 
+  /**
+   * Returns the length of an uncompressed point on a curve whose field elements are {@code
+   * fieldLength} octets long.
+   */
+  static short encodedLength(short fieldLength) {
+    return (short) (fieldLength * (short) 2 + (short) 1);
+  }
+
   boolean isValid(byte[] encoded, short offset, short length, ECParams params) {
     byte[] modulus = params.getP();
     short fieldLength = (short) modulus.length;
-    if (length != (short) (fieldLength * (short) 2 + (short) 1) || encoded[offset] != (byte) 0x04) {
+    if (length != encodedLength(fieldLength) || encoded[offset] != POINT_UNCOMPRESSED) {
       return false;
     }
 
@@ -59,7 +76,15 @@ final class ECPointValidator {
     multiply(workspace, y, workspace, y, workspace, y2, modulus, fieldLength);
     multiply(workspace, x, workspace, x, workspace, x2, modulus, fieldLength);
     multiply(workspace, x2, workspace, x, workspace, rhs, modulus, fieldLength);
-    multiply(params.getA(), (short) 0, workspace, x, workspace, x2, modulus, fieldLength);
+    if (isMinusThree(params.getA(), modulus, fieldLength)) {
+      // The NIST prime curves P-256 and P-384 have a = p - 3, so a*x = -3x (mod p) needs two
+      // modular additions and one subtraction instead of a bit-serial multiplication.
+      addMod(workspace, x, workspace, x, workspace, x2, modulus, fieldLength);
+      addMod(workspace, x2, workspace, x, workspace, x2, modulus, fieldLength);
+      negateMod(workspace, x2, modulus, fieldLength);
+    } else {
+      multiply(params.getA(), (short) 0, workspace, x, workspace, x2, modulus, fieldLength);
+    }
     addMod(workspace, rhs, workspace, x2, workspace, rhs, modulus, fieldLength);
     addMod(workspace, rhs, params.getB(), (short) 0, workspace, rhs, modulus, fieldLength);
 
@@ -127,6 +152,33 @@ final class ECPointValidator {
         output[(short) (outputOffset + i)] = (byte) difference;
         borrow = difference < 0 ? (short) 1 : (short) 0;
       }
+    }
+  }
+
+  /** Returns whether {@code a + 3 == p}, comparing the {@code length}-octet big-endian values. */
+  private static boolean isMinusThree(byte[] a, byte[] modulus, short length) {
+    short carry = (short) 3;
+    for (short i = (short) (length - 1); i >= 0; i--) {
+      short sum = (short) ((a[i] & 0xFF) + carry);
+      if ((byte) sum != modulus[i]) return false;
+      carry = (short) (sum >>> 8);
+    }
+    return carry == 0;
+  }
+
+  /** Replaces the reduced value at {@code offset} with its additive inverse modulo {@code p}. */
+  private void negateMod(byte[] value, short offset, byte[] modulus, short length) {
+    boolean zero = true;
+    for (short i = 0; i < length; i++) {
+      if (value[(short) (offset + i)] != (byte) 0) zero = false;
+    }
+    if (zero) return;
+    short borrow = 0;
+    for (short i = (short) (length - 1); i >= 0; i--) {
+      short difference =
+          (short) ((modulus[i] & 0xFF) - (value[(short) (offset + i)] & 0xFF) - borrow);
+      value[(short) (offset + i)] = (byte) difference;
+      borrow = difference < 0 ? (short) 1 : (short) 0;
     }
   }
 

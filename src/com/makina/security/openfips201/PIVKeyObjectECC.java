@@ -29,6 +29,9 @@ package com.makina.security.openfips201;
 import javacard.framework.CardRuntimeException;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
+import javacard.framework.JCSystem;
+import javacard.framework.Util;
+import javacard.security.ECKey;
 import javacard.security.ECPrivateKey;
 import javacard.security.ECPublicKey;
 import javacard.security.KeyBuilder;
@@ -36,8 +39,6 @@ import javacard.security.KeyPair;
 
 /** Provides functionality for ECC PIV key objects */
 final class PIVKeyObjectECC extends PIVKeyObjectPKI {
-  private static final byte CONST_POINT_UNCOMPRESSED = (byte) 0x04;
-
   // The ECC public key element tag
   static final byte ELEMENT_ECC_POINT = (byte) 0x86;
 
@@ -57,7 +58,12 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   private ECPrivateKey privateKey = null;
   private ECPublicKey publicKey = null;
   private KeyPair keyPair = null;
+  // The published CVC and an equal-sized staging buffer. Util.arrayCopyNonAtomic "does not use
+  // the transaction facility during the copy operation even if a transaction is in progress" (JC
+  // 3.0.5 API), so a replacement is copied into the staging buffer and published by a
+  // transactional swap of the references and length.
   private byte[] smCvc = null;
+  private byte[] smCvcStaging = null;
   private short smCvcLength = (short) 0;
 
   private final ECParams params;
@@ -76,18 +82,19 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
     this.params = params;
     if (params == null) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      // No curve is registered for this mechanism: ISO/IEC 7816-4 Table 7 '6A81' (function not
+      // supported), the same status as an unsupported mechanism at key creation.
+      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
-    // Uncompressed ECC public keys are marshaled as the concatenation of:
-    // CONST_POINT_UNCOMPRESSED | X | Y
-    // where the length of the X and Y coordinates is the byte length of the key.
-    // TODO: We can use 2 consts and decide which to compare against based on the mechanism!
-    marshaledPubKeyLen = (short) (getKeyLengthBytes() * 2 + 1);
+    // Uncompressed ECC public keys are marshaled as 04 || X || Y, where each coordinate is the
+    // byte length of the key.
+    marshaledPubKeyLen = ECPointValidator.encodedLength(getKeyLengthBytes());
     allocatePrivate();
     allocatePublic();
     if (isSecureMessagingMechanism()) {
       smCvc = new byte[LENGTH_SM_CVC_MAX];
+      smCvcStaging = new byte[LENGTH_SM_CVC_MAX];
     }
   }
 
@@ -100,12 +107,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       byte role,
       byte attributes,
       ECCurveRegistry curves) {
-    byte symmetricAttributes =
-        (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
-    if ((attributes & symmetricAttributes) != (byte) 0
-        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
+    validateRoleAttributes(role, attributes);
     return new PIVKeyObjectECC(
         id,
         modeContact,
@@ -146,7 +148,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         }
 
         // Only uncompressed points are supported
-        if (buffer[offset] != CONST_POINT_UNCOMPRESSED) {
+        if (buffer[offset] != ECPointValidator.POINT_UNCOMPRESSED) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return; // Keep static analyser happy
         }
@@ -176,8 +178,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
           return;
         }
-        javacard.framework.Util.arrayCopyNonAtomic(buffer, offset, smCvc, (short) 0, length);
-        smCvcLength = length;
+        publishSmCvc(buffer, offset, length);
         break;
 
         // Clear all key parts
@@ -191,13 +192,32 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     }
   }
 
+  /**
+   * Replaces the secure-messaging CVC so that a power loss leaves either the complete previous or
+   * the complete new certificate published.
+   *
+   * <p>The bytes go non-atomically into the unpublished staging buffer; the reference and length
+   * swap is then a persistent update inside the caller's transaction, or inside a transaction
+   * started here when none is in progress.
+   */
+  private void publishSmCvc(byte[] buffer, short offset, short length) {
+    byte[] staged = smCvcStaging;
+    Util.arrayCopyNonAtomic(buffer, offset, staged, (short) 0, length);
+    boolean ownTransaction = JCSystem.getTransactionDepth() == (byte) 0;
+    if (ownTransaction) JCSystem.beginTransaction();
+    smCvcStaging = smCvc;
+    smCvc = staged;
+    smCvcLength = length;
+    if (ownTransaction) JCSystem.commitTransaction();
+  }
+
   /** Clears and reallocates a private key. */
   private void allocatePrivate() {
     if (privateKey == null) {
       privateKey =
           (ECPrivateKey)
               KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, getKeyLengthBits(), false);
-      setPrivateParams();
+      setDomainParams(privateKey);
       allocateKeyPair();
     }
   }
@@ -208,7 +228,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       publicKey =
           (ECPublicKey)
               KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, getKeyLengthBits(), false);
-      setPublicParams();
+      setDomainParams(publicKey);
       allocateKeyPair();
     }
   }
@@ -233,8 +253,13 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
       keyPair.genKeyPair();
 
-      if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(scratch, offset)) {
-        ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+      // The attestation authority runs the pairwise consistency test in every profile: its public
+      // key is certified by the issuer, so a generated pair must be proven consistent first.
+      if ((FipsPolicy.ENABLED || getId() == PIV.ID_KEY_ATTESTATION)
+          && !pairwiseConsistencyTest(scratch, offset)) {
+        // A generated pair that fails its consistency test is an internal fault: ISO/IEC 7816-4
+        // Table 6 '6F00' (no precise diagnosis).
+        ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
 
       TLVWriter writer = TLVWriter.getInstance();
@@ -250,9 +275,11 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       length = writer.finish();
     } catch (CardRuntimeException cre) {
       // At this point we are in a nondeterministic state so we will
-      // clear both the public and private keys if they exist
+      // clear both the public and private keys if they exist. The original exception is rethrown
+      // so an ISOException (such as the 6A84 consistency failure) keeps its status word: JCRE
+      // 3.0.5 Section 3.3 returns ISO7816.SW_UNKNOWN for "any other exception".
       clear();
-      CardRuntimeException.throwIt(cre.getReason());
+      throw cre;
     }
 
     return length;
@@ -289,55 +316,40 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
    * @return the length of the key
    */
   @Override
-  short getKeyLengthBits() throws ISOException {
-    switch (getMechanism()) {
-      case PIV.ID_ALG_ECC_P256:
-      case PIV.ID_ALG_ECC_CS2:
-        return KeyBuilder.LENGTH_EC_FP_256;
-
-      case PIV.ID_ALG_ECC_P384:
-      case PIV.ID_ALG_ECC_CS7:
-        return KeyBuilder.LENGTH_EC_FP_384;
-
-      default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        return (short) 0; // Keep compiler happy
-    }
+  short getKeyLengthBits() {
+    // The curve is selected by ECCurveRegistry.forMechanism, the single mechanism-to-curve
+    // mapping. A P-256 or P-384 field prime is 32 or 48 octets (KeyBuilder.LENGTH_EC_FP_256/384).
+    return (short) (params.getP().length * 8);
   }
 
   /**
-   * @return true if the privateKey exists and is initialized.
+   * @return true if the privateKey exists and is initialized and, for a secure messaging key, its
+   *     CVC is loaded.
    */
   @Override
   boolean hasPrivateMaterial() {
-
-    switch (getMechanism()) {
-      case PIV.ID_ALG_ECC_P256:
-      case PIV.ID_ALG_ECC_P384:
-        return (privateKey != null && privateKey.isInitialized());
-
-      case PIV.ID_ALG_ECC_CS2:
-      case PIV.ID_ALG_ECC_CS7:
-        return (privateKey != null && privateKey.isInitialized() && smCvcLength > (short) 0);
-
-      default:
-        return false; // Satisfy the compiler
-    }
+    return privateKey != null
+        && privateKey.isInitialized()
+        && (!isSecureMessagingMechanism() || smCvcLength > (short) 0);
   }
 
   @Override
   void clear() {
-    publicKey.clearKey();
-    privateKey.clearKey();
-    setPublicParams();
-    setPrivateParams();
-    if (smCvc != null) {
-      PIVSecurityProvider.zeroise(smCvc, (short) 0, (short) smCvc.length);
-    }
+    // Unpublish before wiping: the origin, ready flag and CVC length are each a single atomic
+    // persistent write, so a power loss during the non-atomic wipe below leaves an unusable key
+    // rather than a published key or CVC with partly erased content.
     smCvcLength = (short) 0;
     clearOrigin();
-    resetImportedParts();
     resetImportedPairReady();
+    resetImportedParts();
+    publicKey.clearKey();
+    privateKey.clearKey();
+    setDomainParams(publicKey);
+    setDomainParams(privateKey);
+    if (smCvc != null) {
+      PIVSecurityProvider.zeroise(smCvc, (short) 0, (short) smCvc.length);
+      PIVSecurityProvider.zeroise(smCvcStaging, (short) 0, (short) smCvcStaging.length);
+    }
   }
 
   @Override
@@ -369,37 +381,20 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     return getMechanism() == PIV.ID_ALG_ECC_CS2 || getMechanism() == PIV.ID_ALG_ECC_CS7;
   }
 
-  /** Set ECC domain parameters. */
-  private void setPrivateParams() {
-
+  /** Sets this key's ECC domain parameters on {@code key}. */
+  private void setDomainParams(ECKey key) {
     byte[] a = params.getA();
     byte[] b = params.getB();
     byte[] g = params.getG();
     byte[] p = params.getP();
     byte[] r = params.getN();
 
-    privateKey.setA(a, (short) 0, (short) a.length);
-    privateKey.setB(b, (short) 0, (short) b.length);
-    privateKey.setG(g, (short) 0, (short) g.length);
-    privateKey.setR(r, (short) 0, (short) r.length);
-    privateKey.setFieldFP(p, (short) 0, (short) p.length);
-    privateKey.setK(params.getH());
-  }
-
-  /** Set ECC domain parameters. */
-  private void setPublicParams() {
-    byte[] a = params.getA();
-    byte[] b = params.getB();
-    byte[] g = params.getG();
-    byte[] p = params.getP();
-    byte[] r = params.getN();
-
-    publicKey.setA(a, (short) 0, (short) a.length);
-    publicKey.setB(b, (short) 0, (short) b.length);
-    publicKey.setG(g, (short) 0, (short) g.length);
-    publicKey.setR(r, (short) 0, (short) r.length);
-    publicKey.setFieldFP(p, (short) 0, (short) p.length);
-    publicKey.setK(params.getH());
+    key.setA(a, (short) 0, (short) a.length);
+    key.setB(b, (short) 0, (short) b.length);
+    key.setG(g, (short) 0, (short) g.length);
+    key.setR(r, (short) 0, (short) r.length);
+    key.setFieldFP(p, (short) 0, (short) p.length);
+    key.setK(params.getH());
   }
 
   /**
@@ -452,6 +447,24 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     return PIVCrypto.doVerify(
         publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
   }
+
+  // #if ATTESTATION_ENABLED
+  /**
+   * Writes the uncompressed public point {@code 04 || X || Y} (ANSI X9.62).
+   *
+   * @param outBuffer the output buffer
+   * @param outOffset the starting output offset
+   * @return the point length (65 octets for P-256)
+   * @throws ISOException with {@link ISO7816#SW_CONDITIONS_NOT_SATISFIED} if no public key is set
+   */
+  short getPublicPoint(byte[] outBuffer, short outOffset) throws ISOException {
+    if (publicKey == null || !publicKey.isInitialized()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+      return (short) 0x00;
+    }
+    return publicKey.getW(outBuffer, outOffset);
+  }
+  // #endif
 
   @Override
   short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {

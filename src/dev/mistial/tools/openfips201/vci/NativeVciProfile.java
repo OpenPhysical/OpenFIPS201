@@ -14,24 +14,34 @@ import dev.mistial.tools.openfips201.common.BerTlvReader;
 import dev.mistial.tools.openfips201.common.HexUtil;
 import dev.mistial.tools.openfips201.provisioning.CertificationProfileValidator;
 import dev.mistial.tools.openfips201.provisioning.ConformancePackage;
+import dev.mistial.tools.openfips201.provisioning.ContentSigningProfile;
 import dev.mistial.tools.openfips201.provisioning.IcamCardFolder;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.ECPublicKey;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSet;
+import org.bouncycastle.asn1.cms.Attribute;
+import org.bouncycastle.asn1.cms.AttributeTable;
 import org.bouncycastle.asn1.icao.DataGroupHash;
 import org.bouncycastle.asn1.icao.LDSSecurityObject;
 import org.bouncycastle.asn1.nist.NISTObjectIdentifiers;
+import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.cert.jcajce.JcaCertStore;
 import org.bouncycastle.cms.CMSProcessableByteArray;
 import org.bouncycastle.cms.CMSSignedData;
 import org.bouncycastle.cms.CMSSignedDataGenerator;
+import org.bouncycastle.cms.DefaultSignedAttributeTableGenerator;
 import org.bouncycastle.cms.jcajce.JcaSignerInfoGeneratorBuilder;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
@@ -50,14 +60,36 @@ public final class NativeVciProfile {
   private static final byte[] ID_SM_SIGNER = HexUtil.parse("5FC122");
   private static final byte[] ID_PAIRING = HexUtil.parse("5FC123");
 
+  /**
+   * SP 800-73-5 Part 1 Section 3.1.2.1: "Specify an eContentType of id-PIV-CHUIDSecurityObject".
+   */
+  static final ASN1ObjectIdentifier ID_PIV_CHUID_SECURITY_OBJECT =
+      new ASN1ObjectIdentifier("2.16.840.1.101.3.6.1");
+
+  /** id-pivSigner-DN, the CHUID signed attribute carrying the content signer's subject name. */
+  static final ASN1ObjectIdentifier ID_PIV_SIGNER_DN =
+      new ASN1ObjectIdentifier("2.16.840.1.101.3.6.5");
+
+  /**
+   * SP 800-85B AS06.04.06: "The eContentType of the encapContentInfo shall be
+   * id-icao-ldsSecurityObject (OID = 1.3.27.1.1.1)."
+   */
+  static final ASN1ObjectIdentifier ID_ICAO_LDS_SECURITY_OBJECT =
+      new ASN1ObjectIdentifier("1.3.27.1.1.1");
+
   private NativeVciProfile() {}
 
   public static Material build(
       Path icamDirectory, String caOutPrefix, String pairingCode, byte suite) throws Exception {
     VciProvisioning.ensureProvider();
     ConformancePackage base = IcamCardFolder.load(icamDirectory);
+    // The re-signed CHUID keeps the base card's FASC-N, which selects the signer's purpose.
     VciProvisioning.CaMaterial signer =
-        VciProvisioning.makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Content Signer", suite);
+        VciProvisioning.makeCa(
+            caOutPrefix,
+            "CN=OpenFIPS201 VCI Content Signer",
+            suite,
+            ContentSigningProfile.purposeForFascN(ContentSigningProfile.fascN(chuidOf(base))));
     ConformancePackage profile = augment(base, signer.privateKey, signer.certificate, pairingCode);
     CertificationProfileValidator.validate(
         profile, new CertificationProfileValidator.Claims(true, true, true));
@@ -93,6 +125,13 @@ public final class NativeVciProfile {
     }
     VciProvisioning.provisionSmCredentialOnly(
         bibo, material.signerCertificatePath, material.signerKeyPath, null, material.suite);
+  }
+
+  private static byte[] chuidOf(ConformancePackage base) {
+    for (ConformancePackage.DataObject object : base.dataObjects) {
+      if (Arrays.equals(object.id, ID_CHUID)) return object.payload;
+    }
+    throw new IllegalArgumentException("base profile has no CHUID");
   }
 
   private static ConformancePackage augment(
@@ -187,7 +226,8 @@ public final class NativeVciProfile {
     }
     content.write(VciSupport.tlv(0xFE, new byte[0]));
     byte[] signedContent = content.toByteArray();
-    byte[] signature = signCms(signedContent, key, certificate, true, false);
+    byte[] signature =
+        signCms(signedContent, ID_PIV_CHUID_SECURITY_OBJECT, key, certificate, true, false);
     return concat(
         Arrays.copyOf(signedContent, signedContent.length - 2),
         VciSupport.tlv(0x3E, signature),
@@ -202,7 +242,11 @@ public final class NativeVciProfile {
     };
     ByteArrayOutputStream mapping = new ByteArrayOutputStream();
     List<DataGroupHash> hashes = new ArrayList<DataGroupHash>();
-    MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+    // SP 800-78-5 Section 3.2.3: "This specification requires that the message digests of digital
+    // information be computed using the same hash algorithm used to generate the digital signature
+    // on the Security Object."
+    boolean p384 = isP384(certificate);
+    MessageDigest digest = MessageDigest.getInstance(p384 ? "SHA-384" : "SHA-256");
     int dg = 1;
     for (String[] entry : required) {
       ConformancePackage.DataObject object = find(objects, entry[0]);
@@ -216,39 +260,76 @@ public final class NativeVciProfile {
         BerTlvReader.Tlv discovery = BerTlvReader.read(object.payload, 0);
         hashInput = Arrays.copyOfRange(object.payload, discovery.valueOffset, discovery.nextOffset);
       }
-      hashes.add(new DataGroupHash(dg, new DEROctetString(sha256.digest(hashInput))));
+      hashes.add(new DataGroupHash(dg, new DEROctetString(digest.digest(hashInput))));
       dg++;
     }
     LDSSecurityObject lds =
         new LDSSecurityObject(
-            new AlgorithmIdentifier(NISTObjectIdentifiers.id_sha256),
+            new AlgorithmIdentifier(
+                p384 ? NISTObjectIdentifiers.id_sha384 : NISTObjectIdentifiers.id_sha256),
             hashes.toArray(new DataGroupHash[hashes.size()]));
-    byte[] cms = signCms(lds.getEncoded("DER"), key, certificate, false, true);
+    byte[] cms =
+        signCms(lds.getEncoded("DER"), ID_ICAO_LDS_SECURITY_OBJECT, key, certificate, false, true);
     return concat(
         VciSupport.tlv(0xBA, mapping.toByteArray()),
         VciSupport.tlv(0xBB, cms),
         VciSupport.tlv(0xFE, new byte[0]));
   }
 
+  /**
+   * Signs {@code content} as a CMS SignedData with the given eContentType.
+   *
+   * <p>SP 800-78-5 Section 3.2.1 Table 2 pairs "ECDSA (Curve P-256)" with "SHA-256" and "ECDSA
+   * (Curve P-384)" with "SHA-384". For the CHUID, SP 800-73-5 Part 1 Section 3.1.2.1 requires the
+   * SignerInfo to "Include, at a minimum, the following signed attributes: ... A pivSigner-DN
+   * attribute containing the subject name that appears in the PKI certificate for the entity that
+   * signed the CHUID".
+   */
   private static byte[] signCms(
       byte[] content,
+      ASN1ObjectIdentifier contentType,
       PrivateKey key,
       X509Certificate certificate,
       boolean includeCertificate,
       boolean encapsulate)
       throws Exception {
     ContentSigner signer =
-        new JcaContentSignerBuilder("SHA256withECDSA").setProvider("BC").build(key);
-    CMSSignedDataGenerator generator = new CMSSignedDataGenerator();
-    generator.addSignerInfoGenerator(
+        new JcaContentSignerBuilder(isP384(certificate) ? "SHA384withECDSA" : "SHA256withECDSA")
+            .setProvider("BC")
+            .build(key);
+    JcaSignerInfoGeneratorBuilder signerInfo =
         new JcaSignerInfoGeneratorBuilder(
-                new JcaDigestCalculatorProviderBuilder().setProvider("BC").build())
-            .build(signer, certificate));
+            new JcaDigestCalculatorProviderBuilder().setProvider("BC").build());
+    if (ID_PIV_CHUID_SECURITY_OBJECT.equals(contentType)) {
+      ASN1EncodableVector attributes = new ASN1EncodableVector();
+      attributes.add(
+          new Attribute(
+              ID_PIV_SIGNER_DN,
+              new DERSet(
+                  X500Name.getInstance(certificate.getSubjectX500Principal().getEncoded()))));
+      signerInfo.setSignedAttributeGenerator(
+          new DefaultSignedAttributeTableGenerator(new AttributeTable(attributes)));
+    }
+    CMSSignedDataGenerator generator = new CMSSignedDataGenerator();
+    generator.addSignerInfoGenerator(signerInfo.build(signer, certificate));
     if (includeCertificate) {
       generator.addCertificates(new JcaCertStore(Arrays.asList(certificate)));
     }
-    CMSSignedData signed = generator.generate(new CMSProcessableByteArray(content), encapsulate);
+    CMSSignedData signed =
+        generator.generate(new CMSProcessableByteArray(contentType, content), encapsulate);
     return signed.getEncoded();
+  }
+
+  private static boolean isP384(X509Certificate certificate) {
+    PublicKey key = certificate.getPublicKey();
+    if (!(key instanceof ECPublicKey)) {
+      throw new IllegalArgumentException("VCI content signer must hold an ECDSA key");
+    }
+    int fieldSize = ((ECPublicKey) key).getParams().getCurve().getField().getFieldSize();
+    if (fieldSize != 256 && fieldSize != 384) {
+      throw new IllegalArgumentException("VCI content signer must use Curve P-256 or P-384");
+    }
+    return fieldSize == 384;
   }
 
   private static ConformancePackage.DataObject find(

@@ -35,7 +35,7 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
               createKey(SLOT_MANAGEMENT, ALG_AES_128, ROLE_ADMIN, ATTR_IMPORTABLE_PERMIT_MUTUAL),
               "Initial 9B AES-128 definition should succeed");
           assertSw(
-              0x6E27,
+              0x6A89,
               createKey(SLOT_MANAGEMENT, ALG_AES_256, ROLE_ADMIN, ATTR_IMPORTABLE_PERMIT_MUTUAL),
               "Same key reference must not accept a second mechanism");
         });
@@ -51,7 +51,7 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
               createKey(SLOT_RETIRED, ALG_RSA_2048, ROLE_KEY_ESTABLISH, ATTR_IMPORTABLE),
               "Initial retired RSA definition should succeed");
           assertSw(
-              0x6E27,
+              0x6A89,
               createKey(SLOT_RETIRED, ALG_ECC_P256, ROLE_KEY_ESTABLISH, ATTR_IMPORTABLE),
               "Retired slot must not accept a second key mechanism");
         });
@@ -100,7 +100,7 @@ class OpenFIPS201KeySlotInvariantTest extends OpenFIPS201TestSupport {
         () -> {
           assertSw(0x9000, selectApplet(), "SELECT before retired config tag test");
           assertSw(
-              0x6E26,
+              0x6A80,
               transmit(0x84, 0xDB, 0xFF, 0xFF, hex("6805A403830100")),
               "Former restrictSingleKey option must fail instead of being ignored");
         });

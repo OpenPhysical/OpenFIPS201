@@ -30,6 +30,7 @@ import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.framework.Util;
 import javacard.security.AESKey;
+import javacard.security.KeyBuilder;
 
 /**
  * Tracks transient PIV secure messaging and VCI session state.
@@ -50,11 +51,7 @@ final class PIVSecureMessaging {
   private static final short OFFSET_LAST_CLA = (short) 2;
   private static final short OFFSET_LAST_INS = (short) 3;
   private static final short LENGTH_STATE = (short) 4;
-  // #if VCI_CS2
-  private static final short LENGTH_SESSION_KEY = (short) 16;
-  // #else
-  private static final short LENGTH_SESSION_KEY = (short) 32;
-  // #endif
+  private static final short LENGTH_SESSION_KEY = PIVOpacity.SESSION_KEY_LENGTH;
   private static final short OFFSET_RESPONSE_PHASE = (short) 0;
   private static final short OFFSET_RESPONSE_PHASE_OFFSET = (short) 1;
   private static final short OFFSET_RESPONSE_PLAIN_REMAINING = (short) 2;
@@ -123,6 +120,23 @@ final class PIVSecureMessaging {
   private static final short SW_SM_EXPECTED_OBJECTS_MISSING = (short) 0x6987;
   static final short SW_SM_OBJECTS_INCORRECT = (short) 0x6988;
 
+  /**
+   * Maps a failure of protected-command processing to its Section 4.2.7 SW processing status.
+   *
+   * <p>"If the processing was successful, it SHALL be '90 00'. Otherwise, it SHALL be as follows:
+   * '68 82' ... '69 82' ... '69 87' ... '69 88'". Any other reason raised while unwrapping or
+   * reassembling a protected command is reported as '69 88'.
+   */
+  static short toProcessingStatus(short reason) {
+    if (reason == SW_SM_NOT_SUPPORTED
+        || reason == ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED
+        || reason == SW_SM_EXPECTED_OBJECTS_MISSING
+        || reason == SW_SM_OBJECTS_INCORRECT) {
+      return reason;
+    }
+    return SW_SM_OBJECTS_INCORRECT;
+  }
+
   private final byte[] state;
   private final byte[] commandMcv;
   private final byte[] responseMcv;
@@ -148,12 +162,18 @@ final class PIVSecureMessaging {
   private final AESKey skRmac;
 
   PIVSecureMessaging() {
-    state = JCSystem.makeTransientByteArray(LENGTH_STATE, JCSystem.CLEAR_ON_DESELECT);
-    commandMcv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
-    responseMcv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
-    encCounter = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
+    // SP 800-73-5 Part 2 Section 3.1.1: when the PIV Card Application is reselected "the setting
+    // of all security status indicators in the PIV Card Application SHALL be unchanged". JCRE 3.0.5
+    // Section 5.1 clears CLEAR_ON_DESELECT objects "regardless of whether the SELECT FILE command
+    // ... Reselects the same applet", so the session (keys, MCVs, counter, SM/VCI status and the
+    // response phase that owns the counter advance) is CLEAR_ON_RESET. PIV.deselect() clears it
+    // explicitly when the application is genuinely deselected.
+    state = JCSystem.makeTransientByteArray(LENGTH_STATE, JCSystem.CLEAR_ON_RESET);
+    commandMcv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_RESET);
+    responseMcv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_RESET);
+    encCounter = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_RESET);
     responseState =
-        JCSystem.makeTransientShortArray(LENGTH_RESPONSE_STATE, JCSystem.CLEAR_ON_DESELECT);
+        JCSystem.makeTransientShortArray(LENGTH_RESPONSE_STATE, JCSystem.CLEAR_ON_RESET);
     commandStreamState =
         JCSystem.makeTransientShortArray(LENGTH_COMMAND_STREAM_STATE, JCSystem.CLEAR_ON_DESELECT);
     responseIv = JCSystem.makeTransientByteArray(LENGTH_BLOCK, JCSystem.CLEAR_ON_DESELECT);
@@ -168,15 +188,15 @@ final class PIVSecureMessaging {
     commandStreamMac =
         JCSystem.makeTransientByteArray(LENGTH_SHORT_MAC, JCSystem.CLEAR_ON_DESELECT);
     // #if VCI_CS2
-    skCfrm = PIVCrypto.buildTransientAes128Key();
-    skMac = PIVCrypto.buildTransientAes128Key();
-    skEnc = PIVCrypto.buildTransientAes128Key();
-    skRmac = PIVCrypto.buildTransientAes128Key();
+    skCfrm = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_128);
+    skMac = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_128);
+    skEnc = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_128);
+    skRmac = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_128);
     // #else
-    skCfrm = PIVCrypto.buildTransientAes256Key();
-    skMac = PIVCrypto.buildTransientAes256Key();
-    skEnc = PIVCrypto.buildTransientAes256Key();
-    skRmac = PIVCrypto.buildTransientAes256Key();
+    skCfrm = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_256);
+    skMac = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_256);
+    skEnc = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_256);
+    skRmac = PIVCrypto.buildSessionAesKey(KeyBuilder.LENGTH_AES_256);
     // #endif
   }
 
@@ -246,11 +266,6 @@ final class PIVSecureMessaging {
     skEnc.setKey(buffer, offset);
     offset += keyLength;
     skRmac.setKey(buffer, offset);
-  }
-
-  /** Loads 16-byte (CS2) session keys. */
-  void setSessionKeys(byte[] buffer, short offset) {
-    setSessionKeys(buffer, offset, LENGTH_SESSION_KEY);
   }
 
   short computeConfirmationMac(
@@ -664,9 +679,9 @@ final class PIVSecureMessaging {
       byte tag = apdu[cursor];
       // Section 4.2.7 maps malformed protected objects to 6988. Parse within this command's
       // actual slice, never the unused tail of the larger APDU/reassembly buffer.
-      short tlvLength = TLV.readLength(apdu, cursor, end, false);
-      short valueOffset = TLV.dataOffset(apdu, cursor, end, false);
-      short next = TLV.objectEnd(apdu, cursor, end, false);
+      short tlvLength = TLV.readLength(apdu, cursor, end);
+      short valueOffset = TLV.dataOffset(apdu, cursor, end);
+      short next = TLV.objectEnd(apdu, cursor, end);
 
       if (tag == TAG_ENCRYPTED_DATA) {
         if (expectedTag != TAG_ENCRYPTED_DATA) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
@@ -776,6 +791,11 @@ final class PIVSecureMessaging {
       byte[] plaintext, short plaintextOffset, byte[] out, short outOffset, short maxLength) {
     responseState[OFFSET_RESPONSE_PLAIN_CONSUMED] = (short) 0;
     short cursor = outOffset;
+    // Ne bounds the chunk only from above: an extended Le larger than the response work buffer
+    // yields a full buffer and '61 XX', and the host retrieves the rest with GET RESPONSE
+    // (SP 800-73-5 Part 2 Section 4.2.6).
+    short capacity = (short) (out.length - outOffset);
+    if (maxLength < (short) 0 || maxLength > capacity) maxLength = capacity;
     short end = (short) (outOffset + maxLength);
 
     while (cursor < end && responseState[OFFSET_RESPONSE_PHASE] != RESPONSE_PHASE_NONE) {
@@ -820,9 +840,7 @@ final class PIVSecureMessaging {
   short getResponseStreamStatusWord() {
     if (isResponseStreamComplete()) return ISO7816.SW_NO_ERROR;
 
-    short remaining = remainingResponseStreamBytes();
-    short sw2 = remaining > (short) 0x00FF ? (short) 0 : remaining;
-    return (short) (ISO7816.SW_BYTES_REMAINING_00 | sw2);
+    return ChainBuffer.bytesRemainingStatusWord(remainingResponseStreamBytes());
   }
 
   private void buildPaddedCommandHeader(byte[] apdu, byte[] out, short outOffset) {

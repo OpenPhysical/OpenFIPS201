@@ -1,5 +1,6 @@
 package com.makina.security.openfips201;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -63,35 +64,45 @@ class PIVOpacitySelfTestBehaviorTest {
   void sessionKeyDerivationClearsTransientKdfInput() throws Exception {
     byte[] output = new byte[768];
     byte[] workspace = new byte[448];
-    short pointOffset = 8;
-    short zOffset = 73;
-    short nonceOffset = 105;
-    short cardIdOffset = 121;
-    java.util.Arrays.fill(workspace, zOffset, zOffset + 32, (byte) 0x5A);
+    java.util.Arrays.fill(
+        workspace, PIVOpacity.OFFSET_Z, PIVOpacity.OFFSET_Z + PIVOpacity.FIELD_LENGTH, (byte) 0x5A);
 
     try (AutoCloseable ignored = enterEngineContext()) {
-      new PIVOpacity(output, workspace)
-          .deriveSessionKeys(
-              (short) 32,
-              (short) 16,
-              (byte) 0x09,
-              (short) 160,
-              zOffset,
-              nonceOffset,
-              (short) 16,
-              (short) 0,
-              pointOffset,
-              cardIdOffset);
+      new PIVOpacity(output, workspace).deriveSuiteSessionKeys((byte) 0x00);
     }
 
     boolean derivedKeyPresent = false;
-    for (int index = 0; index < 64; index++) {
+    for (int index = 0; index < PIVOpacity.SESSION_KEY_LENGTH * 4; index++) {
       derivedKeyPresent |= output[index] != (byte) 0;
     }
     assertTrue(derivedKeyPresent, "derived session keys must remain available");
     for (int index = 128; index < output.length; index++) {
       assertTrue(output[index] == (byte) 0, "transient KDF input must be cleared");
     }
+  }
+
+  /**
+   * The KDA CAST and OPACITY establishment derive through the one suite entry point, so the CAST
+   * parameters are the production ones. This pins that suite geometry to SP 800-73-5 Part 2 Table
+   * 18 and to the secure-messaging session-key length.
+   */
+  @Test
+  void selfTestUsesProductionSuiteParameters() throws Exception {
+    boolean cs7 = "CS7".equalsIgnoreCase(System.getProperty("vci.suite", "CS2"));
+    short field = (short) (cs7 ? 48 : 32);
+    assertEquals(field, PIVOpacity.FIELD_LENGTH);
+    assertEquals((short) (cs7 ? 32 : 16), PIVOpacity.SESSION_KEY_LENGTH);
+    assertEquals((short) (cs7 ? 24 : 16), PIVOpacity.NONCE_LENGTH);
+    assertEquals((byte) (cs7 ? 0x0D : 0x09), PIV.OPACITY_KDF_ALG_ID);
+    assertEquals(cs7 ? PIV.ID_ALG_ECC_CS7 : PIV.ID_ALG_ECC_CS2, PIV.ID_ALG_ECC_SM);
+
+    Field sessionKeyLength = PIVSecureMessaging.class.getDeclaredField("LENGTH_SESSION_KEY");
+    sessionKeyLength.setAccessible(true);
+    assertEquals(PIVOpacity.SESSION_KEY_LENGTH, sessionKeyLength.getShort(null));
+
+    // The hash output written at OPACITY_HASH_TMP and the ID_sICC field must fit the SM workspace.
+    assertTrue(PIVOpacity.OFFSET_ID_SICC + 8 <= PIV.OPACITY_HASH_TMP);
+    assertTrue(PIV.OPACITY_HASH_TMP + field <= PIV.LENGTH_SM_RESPONSE);
   }
 
   private static byte[] filled(short length) {

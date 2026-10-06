@@ -121,7 +121,7 @@ class FipsPolicyTest {
             (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN_ALWAYS),
             PIV.ID_ALG_ECC_P384,
             PIVKeyObject.ROLE_SIGN,
-            PIVKeyObject.ATTR_IMPORTABLE));
+            PIVKeyObject.ATTR_NONE));
     assertEquals(
         !FipsPolicy.ENABLED || cs7,
         FipsPolicy.allowsKeyDefinition(
@@ -140,6 +140,48 @@ class FipsPolicyTest {
             PIV.ID_ALG_ECC_P384,
             PIVKeyObject.ROLE_KEY_ESTABLISH,
             PIVKeyObject.ATTR_IMPORTABLE));
+  }
+
+  @Test
+  void attestationAuthorityIsNeverImportable() {
+    assertTrue(
+        FipsPolicy.allowsKeyDefinition(
+            PIV.ID_KEY_ATTESTATION,
+            PIV.ID_ALG_ECC_P256,
+            PIVKeyObject.ROLE_SIGN,
+            PIVKeyObject.ATTR_NONE));
+    assertFalse(
+        FipsPolicy.allowsKeyDefinition(
+            PIV.ID_KEY_ATTESTATION,
+            PIV.ID_ALG_ECC_P256,
+            PIVKeyObject.ROLE_SIGN,
+            PIVKeyObject.ATTR_IMPORTABLE),
+        "F9 is generated on the card in every profile");
+  }
+
+  @Test
+  void authenticationAndSignatureKeysAreGeneratedOnCardInFipsProfile() {
+    for (byte key : new byte[] {(byte) 0x9A, (byte) 0x9C}) {
+      assertEquals(
+          !FipsPolicy.ENABLED,
+          FipsPolicy.allowsKeyDefinition(
+              key, PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN, PIVKeyObject.ATTR_IMPORTABLE),
+          "FIPS 201-3 Sections 4.2.2.1 and 4.2.2.4 require on-card generation of " + hex(key));
+      assertTrue(
+          FipsPolicy.allowsKeyDefinition(
+              key, PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN, PIVKeyObject.ATTR_NONE));
+    }
+    assertTrue(
+        FipsPolicy.allowsKeyDefinition(
+            (byte) 0x9D,
+            PIV.ID_ALG_ECC_P256,
+            PIVKeyObject.ROLE_KEY_ESTABLISH,
+            PIVKeyObject.ATTR_IMPORTABLE),
+        "Key management keys remain importable for escrowed key recovery");
+    assertTrue(
+        FipsPolicy.allowsKeyDefinition(
+            (byte) 0x9E, PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN, PIVKeyObject.ATTR_IMPORTABLE),
+        "The card authentication key remains importable");
   }
 
   @Test
@@ -173,7 +215,7 @@ class FipsPolicyTest {
             (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN),
             PIV.ID_ALG_ECC_P256,
             PIVKeyObject.ROLE_SIGN,
-            PIVKeyObject.ATTR_IMPORTABLE));
+            PIVKeyObject.ATTR_NONE));
     assertTrue(
         FipsPolicy.allowsKeyDefinition(
             PIV.ID_KEY_SECURE_MESSAGING,
@@ -256,7 +298,7 @@ class FipsPolicyTest {
         (byte) 0x9C,
         PIV.ID_ALG_RSA_2048,
         PIVKeyObject.ROLE_SIGN,
-        PIVKeyObject.ATTR_IMPORTABLE,
+        PIVKeyObject.ATTR_NONE,
         PIVObject.ACCESS_MODE_PIN_ALWAYS,
         (byte) (modeVci() | PIVObject.ACCESS_MODE_PIN_ALWAYS));
     for (byte key : new byte[] {(byte) 0x9A, (byte) 0x9D}) {
@@ -264,7 +306,7 @@ class FipsPolicyTest {
           key,
           PIV.ID_ALG_RSA_2048,
           key == (byte) 0x9D ? PIVKeyObject.ROLE_KEY_ESTABLISH : PIVKeyObject.ROLE_SIGN,
-          PIVKeyObject.ATTR_IMPORTABLE,
+          key == (byte) 0x9D ? PIVKeyObject.ATTR_IMPORTABLE : PIVKeyObject.ATTR_NONE,
           modePin(),
           (byte) (modeVci() | modePin()));
     }

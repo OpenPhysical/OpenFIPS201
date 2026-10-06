@@ -28,7 +28,6 @@ package com.makina.security.openfips201;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.SystemException;
 import javacard.framework.Util;
 
 /**
@@ -40,31 +39,41 @@ import javacard.framework.Util;
  * singleton is available for helpers that need to build an embedded structure, such as Subject
  * Public Key Info, without disturbing the outer writer's depth stack.
  *
- * <p>The writer deliberately implements only the DER primitives needed by the applet, including
- * positive INTEGER encoding for RSA modulus and serial-number values.
+ * <p>All cursor state (output buffer reference, write offset, limit and depth stack) is held in
+ * CLEAR_ON_DESELECT transient memory. Building a certificate therefore performs no persistent
+ * writes, and a writer left mid-structure by a tear or deselect starts from a cleared state.
+ *
+ * <p>The writer deliberately implements only the DER primitives needed by the applet. INTEGER
+ * values written through {@link #writePositiveInteger} are canonical per X.690 §8.3.2: redundant
+ * leading zero octets are removed and a single zero octet is prepended only when the most
+ * significant bit of the magnitude is set.
+ *
+ * <p>A structural misuse of the writer (unbalanced {@code end()}, empty INTEGER magnitude) is an
+ * internal fault, not a property of the command, and is reported as ISO/IEC 7816-4 Table 6 '6F00'
+ * (no precise diagnosis).
  */
 final class DERWriter {
 
   private static final short MAX_DEPTH = (short) 0x0C;
+
+  // Cursor state indices that follow the depth stack in the transient state array.
+  private static final short STATE_OFFSET = MAX_DEPTH;
+  private static final short STATE_LIMIT = (short) (MAX_DEPTH + 1);
+  private static final short STATE_DEPTH = (short) (MAX_DEPTH + 2);
+  private static final short LENGTH_STATE = (short) (MAX_DEPTH + 3);
+
   private static DERWriter instance;
   private static DERWriter nestedInstance;
 
-  private byte[] buffer;
-  private short offset;
-  private short limit;
-  private final short[] lengthOffsets;
-  private short depth;
+  // Holds the output buffer reference for the current structure.
+  private final Object[] bufferRef;
+
+  // Depth stack of reserved length offsets, followed by offset, limit and depth.
+  private final short[] state;
 
   private DERWriter() {
-    short[] offsets;
-    try {
-      offsets = JCSystem.makeTransientShortArray(MAX_DEPTH, JCSystem.CLEAR_ON_DESELECT);
-    } catch (SystemException e) {
-      // The depth stack holds structure offsets only, never key material, so persistent memory
-      // is an acceptable substitute when the platform cannot provide a transient array.
-      offsets = new short[MAX_DEPTH];
-    }
-    lengthOffsets = offsets;
+    bufferRef = JCSystem.makeTransientObjectArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
+    state = JCSystem.makeTransientShortArray(LENGTH_STATE, JCSystem.CLEAR_ON_DESELECT);
   }
 
   static void initialize() {
@@ -89,116 +98,141 @@ final class DERWriter {
   }
 
   void init(byte[] out, short outOffset) {
-    buffer = out;
-    offset = outOffset;
-    limit = (short) out.length;
-    depth = (short) 0x00;
+    bufferRef[0] = out;
+    state[STATE_OFFSET] = outOffset;
+    state[STATE_LIMIT] = (short) out.length;
+    state[STATE_DEPTH] = (short) 0x00;
   }
 
   short getOffset() {
-    return offset;
+    return state[STATE_OFFSET];
   }
 
   void setOffset(short value) {
-    if (value < (short) 0x00 || value > limit) ISOException.throwIt(ISO7816.SW_FILE_FULL);
-    offset = value;
+    if (value < (short) 0x00 || value > state[STATE_LIMIT]) {
+      ISOException.throwIt(ISO7816.SW_FILE_FULL);
+    }
+    state[STATE_OFFSET] = value;
   }
 
   void begin(byte tag) {
+    short depth = state[STATE_DEPTH];
     if (depth >= MAX_DEPTH) ISOException.throwIt(ISO7816.SW_FILE_FULL);
     requireCapacity((short) 0x04);
+    byte[] buffer = buffer();
+    short offset = state[STATE_OFFSET];
     buffer[offset++] = tag;
-    lengthOffsets[depth++] = offset;
+    state[depth] = offset;
+    state[STATE_DEPTH] = (short) (depth + 1);
     // Reserve a canonical long-form length. end() compacts to the shortest DER length.
     buffer[offset++] = (byte) 0x82;
     buffer[offset++] = (byte) 0x00;
     buffer[offset++] = (byte) 0x00;
+    state[STATE_OFFSET] = offset;
   }
 
   void end() {
-    if (depth == (short) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    short lengthOffset = lengthOffsets[--depth];
+    short depth = state[STATE_DEPTH];
+    if (depth == (short) 0x00) ISOException.throwIt(ISO7816.SW_UNKNOWN);
+    depth--;
+    state[STATE_DEPTH] = depth;
+    byte[] buffer = buffer();
+    short lengthOffset = state[depth];
     short contentOffset = (short) (lengthOffset + 3);
-    short contentLength = (short) (offset - contentOffset);
-    if (contentLength < (short) 0x00) ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    short encodedLengthBytes;
+    short contentLength = (short) (state[STATE_OFFSET] - contentOffset);
+    if (contentLength < (short) 0x00) ISOException.throwIt(ISO7816.SW_UNKNOWN);
 
     // JavaCard gives us fixed byte arrays, not a growable DER stream. begin() reserves a 3-byte
     // length and end() compacts the content left when DER permits a shorter length encoding.
-    if (contentLength < (short) 0x80) {
-      encodedLengthBytes = (short) 0x01;
+    short encodedLengthBytes = TLV.encodedLengthSize(contentLength);
+    if (encodedLengthBytes < TLV.LENGTH_3BYTE) {
       Util.arrayCopyNonAtomic(
           buffer,
           contentOffset,
           buffer,
           (short) (lengthOffset + encodedLengthBytes),
           contentLength);
-      buffer[lengthOffset] = (byte) contentLength;
-    } else if (contentLength < (short) 0x0100) {
-      encodedLengthBytes = (short) 0x02;
-      Util.arrayCopyNonAtomic(
-          buffer,
-          contentOffset,
-          buffer,
-          (short) (lengthOffset + encodedLengthBytes),
-          contentLength);
-      buffer[lengthOffset] = (byte) 0x81;
-      buffer[(short) (lengthOffset + 1)] = (byte) contentLength;
-    } else {
-      encodedLengthBytes = (short) 0x03;
-      buffer[lengthOffset] = (byte) 0x82;
-      Util.setShort(buffer, (short) (lengthOffset + 1), contentLength);
     }
+    TLV.writeLength(buffer, lengthOffset, contentLength);
 
-    offset = (short) (lengthOffset + encodedLengthBytes + contentLength);
+    state[STATE_OFFSET] = (short) (lengthOffset + encodedLengthBytes + contentLength);
   }
 
   void write(byte value) {
     requireCapacity((short) 0x01);
-    buffer[offset++] = value;
+    short offset = state[STATE_OFFSET];
+    buffer()[offset] = value;
+    state[STATE_OFFSET] = (short) (offset + 1);
   }
 
   void write(byte[] in, short inOffset, short length) {
     requireCapacity(length);
-    offset = Util.arrayCopyNonAtomic(in, inOffset, buffer, offset, length);
+    state[STATE_OFFSET] =
+        Util.arrayCopyNonAtomic(in, inOffset, buffer(), state[STATE_OFFSET], length);
   }
 
   void writeTlv(byte tag, byte[] in, short inOffset, short length) {
-    requireCapacity((short) 0x01);
-    buffer[offset++] = tag;
+    write(tag);
     writeLength(length);
     write(in, inOffset, length);
   }
 
   void writeIntegerByte(byte value) {
     requireCapacity((short) 0x03);
+    byte[] buffer = buffer();
+    short offset = state[STATE_OFFSET];
     buffer[offset++] = (byte) 0x02;
     buffer[offset++] = (byte) 0x01;
     buffer[offset++] = value;
+    state[STATE_OFFSET] = offset;
   }
 
+  /**
+   * Writes an unsigned big-endian magnitude as a canonical DER INTEGER.
+   *
+   * <p>X.690 §8.3.2: "If the contents octets of an integer value encoding consist of more than one
+   * octet, then the bits of the first octet and bit 8 of the second octet shall not all be ones;
+   * and shall not all be zero." Leading zero octets of the magnitude are therefore removed, a
+   * single zero octet is kept for the value zero, and one zero octet is prepended when bit 8 of the
+   * first remaining octet is set so the value stays positive. The input may overlap the output
+   * region because copies use {@link Util#arrayCopyNonAtomic}, which handles overlap.
+   *
+   * @param in the magnitude buffer
+   * @param inOffset the offset of the magnitude
+   * @param length the magnitude length, which must be at least one octet
+   */
   void writePositiveInteger(byte[] in, short inOffset, short length) {
-    requireCapacity((short) (0x03 + length));
-    buffer[offset++] = (byte) 0x02;
-    if ((in[inOffset] & (byte) 0x80) != (byte) 0) {
-      writeLength((short) (length + 1));
-      requireCapacity((short) 0x01);
-      buffer[offset++] = (byte) 0x00;
-    } else {
-      writeLength(length);
+    if (length <= (short) 0x00) ISOException.throwIt(ISO7816.SW_UNKNOWN);
+    while (length > (short) 0x01 && in[inOffset] == (byte) 0x00) {
+      inOffset++;
+      length--;
     }
+    boolean padded = (in[inOffset] & (byte) 0x80) != (byte) 0;
+    short contentLength = padded ? (short) (length + 1) : length;
+    requireCapacity((short) (0x01 + TLV.encodedLengthSize(contentLength) + contentLength));
+    write((byte) 0x02);
+    writeLength(contentLength);
+    if (padded) write((byte) 0x00);
     write(in, inOffset, length);
   }
 
   void writeLength(short length) {
     short encodedLength = TLV.encodedLengthSize(length);
     requireCapacity(encodedLength);
-    offset += TLV.writeLength(buffer, offset, length);
+    short offset = state[STATE_OFFSET];
+    state[STATE_OFFSET] = (short) (offset + TLV.writeLength(buffer(), offset, length));
+  }
+
+  private byte[] buffer() {
+    byte[] buffer = (byte[]) bufferRef[0];
+    if (buffer == null) ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    return buffer;
   }
 
   private void requireCapacity(short length) {
+    short offset = state[STATE_OFFSET];
     short next = (short) (offset + length);
-    if (length < (short) 0x00 || next < offset || next > limit) {
+    if (length < (short) 0x00 || next < offset || next > state[STATE_LIMIT]) {
       ISOException.throwIt(ISO7816.SW_FILE_FULL);
     }
   }

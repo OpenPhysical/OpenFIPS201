@@ -31,10 +31,14 @@ public final class SmartCardBibo implements BIBO {
     }
   }
 
+  /**
+   * Disconnects with a card reset (SCARD_RESET_CARD), so security status such as a verified PIV PIN
+   * does not survive into the next PC/SC client's session.
+   */
   @Override
   public void close() {
     try {
-      card.disconnect(false);
+      card.disconnect(true);
     } catch (CardException ignored) {
       // Best effort close; the command that failed should report the real error.
     }

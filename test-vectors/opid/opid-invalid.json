@@ -1,0 +1,85 @@
+{
+  "schema": "openphysical.opid-vectors/2",
+  "vectors": [
+    {
+      "input": "12341234567890123",
+      "reason": "luhn"
+    },
+    {
+      "input": "1234123456789012",
+      "reason": "length"
+    },
+    {
+      "input": "123412345678901220",
+      "reason": "length"
+    },
+    {
+      "input": "123491234123456783",
+      "reason": "length-v1-format-opid"
+    },
+    {
+      "input": "1456451195344",
+      "reason": "length-v1-format-opid"
+    },
+    {
+      "input": "",
+      "reason": "length"
+    },
+    {
+      "input": "1234123456789012A",
+      "reason": "non-digit"
+    },
+    {
+      "input": "12341234/67890122",
+      "reason": "non-digit"
+    },
+    {
+      "input": "12341234\u066367890122",
+      "reason": "non-digit"
+    }
+  ],
+  "fields": [
+    {
+      "iin": 10000,
+      "e": 0,
+      "reason": "iin-range"
+    },
+    {
+      "iin": -1,
+      "e": 0,
+      "reason": "iin-range"
+    },
+    {
+      "iin": 1,
+      "e": 1000000000000,
+      "reason": "e-range"
+    },
+    {
+      "iin": 1,
+      "e": -1,
+      "reason": "e-range"
+    }
+  ],
+  "chuidPoa": [
+    {
+      "poa": 0,
+      "reason": "poa-not-6"
+    },
+    {
+      "poa": 1,
+      "reason": "poa-not-6"
+    },
+    {
+      "poa": 5,
+      "reason": "poa-not-6"
+    },
+    {
+      "poa": 7,
+      "reason": "poa-not-6"
+    },
+    {
+      "poa": 9,
+      "reason": "poa-not-6"
+    }
+  ]
+}

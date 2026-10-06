@@ -85,12 +85,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte mechanism,
       byte role,
       byte attributes) {
-    byte symmetricAttributes =
-        (byte) (ATTR_PERMIT_INTERNAL | ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL);
-    if ((attributes & symmetricAttributes) != (byte) 0
-        || (role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) == (byte) (ROLE_SIGN | ROLE_KEY_ESTABLISH)) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
+    validateRoleAttributes(role, attributes);
     return new PIVKeyObjectRSA(
         id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
   }
@@ -177,11 +172,12 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
   @Override
   void clear() {
+    // Unpublish before wiping, so a power loss during the wipe leaves an unusable key.
+    clearOrigin();
+    resetImportedPairReady();
+    resetImportedParts();
     publicKey.clearKey();
     privateKey.clearKey();
-    clearOrigin();
-    resetImportedParts();
-    resetImportedPairReady();
   }
 
   @Override
@@ -210,6 +206,18 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   }
 
   /**
+   * SP 800-78-5 Section 3.1: "RSA keys must be generated using a public exponent of 65537."
+   *
+   * @return True if the buffer holds exactly the big-endian encoding '01 00 01'
+   */
+  static boolean isPivPublicExponent(byte[] buffer, short offset, short length) {
+    return length == CONST_LENGTH_EXPONENT
+        && buffer[offset] == EXPONENT_FIRST_BYTE
+        && buffer[(short) (offset + 1)] == (byte) 0x00
+        && buffer[(short) (offset + 2)] == EXPONENT_FIRST_BYTE;
+  }
+
+  /**
    * Writes the public exponent of RSA the key pair to the buffer
    *
    * @param buffer The destination buffer to write to
@@ -217,11 +225,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
    * @param length The length of the exponent to write
    */
   void setPublicExponent(byte[] buffer, short offset, short length) {
-    // SP 800-78-5 Section 3.1 requires every PIV RSA key to use public exponent 65537.
-    if (length != CONST_LENGTH_EXPONENT
-        || buffer[offset] != EXPONENT_FIRST_BYTE
-        || buffer[(short) (offset + 1)] != (byte) 0x00
-        || buffer[(short) (offset + 2)] != EXPONENT_FIRST_BYTE) {
+    if (!isPivPublicExponent(buffer, offset, length)) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     if (publicKey == null) allocatePublic();
@@ -237,6 +241,10 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
    */
   void setModulus(byte[] buffer, short offset, short length) {
     if (length != getKeyLengthBytes()) ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    // SP 800-78-5 Section 3.1 Table 1 allows "RSA (2048 or 3072 bits)": the modulus must use the
+    // slot's full bit length, so its most significant bit is set. A shorter modulus left-padded
+    // with zero bytes is refused here instead of failing later inside the provider.
+    if ((buffer[offset] & (byte) 0x80) == 0) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
 
     if (privateKey == null) allocatePrivate();
     privateKey.setModulus(buffer, offset, length);
@@ -270,11 +278,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte[] outBuffer,
       short outOffset,
       ECPointValidator validator) {
-
-    if (inLength != getBlockLength()) {
-      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-    }
-
+    // PIVCrypto.doKeyTransport rejects a block whose length differs from the modulus length.
     return PIVCrypto.doKeyTransport(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
@@ -296,7 +300,9 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       keyPair.genKeyPair();
 
       if (FipsPolicy.ENABLED && !pairwiseConsistencyTest(outBuffer, outOffset)) {
-        ISOException.throwIt(ISO7816.SW_FILE_INVALID);
+        // A generated pair that fails its consistency test is an internal fault: ISO/IEC 7816-4
+        // Table 6 '6F00' (no precise diagnosis).
+        ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
 
       TLVWriter writer = TLVWriter.getInstance();
@@ -331,10 +337,11 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       return writer.finish();
     } catch (CardRuntimeException ex) {
       // At this point we are in a nondeterministic state so we will
-      // clear both the public and private keys if they exist
+      // clear both the public and private keys if they exist. The original exception is rethrown
+      // so an ISOException (such as the 6A84 consistency failure) keeps its status word: JCRE
+      // 3.0.5 Section 3.3 returns ISO7816.SW_UNKNOWN for "any other exception".
       clear();
-      CardRuntimeException.throwIt(ex.getReason());
-      return (short) 0; // Keep compiler happy
+      throw ex;
     }
   }
 
@@ -391,7 +398,8 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
         return KeyBuilder.LENGTH_RSA_3072;
 
       default:
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        // ISO/IEC 7816-4 Table 7 '6A81' (function not supported): not an RSA mechanism.
+        ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
         return (short) 0; // Keep compiler happy
     }
   }
@@ -434,7 +442,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
 
     short end = writer.getOffset();
     short bitStringContentLength = (short) (end - rsaPublicKeyStart + 1);
-    short lengthBytes = encodedLengthSize(bitStringContentLength);
+    short lengthBytes = TLV.encodedLengthSize(bitStringContentLength);
     short oldContentOffset = (short) (bitStringLengthOffset + 1);
     short newContentOffset = (short) (bitStringLengthOffset + lengthBytes);
     if (newContentOffset != oldContentOffset) {
@@ -452,12 +460,6 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     writer.setOffset(end);
     writer.end();
     return (short) (writer.getOffset() - outOffset);
-  }
-
-  private static short encodedLengthSize(short length) {
-    if (length < (short) 0x80) return (short) 0x01;
-    if (length < (short) 0x0100) return (short) 0x02;
-    return (short) 0x03;
   }
 
   private static final byte[] OID_RSA_ENCRYPTION = {

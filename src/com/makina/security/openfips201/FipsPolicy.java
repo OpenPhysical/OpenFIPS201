@@ -51,7 +51,7 @@ final class FipsPolicy {
     // #if VCI_CS2
     if (ENABLED
         && mechanism == PIV.ID_ALG_ECC_P384
-        && (id == (byte) 0x9C || id == (byte) 0x9D || isRetiredKeyManagement(id))) {
+        && (id == (byte) 0x9C || id == (byte) 0x9D || PIV.isRetiredKeyManagementKey(id))) {
       return false;
     }
     // #endif
@@ -65,16 +65,20 @@ final class FipsPolicy {
     }
 
     if (id == PIV.ID_KEY_ATTESTATION) {
-      return mechanism == PIV.ID_ALG_ECC_P256 && role == PIVKeyObject.ROLE_SIGN;
+      // The attestation authority is generated on the card in every profile so the issuer can
+      // certify that its private key never existed outside the card.
+      return mechanism == PIV.ID_ALG_ECC_P256
+          && role == PIVKeyObject.ROLE_SIGN
+          && (attributes & PIVKeyObject.ATTR_IMPORTABLE) == 0;
     }
 
-    if (id == (byte) 0x9B) {
+    if (id == PIVObject.DEFAULT_ADMIN_KEY) {
       return isAllowedManagementMechanism(mechanism)
           && role == PIVKeyObject.ROLE_AUTHENTICATE
           && (attributes & PIVKeyObject.ATTR_PERMIT_INTERNAL) == 0;
     }
 
-    if (isRetiredKeyManagement(id)) {
+    if (PIV.isRetiredKeyManagementKey(id)) {
       // SP 800-78-5 Table 10 retains RSA-1024 identifier 06 only for retired
       // key-management references. The FIPS profile deliberately omits RSA-1024 compatibility.
       return (isCardholderAsymmetric(mechanism) || (!ENABLED && mechanism == PIV.ID_ALG_RSA_1024))
@@ -85,7 +89,16 @@ final class FipsPolicy {
       return isCardholderAsymmetric(mechanism) && role == PIVKeyObject.ROLE_KEY_ESTABLISH;
     }
 
-    if (id == (byte) 0x9A || id == (byte) 0x9C || id == (byte) 0x9E) {
+    if (id == (byte) 0x9A || id == (byte) 0x9C) {
+      // FIPS 201-3 Section 4.2.2.1: the PIV authentication key "SHALL be generated on the PIV
+      // Card." Section 4.2.2.4: "The PIV digital signature key SHALL be generated on the PIV
+      // Card." The FIPS profile therefore refuses importable definitions for both references.
+      return isCardholderAsymmetric(mechanism)
+          && role == PIVKeyObject.ROLE_SIGN
+          && (!ENABLED || (attributes & PIVKeyObject.ATTR_IMPORTABLE) == 0);
+    }
+
+    if (id == (byte) 0x9E) {
       return isCardholderAsymmetric(mechanism) && role == PIVKeyObject.ROLE_SIGN;
     }
 
@@ -103,7 +116,7 @@ final class FipsPolicy {
       return accessMatches(
           contact, contactless, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_ALWAYS);
     }
-    if (id == (byte) 0x9B) {
+    if (id == PIVObject.DEFAULT_ADMIN_KEY) {
       return accessMatches(
           contact, contactless, PIVObject.ACCESS_MODE_ALWAYS, PIVObject.ACCESS_MODE_NEVER);
     }
@@ -114,7 +127,7 @@ final class FipsPolicy {
           PIVObject.ACCESS_MODE_PIN_ALWAYS,
           (byte) (PIVObject.ACCESS_MODE_VCI | PIVObject.ACCESS_MODE_PIN_ALWAYS));
     }
-    if (id == (byte) 0x9A || id == (byte) 0x9D || isRetiredKeyManagement(id)) {
+    if (id == (byte) 0x9A || id == (byte) 0x9D || PIV.isRetiredKeyManagementKey(id)) {
       return accessMatches(
           contact,
           contactless,
@@ -178,6 +191,64 @@ final class FipsPolicy {
     return false;
   }
 
+  /**
+   * Returns whether {@code capacity} meets the container minimum for an interoperable object.
+   *
+   * <p>SP 800-73-5 Part 1 Appendix A Table 8, footnote 17: "The values in this column denote the
+   * guaranteed minimum capacities of the on-card storage containers in bytes." The FIPS profile
+   * guarantees them at CREATE OBJECT time. Compatibility builds and objects outside Table 8 accept
+   * any positive capacity.
+   */
+  static boolean allowsObjectCapacity(byte[] id, short offset, short length, short capacity) {
+    return !ENABLED || capacity >= minimumObjectCapacity(id, offset, length);
+  }
+
+  /** Returns the SP 800-73-5 Part 1 Table 8 minimum container capacity, or zero when none. */
+  static short minimumObjectCapacity(byte[] id, short offset, short length) {
+    if (length == (short) 1 && id[offset] == (byte) 0x7E) return (short) 19;
+    if (length == (short) 2
+        && id[offset] == (byte) 0x7F
+        && id[(short) (offset + 1)] == (byte) 0x61) {
+      return (short) 65;
+    }
+    if (length != (short) 3
+        || id[offset] != (byte) 0x5F
+        || id[(short) (offset + 1)] != (byte) 0xC1) {
+      return (short) 0;
+    }
+    byte suffix = id[(short) (offset + 2)];
+    if (suffix >= (byte) 0x0D && suffix <= (byte) 0x20) return (short) 1895;
+    switch (suffix) {
+      case (byte) 0x07:
+        return (short) 170;
+      case (byte) 0x02:
+        return (short) 2881;
+      case (byte) 0x05:
+      case (byte) 0x01:
+      case (byte) 0x0A:
+      case (byte) 0x0B:
+        return (short) 1857;
+      case (byte) 0x03:
+        return (short) 4006;
+      case (byte) 0x06:
+        return (short) 1336;
+      case (byte) 0x08:
+        return (short) 12710;
+      case (byte) 0x09:
+        return (short) 245;
+      case (byte) 0x0C:
+        return (short) 128;
+      case (byte) 0x21:
+        return (short) 7106;
+      case (byte) 0x22:
+        return (short) 2471;
+      case (byte) 0x23:
+        return (short) 12;
+      default:
+        return (short) 0;
+    }
+  }
+
   private static boolean accessMatches(
       byte contact, byte contactless, byte expectedContact, byte expectedContactless) {
     return contact == expectedContact && contactless == expectedContactless;
@@ -199,9 +270,5 @@ final class FipsPolicy {
         || mechanism == PIV.ID_ALG_RSA_3072
         || mechanism == PIV.ID_ALG_ECC_P256
         || mechanism == PIV.ID_ALG_ECC_P384;
-  }
-
-  private static boolean isRetiredKeyManagement(byte id) {
-    return id >= (byte) 0x82 && id <= (byte) 0x95;
   }
 }

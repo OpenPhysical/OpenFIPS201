@@ -31,11 +31,13 @@ import apdu4j.core.BIBO;
 import apdu4j.core.CommandAPDU;
 import apdu4j.core.ResponseAPDU;
 import dev.mistial.tools.openfips201.common.ApduSupport;
+import dev.mistial.tools.openfips201.common.BerTlvReader;
 import dev.mistial.tools.openfips201.common.CardTransport;
 import dev.mistial.tools.openfips201.common.GlobalPlatformSession;
 import dev.mistial.tools.openfips201.common.ScpConfig;
 import dev.mistial.tools.openfips201.crypto.CryptoProviders;
 import dev.mistial.tools.openfips201.crypto.PemFiles;
+import dev.mistial.tools.openfips201.provisioning.ContentSigningProfile;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
@@ -52,9 +54,12 @@ import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.AuthorityKeyIdentifier;
+import org.bouncycastle.asn1.x509.ExtendedKeyUsage;
 import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.KeyPurposeId;
 import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -139,8 +144,24 @@ final class VciProvisioning {
     return makeCa(outPrefix, subjectDn, VciSupport.ALG_CS2);
   }
 
-  /** Creates a VCI signer CA on the curve matching the cipher suite (P-256 or P-384). */
+  /** Creates a content signer for a PIV-I card, the type of every OpenPhysical credential. */
   static CaMaterial makeCa(String outPrefix, String subjectDn, byte suite) throws Exception {
+    return makeCa(outPrefix, subjectDn, suite, ContentSigningProfile.ID_FPKI_PIVI_CONTENT_SIGNING);
+  }
+
+  /**
+   * Creates a self-signed content signer on the curve matching the cipher suite (P-256 or P-384).
+   * It signs the CHUID, the Security Object and the secure messaging CVC.
+   *
+   * <p>The certificate follows the FPKI PIV-I Certificate and CRL Profiles v1.3 Worksheet 8 (PIV-I
+   * Content Signing): an end-entity certificate whose critical keyUsage asserts only
+   * digitalSignature ("keyCertSign 0"), with authorityKeyIdentifier and subjectKeyIdentifier, and a
+   * critical extKeyUsage asserting only {@code purpose}.
+   *
+   * @param purpose {@link ContentSigningProfile#purposeForFascN} for the card being provisioned
+   */
+  static CaMaterial makeCa(String outPrefix, String subjectDn, byte suite, KeyPurposeId purpose)
+      throws Exception {
     ensureProvider();
     KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
     generator.initialize(new ECGenParameterSpec(VciSupport.namedCurve(suite)), new SecureRandom());
@@ -154,9 +175,18 @@ final class VciProvisioning {
     JcaX509v3CertificateBuilder builder =
         new JcaX509v3CertificateBuilder(
             subject, serial, notBefore, notAfter, subject, keyPair.getPublic());
-    builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
+    builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.digitalSignature));
+    // SP 800-73-5 Part 1 Sections 3.1.2.1 and 3.3.7 (id-PIV-content-signing) and FPKI PIV-I
+    // Profiles v1.3 Worksheet 8 (id-fpki-pivi-content-signing); Common Policy and FBCA require the
+    // extension to be critical and to assert only that purpose.
+    builder.addExtension(Extension.extendedKeyUsage, true, new ExtendedKeyUsage(purpose));
+    // SP 800-73-5 Part 2 Table 19 takes the CVC IIN from the leftmost 8 bytes of the SKI.
+    byte[] keyIdentifier = VciSupport.subjectKeyIdentifierFor(keyPair.getPublic());
     builder.addExtension(
-        Extension.keyUsage, true, new KeyUsage(KeyUsage.keyCertSign | KeyUsage.digitalSignature));
+        Extension.subjectKeyIdentifier, false, new SubjectKeyIdentifier(keyIdentifier));
+    // Worksheet 8 requires authorityKeyIdentifier; a self-signed certificate is its own authority.
+    builder.addExtension(
+        Extension.authorityKeyIdentifier, false, new AuthorityKeyIdentifier(keyIdentifier));
     ContentSigner signer =
         new JcaContentSignerBuilder(VciSupport.cvcSignatureAlgorithm(suite))
             .setProvider(BouncyCastleProvider.PROVIDER_NAME)
@@ -245,15 +275,20 @@ final class VciProvisioning {
       throw new IllegalArgumentException("minimum CVC length must be 0..384");
     }
 
+    boolean loadSigner = caCertPath != null && caKeyPath != null;
+    if (!loadSigner && caOutPrefix == null) {
+      throw new IllegalArgumentException("Supply --ca-cert/--ca-key or --ca-out");
+    }
+    byte[] chuid = readChuid(bibo);
+    byte[] subjectId =
+        chuid == null ? StandardCardProfile.CVC_SUBJECT.clone() : cardUuidFromChuid(chuid);
     CaMaterial ca;
-    if (caCertPath != null && caKeyPath != null) {
+    if (loadSigner) {
       ca = loadCa(caCertPath, caKeyPath);
-    } else if (caOutPrefix != null) {
-      ca = makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Signer", suite);
+    } else {
+      ca = makeCa(caOutPrefix, "CN=OpenFIPS201 VCI Signer", suite, signerPurpose(chuid));
       System.out.println(
           "Generated VCI signer CA: " + caOutPrefix + ".key / " + caOutPrefix + ".crt");
-    } else {
-      throw new IllegalArgumentException("Supply --ca-cert/--ca-key or --ca-out");
     }
 
     byte[] scpKey =
@@ -284,7 +319,7 @@ final class VciProvisioning {
                   0x84, 0x24, 0x01, StandardCardProfile.PUK_REF & 0xFF, StandardCardProfile.PUK)),
           "Set standard PUK");
 
-      provisionSmCredential(gp, ca, suite, minimumCvcLength);
+      provisionSmCredential(gp, ca, suite, minimumCvcLength, subjectId);
       provisionDataObjects(gp, ca, pairingCode, suite);
     }
   }
@@ -301,13 +336,14 @@ final class VciProvisioning {
         scp03KeyHex == null
             ? PlaintextKeys.DEFAULT_KEY()
             : Hex.decode(scp03KeyHex.replace(" ", ""));
+    byte[] subjectId = readCvcSubject(bibo);
     try (CardTransport transport = CardTransport.borrow(bibo);
         GlobalPlatformSession administrative =
             transport.openGlobalPlatformSession(
                 GlobalPlatformSession.PIV_AID,
                 ScpConfig.fromMaster(ScpConfig.Mode.SCP03, 0, scpKey))) {
       GPSession gp = administrative.gp();
-      provisionSmCredential(gp, ca, suite, 0);
+      provisionSmCredential(gp, ca, suite, 0, subjectId);
       expect(
           gp.transmit(new CommandAPDU(0x84, 0xDB, 0xFF, 0xFF, Hex.decode("6805A203800102"))),
           "Set VCI mode to pairing-code");
@@ -319,7 +355,8 @@ final class VciProvisioning {
 
   /** Defines the on-card secure-messaging key, generates it, and installs its signed CVC. */
   private static void provisionSmCredential(
-      GPSession gp, CaMaterial ca, byte suite, int minimumCvcLength) throws Exception {
+      GPSession gp, CaMaterial ca, byte suite, int minimumCvcLength, byte[] subjectId)
+      throws Exception {
     // Define the SM key: reference 04, CS2/CS7, key-establishment role, non-importable.
     byte[] keyDefinition =
         VciSupport.tlv(
@@ -350,11 +387,7 @@ final class VciProvisioning {
     System.out.println("Card SM public point: " + Hex.toHexString(cardPublicPoint).toUpperCase());
 
     // Sign the card public key into a CVC with the VCI signer CA.
-    byte[] issuerId = VciSupport.issuerIdFromPublicKey(ca.certificate.getPublicKey());
-    // Subject identifier is a 16-byte GUID, matching the encoding production PIV cards use in the
-    // CVC (rather than an ASCII label). A fixed value from the shared profile keeps the emulator's
-    // card identity deterministic across provisioning runs.
-    byte[] subjectId = StandardCardProfile.CVC_SUBJECT;
+    byte[] issuerId = VciSupport.issuerIdFromCertificate(ca.certificate);
     byte[] cvc =
         signCvcAtLeast(
             cardPublicPoint, issuerId, subjectId, ca.privateKey, suite, minimumCvcLength);
@@ -704,6 +737,12 @@ final class VciProvisioning {
       System.out.println("FAIL: card CVC signature did not verify against the signer CA");
       return null;
     }
+    try {
+      VciSupport.checkCardResponse(cbIcc, cvcRaw, suite);
+    } catch (IllegalArgumentException e) {
+      System.out.println("FAIL: " + e.getMessage());
+      return null;
+    }
     System.out.println("Card CVC verified against signer CA.");
 
     byte[] cardPublicPoint = VciSupport.extractCardPublicPoint(cvcRaw);
@@ -720,7 +759,7 @@ final class VciProvisioning {
     byte[] expectedCryptogram =
         VciSupport.computeAuthCryptogram(sessionKeys.skCfrm, idSicc, idH, hostPublicPoint);
     if (!Arrays.equals(Arrays.copyOf(expectedCryptogram, 16), cryptogram)) {
-      System.out.println("FAIL: card authentication cryptogram mismatch (cbIcc=" + cbIcc + ")");
+      System.out.println("FAIL: card authentication cryptogram mismatch");
       return null;
     }
     System.out.println("Authentication cryptogram verified; SM session keys derived.");
@@ -826,6 +865,75 @@ final class VciProvisioning {
   // ---------------------------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Returns the CVC Subject Identifier for the selected card.
+   *
+   * <p>SP 800-73-5 Part 2 Table 19, tag 0x5F20: "GUID (Card UUID)". The value is the CHUID GUID
+   * (tag 0x34). A card without a CHUID has no Card UUID; its CVC carries {@link
+   * StandardCardProfile#CVC_SUBJECT}.
+   */
+  private static byte[] readCvcSubject(BIBO bibo) {
+    byte[] chuid = readChuid(bibo);
+    return chuid == null ? StandardCardProfile.CVC_SUBJECT.clone() : cardUuidFromChuid(chuid);
+  }
+
+  /** Returns the CHUID GET DATA response ({@code 53 L <CHUID>}), or null when it is absent. */
+  private static byte[] readChuid(BIBO bibo) {
+    transceive(
+        bibo,
+        new CommandAPDU(0x00, 0xA4, 0x04, 0x00, GlobalPlatformSession.PIV_AID, 256),
+        "SELECT PIV");
+    byte[] response =
+        transceiveWithPhysicalChaining(
+            bibo,
+            new CommandAPDU(0x00, 0xCB, 0x3F, 0xFF, Hex.decode("5C035FC102"), 256).getBytes());
+    int sw = ((response[response.length - 2] & 0xFF) << 8) | (response[response.length - 1] & 0xFF);
+    if (sw == 0x6A82) {
+      return null;
+    }
+    if (sw != 0x9000) {
+      throw new IllegalStateException(String.format("GET DATA CHUID failed with SW 0x%04X", sw));
+    }
+    return Arrays.copyOf(response, response.length - 2);
+  }
+
+  /**
+   * Returns the content signing purpose for the card whose CHUID GET DATA response is {@code chuid}
+   * ({@link ContentSigningProfile#purposeForFascN}). A card without a CHUID is an OpenPhysical
+   * credential, which is PIV-I.
+   */
+  static KeyPurposeId signerPurpose(byte[] chuid) {
+    if (chuid == null) return ContentSigningProfile.ID_FPKI_PIVI_CONTENT_SIGNING;
+    BerTlvReader.Tlv outer = BerTlvReader.read(chuid, 0);
+    if (outer.tag != 0x53) {
+      throw new IllegalArgumentException("CHUID GET DATA response must be a 53 template");
+    }
+    byte[] value = Arrays.copyOfRange(chuid, outer.valueOffset, outer.nextOffset);
+    return ContentSigningProfile.purposeForFascN(ContentSigningProfile.fascN(value));
+  }
+
+  /**
+   * Extracts the 16-byte GUID (tag 0x34) from a CHUID GET DATA response ({@code 53 L <CHUID>}).
+   *
+   * @throws IllegalArgumentException if the response has no 16-byte GUID
+   */
+  static byte[] cardUuidFromChuid(byte[] getDataResponse) {
+    int[] outer = VciSupport.locateTlv(getDataResponse, 0, 0x53);
+    if (outer != null) {
+      int offset = outer[1];
+      int end = outer[1] + outer[2];
+      while (offset < end) {
+        BerTlvReader.Tlv element = BerTlvReader.read(getDataResponse, offset, end);
+        if (element.tag == 0x34) {
+          if (element.length != 16) break;
+          return Arrays.copyOfRange(getDataResponse, element.valueOffset, element.nextOffset);
+        }
+        offset = element.nextOffset;
+      }
+    }
+    throw new IllegalArgumentException("CHUID lacks a 16-byte GUID (tag 0x34)");
+  }
 
   private static void requirePairingCode(String pairingCode) {
     if (pairingCode == null || !pairingCode.matches("[0-9]{8}")) {
