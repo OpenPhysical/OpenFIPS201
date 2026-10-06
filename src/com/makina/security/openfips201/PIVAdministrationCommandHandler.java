@@ -377,7 +377,8 @@ final class PIVAdministrationCommandHandler {
     // SECURITY PRE-CONDITION
     //
 
-    requireAdministrativeInterface();
+    // Card management must be permitted on the current interface
+    owner.requireAdministrativeInterface(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     // The command must have been sent over SCP with CEnc+CMac
     if (!cspPIV.getIsSecureChannel()) {
@@ -498,19 +499,6 @@ final class PIVAdministrationCommandHandler {
   }
 
   /**
-   * Refuses a proprietary administrative command on an interface where administration is not
-   * permitted ({@code OPTION_RESTRICT_CONTACTLESS_ADMIN}). {@link #putDataAdmin} and {@link
-   * #changeReferenceDataAdmin} apply it before chaining or authorization, so the rule holds for
-   * every CLA/INS form that reaches them (INS DB, 24 and 25), whether authorized by SCP or by a
-   * prior admin-key authentication.
-   */
-  private void requireAdministrativeInterface() {
-    if (!owner.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-  }
-
-  /**
    * This method is the equivalent of the CHANGE REFERENCE DATA command, however it is intended to
    * operate on key references that are NOT listed in SP 800-73-5. This is the primary method by
    * which administrative key references are updated and is intended to fill in the gap in PIV that
@@ -537,7 +525,10 @@ final class PIVAdministrationCommandHandler {
     // to be changed by the PIV Card Application CHANGE REFERENCE DATA, if PIV Card Application will
     // only perform the command with other key references if the requirements specified in Section
     // 2.9.2 of FIPS 201-2 are satisfied.
-    requireAdministrativeInterface();
+    // The interface rule applies before chaining or authorization, so it holds for every CLA/INS
+    // form that reaches this handler (INS 24 and 25), whether authorized by SCP or by a prior
+    // administrative key authentication.
+    owner.requireAdministrativeInterface(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     //
     // COMMAND CHAIN HANDLING

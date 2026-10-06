@@ -428,7 +428,7 @@ final class PIV {
 
     boolean streamRejectedPutData =
         secureMessaging.isRejectedCommandStreamActive()
-            || (mustRejectContactlessPutData()
+            || (!isInterfacePermittedForAdmin()
                 && commandChaining
                 && buffer[ISO7816.OFFSET_INS] == OpenFIPS201.INS_PIV_PUT_DATA);
     if (streamRejectedPutData) {
@@ -989,29 +989,42 @@ final class PIV {
     return !isContactless() || !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_GLOBAL);
   }
 
-  /***
-   * Indicates whether administration is allowed over the current communications media.
-   * Note that this DOES NOT mean there is a valid administrative session!
-   * @return True if administrative commands are permitted in the current context.
+  /**
+   * Indicates whether card management is permitted over the current communications media. This does
+   * not mean that an administrative session exists; the caller still applies the PIV Card
+   * Application Administrator security condition.
+   *
+   * <p>Card management is always permitted over the contact interface. Over the contactless
+   * interface it is permitted only when the issuer has cleared {@code
+   * OPTION_RESTRICT_CONTACTLESS_ADMIN}, which the FIPS profile refuses.
    */
-  boolean isInterfacePermittedForAdmin() {
-
-    // Administration is always permitted over the contact interface
-    if (!cspPIV.getIsContactless()) return true;
-
-    // Administration is only allowed over the contactless interface if the
-    // OPTION_RESTRICT_CONTACTLESS_ADMIN flag is NOT SET
-    return !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_ADMIN);
+  private boolean isInterfacePermittedForAdmin() {
+    return !cspPIV.getIsContactless() || !config.readFlag(Config.OPTION_RESTRICT_CONTACTLESS_ADMIN);
   }
 
   /**
-   * Returns true when Table 2 requires PUT DATA to fail on the contactless interface.
+   * Refuses a card management command on an interface where card management is not permitted. This
+   * is the single interface rule for every administrative entry point: the GlobalPlatform secure
+   * channel, PUT DATA, GENERATE ASYMMETRIC KEY PAIR and the proprietary administrative commands.
    *
-   * <p>Contactless card management is an issuer configuration. Secure-messaging parsing does not
-   * depend on the build profile.
+   * <p>SP 800-73-5 Part 2 Section 3, following Table 2: "The PIV Card Application shall return the
+   * status word of '6A 81' (Function not supported) when it receives a card command on the
+   * contactless interface marked "No" in the Contactless Interface column in Table 2. The PIV Card
+   * Application may return a different status word (e.g., '69 82') if the card command can be
+   * performed over the contactless interface in support of card management. The PIV Card
+   * Application will only perform the command in support of card management if the requirements
+   * specified in Section 2.9.2 of FIPS 201-2 are satisfied." FIPS 201-3 Section 2.9.2 requires that
+   * communication for a remote post-issuance update "SHALL occur only over mutually authenticated
+   * secure sessions", so contactless card management is an issuer opt-in.
+   *
+   * @param sw the status word of the caller's command contract: '6A 81' for a Table 2 command
+   *     marked "No" for the contactless interface, '69 82' for the GlobalPlatform secure channel
+   *     and the proprietary administrative commands
    */
-  boolean mustRejectContactlessPutData() {
-    return isContactless() && !isInterfacePermittedForAdmin();
+  void requireAdministrativeInterface(short sw) {
+    if (!isInterfacePermittedForAdmin()) {
+      ISOException.throwIt(sw);
+    }
   }
 
   /**

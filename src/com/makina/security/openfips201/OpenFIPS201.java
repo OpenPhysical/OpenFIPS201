@@ -656,10 +656,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      * PRE-CONDITIONS
      */
 
-    // PRE-CONDITION 1 - Secure Channel access must be permitted on the current interface
-    if (!piv.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
+    // PRE-CONDITION 1 - The secure channel is a card management session, so card management must
+    // be permitted on the current interface
+    piv.requireAdministrativeInterface(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
 
     /*
      * EXECUTION STEPS
@@ -786,11 +785,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     final byte CONST_P2 = (byte) 0xFF;
 
     byte[] buffer = apdu.getBuffer();
-    // SP 800-73-5 Part 2, Table 2 specifies 6A81 when PUT DATA is not available on the
-    // contactless interface. Issuer-enabled contactless card management is the stated exception.
-    if (piv.mustRejectContactlessPutData()) {
-      ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
-    }
+    // SP 800-73-5 Part 2, Table 2 marks PUT DATA "No" for the contactless interface, which takes
+    // '6A 81'. Issuer-enabled contactless card management is the stated exception. This is the
+    // interface rule for both the interindustry and the proprietary forms.
+    piv.requireAdministrativeInterface(ISO7816.SW_FUNC_NOT_SUPPORTED);
 
     boolean proprietary =
         isPlainProprietaryClass(buffer[ISO7816.OFFSET_CLA])
@@ -810,12 +808,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
      * PRE-CONDITIONS
      */
 
-    // PRE-CONDITION 1 - Administrative access must be permitted on the current interface
-    if (!piv.isInterfacePermittedForAdmin()) {
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
-    // PRE-CONDITION 2 - The P1 value must be equal to the constant CONST_P1
+    // PRE-CONDITION 1 - The P1 value must be equal to the constant CONST_P1
     if (buffer[ISO7816.OFFSET_P1] != CONST_P1) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
@@ -1068,9 +1061,10 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     // command can be performed over the contactless interface in support of card management".
     // Contactless card management is an issuer opt-in that the FIPS profile never allows. Under
     // that opt-in GENERATE proceeds to its administrative access check.
-    if (piv.isContactless() && (FipsPolicy.ENABLED || !piv.isInterfacePermittedForAdmin())) {
+    if (FipsPolicy.ENABLED && piv.isContactless()) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
+    piv.requireAdministrativeInterface(ISO7816.SW_FUNC_NOT_SUPPORTED);
 
     // SP 800-73-5 Part 2 Section 3.3.2 limits the interindustry command to these key
     // references. Proprietary administration may generate extension slots such as retired keys.
