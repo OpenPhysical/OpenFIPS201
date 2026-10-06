@@ -142,8 +142,8 @@ final class PIVSecurityProvider {
     // Mandatory
     cardPIN = new PIVOwnerPIN(Config.LIMIT_PIN_MAX_RETRIES, Config.LIMIT_PIN_MAX_LENGTH);
 
-    // Mandatory
-    cardPUK = new PIVOwnerPIN(Config.LIMIT_PUK_MAX_RETRIES, Config.LIMIT_PUK_MAX_LENGTH);
+    // Mandatory. The PUK is exactly Config.LENGTH_PUK bytes, so that is also its maximum size.
+    cardPUK = new PIVOwnerPIN(Config.LIMIT_PUK_MAX_RETRIES, Config.LENGTH_PUK);
 
     // Optional - But we still have to create it because it can be enabled at runtime
     globalPIN = new PIVCVMPIN();
@@ -550,6 +550,14 @@ final class PIVSecurityProvider {
   void clearBootstrapCvmProvisioningState() {
     persistentState[STATE_LOCAL_PIN_PROVISIONED] = FLAG_FALSE;
     persistentState[STATE_PUK_PROVISIONED] = FLAG_FALSE;
+  }
+
+  /**
+   * Returns whether the PUK holds issuer-set reference data. Until then the PUK holds the random
+   * value set at install, which no command may accept as reset retry counter authentication data.
+   */
+  boolean isPukProvisioned() {
+    return persistentState[STATE_PUK_PROVISIONED] == FLAG_TRUE;
   }
 
   boolean areMandatoryCvmsProvisioned() {

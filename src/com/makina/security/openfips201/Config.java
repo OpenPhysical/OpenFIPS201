@@ -344,7 +344,11 @@ final class Config {
   static final byte LIMIT_PIN_MAX_RETRIES = (byte) 10;
   static final byte LIMIT_PIN_HISTORY = (byte) 12;
 
-  static final byte LIMIT_PUK_MAX_LENGTH = (byte) 16;
+  // SP 800-73-5 Part 2 Section 2.4.3: "The PUK SHALL be 8 bytes in length and MAY be any 8-byte
+  // binary value." This is the only PUK length: the PUK reference data object, the CHANGE
+  // REFERENCE DATA '81' and RESET RETRY COUNTER PUK fields, and the administrative PUK update all
+  // use it. CONFIG_PUK_LENGTH reads back this value and accepts no other.
+  static final byte LENGTH_PUK = (byte) 8;
   // SP 800-73-5 caps PUK retry counters at 10.
   static final byte LIMIT_PUK_MAX_RETRIES = (byte) 10;
 
@@ -355,7 +359,6 @@ final class Config {
   private static final byte DEFAULT_PIN_RETRIES_CONTACTLESS = (byte) 5;
 
   private static final byte DEFAULT_PUK_ENABLED = TLV.TRUE;
-  private static final byte DEFAULT_PUK_LENGTH = (byte) 8;
   private static final byte DEFAULT_PUK_RETRIES_CONTACT = (byte) 10;
   private static final byte DEFAULT_PUK_RETRIES_CONTACTLESS = (byte) 9;
 
@@ -447,7 +450,7 @@ final class Config {
 
     // PUK
     config[CONFIG_PUK_ENABLED] = DEFAULT_PUK_ENABLED;
-    config[CONFIG_PUK_LENGTH] = DEFAULT_PUK_LENGTH;
+    config[CONFIG_PUK_LENGTH] = LENGTH_PUK;
     config[CONFIG_PUK_RETRIES_CONTACT] = DEFAULT_PUK_RETRIES_CONTACT;
     config[CONFIG_PUK_RETRIES_CONTACTLESS] = DEFAULT_PUK_RETRIES_CONTACTLESS;
 
@@ -665,8 +668,8 @@ final class Config {
       // Length
       if (reader.match(TAG_PUK_LENGTH)) {
         byte value = reader.toByte();
-        // SP 800-73 fixes the RESET RETRY COUNTER PUK field at eight bytes.
-        if (value != DEFAULT_PUK_LENGTH) {
+        // SP 800-73-5 Part 2 Section 2.4.3 fixes the PUK at eight bytes; see LENGTH_PUK.
+        if (value != LENGTH_PUK) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         config[CONFIG_PUK_LENGTH] = value;

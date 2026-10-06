@@ -608,8 +608,8 @@ final class PIVAdministrationCommandHandler {
         // - No format verification required is for the PUK
 
         // Update the PUK
-        // SP 800-73-5 Part 2 Section 2.4 fixes the PUK wire value to eight bytes.
-        if (length != config.readValue(Config.CONFIG_PUK_LENGTH)) {
+        // SP 800-73-5 Part 2 Section 2.4.3: "The PUK SHALL be 8 bytes in length".
+        if (length != Config.LENGTH_PUK) {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
         cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, (byte) length, ZERO);

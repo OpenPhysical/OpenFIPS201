@@ -282,10 +282,12 @@ final class PIV {
     cspPIV.updatePIN(ID_CVM_LOCAL_PIN, scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH, ZERO);
     PIVSecurityProvider.zeroise(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
 
-    // Generate a random PUK value to initialise it
-    PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH);
-    cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH, ZERO);
-    PIVSecurityProvider.zeroise(scratch, ZERO, Config.LIMIT_PUK_MAX_LENGTH);
+    // Generate a random PUK value to initialise it. The PUK stays unprovisioned until the issuer
+    // sets it, and RESET RETRY COUNTER and CHANGE REFERENCE DATA '81' refuse it in that state even
+    // if the random value were presented (PIVSecurityProvider.isPukProvisioned()).
+    PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LENGTH_PUK);
+    cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, Config.LENGTH_PUK, ZERO);
+    PIVSecurityProvider.zeroise(scratch, ZERO, Config.LENGTH_PUK);
     cspPIV.clearBootstrapCvmProvisioningState();
 
     //

@@ -220,6 +220,117 @@ class PIVPinCommandHandlerRetryTest {
     Mockito.verify(fixture.provider, Mockito.never()).markPINAlways();
   }
 
+  @Test
+  void resetRetryCounterRefusesAMatchingUnprovisionedPuk() {
+    // Until the issuer sets the PUK it holds only the random install value. A presented value that
+    // matches it is refused as a mismatch (SP 800-73-5 Part 2 Section 3.2.3): '63 CX', the PIN
+    // security status FALSE, and the PUK retry counter decremented by one.
+    Fixture fixture = new Fixture(false);
+    fixture.pukRetries[0] = 4;
+    matchPukPayloadFirstByte(fixture);
+
+    assertSw(
+        (short) (PIV.SW_RETRIES_REMAINING | 3),
+        () ->
+            fixture.handler.resetRetryCounter(
+                PIV.ID_CVM_LOCAL_PIN, PUK_PAYLOAD, (short) 0, (short) 16));
+    assertEquals(3, fixture.pukRetries[0], "The PUK retry counter must be decremented by one");
+    Mockito.verify(fixture.puk).reset();
+    Mockito.verify(fixture.pin).reset();
+    Mockito.verify(fixture.provider, Mockito.never())
+        .updatePIN(
+            Mockito.anyByte(),
+            Mockito.any(byte[].class),
+            Mockito.anyShort(),
+            Mockito.anyByte(),
+            Mockito.anyByte());
+    assertEquals(PUK_FIRST_BYTE, PUK_PAYLOAD[0], "The command data must be restored");
+  }
+
+  @Test
+  void changeReferenceDataRefusesAMatchingUnprovisionedPuk() {
+    // SP 800-73-5 Part 2 Section 3.2.2: a mismatch returns '63 CX', sets the security status of
+    // the key reference FALSE and decrements its retry counter by one.
+    Fixture fixture = new Fixture(false);
+    fixture.pukRetries[0] = 4;
+    matchPukPayloadFirstByte(fixture);
+
+    assertSw(
+        (short) (PIV.SW_RETRIES_REMAINING | 3),
+        () ->
+            fixture.handler.changeReferenceData(
+                PIV.ID_CVM_PUK, PUK_PAYLOAD, (short) 0, (short) 16));
+    assertEquals(3, fixture.pukRetries[0], "The PUK retry counter must be decremented by one");
+    Mockito.verify(fixture.puk).reset();
+    Mockito.verify(fixture.provider, Mockito.never())
+        .updatePIN(
+            Mockito.anyByte(),
+            Mockito.any(byte[].class),
+            Mockito.anyShort(),
+            Mockito.anyByte(),
+            Mockito.anyByte());
+  }
+
+  @Test
+  void resetRetryCounterAcceptsAMatchingProvisionedPuk() {
+    Fixture fixture = new Fixture(false);
+    fixture.pukRetries[0] = 4;
+    matchPukPayloadFirstByte(fixture);
+    Mockito.when(fixture.provider.isPukProvisioned()).thenReturn(true);
+
+    fixture.handler.resetRetryCounter(PIV.ID_CVM_LOCAL_PIN, PUK_PAYLOAD, (short) 0, (short) 16);
+    Mockito.verify(fixture.provider)
+        .updatePIN(
+            Mockito.eq(PIV.ID_CVM_LOCAL_PIN),
+            Mockito.any(byte[].class),
+            Mockito.eq((short) 8),
+            Mockito.eq((byte) 8),
+            Mockito.anyByte());
+    assertEquals(6, fixture.pukRetries[0], "A matching PUK resets its retry counter");
+  }
+
+  /**
+   * Makes the PUK match exactly the data whose first byte is {@link #PUK_FIRST_BYTE}, with the
+   * OwnerPIN retry semantics: a match resets the counter to 6, a mismatch decrements it.
+   */
+  private static void matchPukPayloadFirstByte(Fixture fixture) {
+    Mockito.when(
+            fixture.puk.check(Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyByte()))
+        .thenAnswer(
+            call -> {
+              byte[] data = call.getArgument(0);
+              short offset = call.getArgument(1);
+              if (data[offset] == PUK_FIRST_BYTE) {
+                fixture.pukRetries[0] = 6;
+                return true;
+              }
+              fixture.pukRetries[0]--;
+              return false;
+            });
+  }
+
+  private static final byte PUK_FIRST_BYTE = (byte) 'P';
+
+  // An eight-byte PUK followed by a valid new PIN.
+  private static final byte[] PUK_PAYLOAD = {
+    PUK_FIRST_BYTE,
+    (byte) 0x00,
+    (byte) 0x7F,
+    (byte) 0x80,
+    (byte) 0xFF,
+    (byte) 0x01,
+    (byte) 0x02,
+    (byte) 0x03,
+    (byte) '9',
+    (byte) '8',
+    (byte) '7',
+    (byte) '6',
+    (byte) '5',
+    (byte) '4',
+    (byte) 0xFF,
+    (byte) 0xFF
+  };
+
   private static final byte[] CHANGE_PAYLOAD = {
     (byte) '1', (byte) '2', (byte) '3', (byte) '4',
     (byte) '5', (byte) '6', (byte) 0xFF, (byte) 0xFF,
