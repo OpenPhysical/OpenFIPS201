@@ -73,6 +73,16 @@ final class PIVAuthenticationCommandHandler {
   }
 
   /**
+   * Wipes the received command data and rejects a data field that is not exactly one Table 7
+   * dynamic authentication template: SP 800-73-5 Part 2 Section 3.2.4 '6A80', "Incorrect parameter
+   * in command data field".
+   */
+  private void rejectTemplate() {
+    PIVSecurityProvider.zeroise(scratch, ZERO, LENGTH_SCRATCH);
+    ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+  }
+
+  /**
    * Abandons a failed GENERAL AUTHENTICATE: discards any pending challenge or witness, sets the
    * security status of the referenced key to FALSE, and wipes the scratch buffer.
    *
@@ -186,7 +196,7 @@ final class PIVAuthenticationCommandHandler {
     // has exactly one interpretation. Anything else is "Incorrect parameter in command data field".
     if (scratch[ZERO] != CONST_TAG_AUTH_TEMPLATE
         || TLV.objectEnd(scratch, ZERO, length) != length) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      rejectTemplate();
       return ZERO; // Keep compiler happy
     }
 
@@ -214,27 +224,27 @@ final class PIVAuthenticationCommandHandler {
       short valueLength = TLV.readLength(scratch, offset, length);
       switch (scratch[offset]) {
         case CONST_TAG_AUTH_WITNESS:
-          if (witnessOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          if (witnessOffset != ZERO) rejectTemplate();
           witnessOffset = valueOffset;
           witnessLength = valueLength;
           break;
         case CONST_TAG_AUTH_CHALLENGE:
-          if (challengeOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          if (challengeOffset != ZERO) rejectTemplate();
           challengeOffset = valueOffset;
           challengeLength = valueLength;
           break;
         case CONST_TAG_AUTH_CHALLENGE_RESPONSE:
-          if (responseOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          if (responseOffset != ZERO) rejectTemplate();
           responseOffset = valueOffset;
           responseLength = valueLength;
           break;
         case CONST_TAG_AUTH_EXPONENTIATION:
-          if (exponentiationOffset != ZERO) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          if (exponentiationOffset != ZERO) rejectTemplate();
           exponentiationOffset = valueOffset;
           exponentiationLength = valueLength;
           break;
         default:
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+          rejectTemplate();
       }
       offset = TLV.objectEnd(scratch, offset, length);
     }
