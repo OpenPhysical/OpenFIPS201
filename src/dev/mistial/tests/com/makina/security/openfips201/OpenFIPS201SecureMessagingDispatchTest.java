@@ -2647,7 +2647,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
     macInput[cursor++] = p1;
     macInput[cursor++] = p2;
     macInput[cursor++] = (byte) 0x80;
-    cursor += 11;
+    cursor = (short) (cursor + 11);
 
     // AES-CMAC (NIST SP 800-38B) over the MAC input with the zero session MAC key used by these
     // tests. Computed host-side with BouncyCastle so command construction does not require a

@@ -44,6 +44,7 @@ import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.SubjectKeyIdentifier;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
+import org.bouncycastle.crypto.BlockCipher;
 import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.macs.CMac;
 import org.bouncycastle.crypto.params.KeyParameter;
@@ -620,7 +621,7 @@ final class VciSupport {
     if (response) {
       counter[0] = (byte) (counter[0] | 0x80);
     }
-    return aesEcbBlock(session.skEnc, counter);
+    return aesBlock(session.skEnc, counter);
   }
 
   private static void incrementCounter(byte[] counter) {
@@ -661,14 +662,20 @@ final class VciSupport {
     return out;
   }
 
-  private static byte[] aesEcbBlock(byte[] key, byte[] block) {
-    try {
-      Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding");
-      cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"));
-      return cipher.doFinal(block);
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
+  /**
+   * One application of the AES block cipher. SP 800-73-5 Part 2 Section 4.2.2: the IV is "created
+   * by encrypting the encryption counter with SK_ENC", one 16-byte block. This is the bare block
+   * permutation, not a mode of operation over data.
+   */
+  private static byte[] aesBlock(byte[] key, byte[] block) {
+    if (block.length != 16) {
+      throw new IllegalArgumentException("AES block must be 16 bytes");
     }
+    BlockCipher engine = AESEngine.newInstance();
+    engine.init(true, new KeyParameter(key));
+    byte[] out = new byte[16];
+    engine.processBlock(block, 0, out, 0);
+    return out;
   }
 
   private static byte[] aesCbc(boolean encrypt, byte[] key, byte[] iv, byte[] input) {
