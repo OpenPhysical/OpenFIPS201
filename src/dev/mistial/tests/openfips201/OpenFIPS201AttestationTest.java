@@ -668,6 +668,63 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
         "9B authentication alone must not load the F9 certificate");
   }
 
+  /**
+   * The F9 certificate container 5FFF01 is virtual and read-only: an interindustry PUT DATA
+   * authorized only by the 9B card-management key cannot write it, and the served certificate is
+   * unchanged.
+   */
+  @Test
+  void managementKeyPutDataCannotWriteTheAuthorityContainer() throws Exception {
+    TestIssuer issuer = TestIssuer.create();
+    Authority authority = provisionAuthorityOverScp(issuer, DEFAULT_TEMPLATE, opid());
+    byte[] replacement = issuer.sign(issuer.profile(authority.point, opid(), DEFAULT_TEMPLATE));
+    provisionManagementKeyOverScp(StandardCardProfile.ADMIN_KEY_ALG, StandardCardProfile.ADMIN_KEY);
+    authenticateCardManagementKey(StandardCardProfile.ADMIN_KEY_ALG, StandardCardProfile.ADMIN_KEY);
+
+    ResponseAPDU response =
+        transmitChained(
+            0x00,
+            0xDB,
+            0x3F,
+            0xFF,
+            concat(
+                hex("5C035FFF01"),
+                tlv((byte) 0x53, concat(tlv((byte) 0x70, replacement), hex("710100FE00")))));
+    assertSw(
+        ISO7816.SW_FILE_NOT_FOUND,
+        response,
+        "PUT DATA cannot address the virtual F9 certificate container");
+    assertArrayEquals(
+        authority.certificateDer,
+        collectResponse(
+            transmit(new CommandAPDU(0x00, 0xF9, 0xF9, 0x00, 256)), "F9 certificate read-back"),
+        "The served F9 certificate is unchanged");
+  }
+
+  /**
+   * The F9 certificate (element 70) is loaded only during issuer pre-personalization: once
+   * GlobalPlatform reports the application PERSONALIZED the load is refused with '6985' and F9
+   * stays GENERATED.
+   */
+  @Test
+  void authorityCertificateLoadIsRefusedWhenPersonalized() throws Exception {
+    TestIssuer issuer = TestIssuer.create();
+    byte[] point = defineAndGenerateAuthority();
+    final byte[] certificate = issuer.sign(issuer.profile(point, opid(), DEFAULT_TEMPLATE));
+    ResponseAPDU response =
+        withMockedScp(
+            LIFECYCLE_PERSONALIZED,
+            () -> {
+              assertSw(ISO7816.SW_NO_ERROR, selectApplet(), "SELECT while PERSONALIZED");
+              return loadCertificate(certificate);
+            });
+    assertSw(
+        ISO7816.SW_CONDITIONS_NOT_SATISFIED,
+        response,
+        "The F9 certificate cannot be loaded once PERSONALIZED");
+    assertEquals(STATE_GENERATED, authorityState());
+  }
+
   @Test
   void authorityCertificateRequiresGeneratedAuthority() throws Exception {
     TestIssuer issuer = TestIssuer.create();
