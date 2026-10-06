@@ -50,16 +50,15 @@ final class TLVWriter {
   // - 2 bytes = 0-255 bytes data length
   // - 3 bytes = 0-32767 bytes data length (because of java signed type)
   private static final short CONTEXT_LENGTH_MAX = (short) 0;
-  // The offset where the 2-byte length will be written at the end
-  private static final short CONTEXT_LENGTH_PTR = (short) 1;
   // The current offset in the buffer
-  private static final short CONTEXT_OFFSET = (short) 2;
+  private static final short CONTEXT_OFFSET = (short) 1;
   // The original offset in the buffer
-  private static final short CONTEXT_OFFSET_RESET = (short) 3;
-  private static final short CONTEXT_BUFFER_END = (short) 4;
-  private static final short CONTEXT_CONTENT_START = (short) 5;
+  private static final short CONTEXT_OFFSET_RESET = (short) 2;
+  private static final short CONTEXT_BUFFER_END = (short) 3;
+  // The first content octet, after the reserved parent length field
+  private static final short CONTEXT_CONTENT_START = (short) 4;
 
-  private static final short LENGTH_CONTEXT = (short) 6;
+  private static final short LENGTH_CONTEXT = (short) 5;
 
   //
   // CONSTANTS
@@ -126,33 +125,28 @@ final class TLVWriter {
     // Set the parent TAG
     writeTag(tag);
 
-    // Reserve the LENGTH value
-    if (maxLength <= TLV.LENGTH_1BYTE_MAX) {
-      // Store the offset where we will write the length at the end and increment
-      context[CONTEXT_LENGTH_PTR] = context[CONTEXT_OFFSET]++;
-    } else if (maxLength <= TLV.LENGTH_2BYTE_MAX) {
-      // Reserve a 1-byte length
-      buffer[context[CONTEXT_OFFSET]++] = (byte) 0x81;
-
-      // Store the offset where we will write the length at the end
-      context[CONTEXT_LENGTH_PTR] = context[CONTEXT_OFFSET]++;
-    } else { // (maxLength <= LENGTH_3BYTE_MAX)
-      // Reserve a 2-byte length
-      buffer[context[CONTEXT_OFFSET]++] = (byte) 0x82;
-
-      // Store the offset where we will write the length at the end
-      context[CONTEXT_LENGTH_PTR] = context[CONTEXT_OFFSET];
-
-      // Move the position 2 forward
-      context[CONTEXT_OFFSET] += (short) 2;
-    }
+    // Reserve the LENGTH field in the form maxLength needs. finish() writes the shortest form for
+    // the actual content length.
+    context[CONTEXT_OFFSET] += TLV.encodedLengthSize(maxLength);
     context[CONTEXT_CONTENT_START] = context[CONTEXT_OFFSET];
   }
 
   /**
-   * Calculates the total object length for the parent constructed tag and clears all internal state
+   * Writes the parent length in its shortest form, clears all internal state and returns the total
+   * object length.
    *
-   * @return The length of the entire data object
+   * <p>ISO/IEC 7816-4 Section 6.3 "recommends to use the shortest possible coding of the length
+   * field, according to DER encoding rules". {@link #init} reserves the length form for {@code
+   * maxLength}; when the actual content needs a shorter form, the content is moved down to follow
+   * the shorter length field. The JC 3.0.5 {@code Util.arrayCopyNonAtomic} contract makes the
+   * overlapping move safe: "If the source and destination arguments refer to the same array object,
+   * then the copying is performed as if the components at positions srcOff through srcOff+length-1
+   * were first copied to a temporary array with length components and then the contents of the
+   * temporary array were copied into positions destOff through destOff+length-1 of the argument
+   * array." The octets vacated at the end are zeroised.
+   *
+   * @return The length of the entire data object, which ends at the returned length from the {@code
+   *     offset} given to {@link #init}
    */
   short finish() throws ISOException {
 
@@ -161,28 +155,26 @@ final class TLVWriter {
 
     byte[] data = (byte[]) dataPtr[0];
 
-    // Write the now known the LENGTH value
-    short length;
-    if (context[CONTEXT_LENGTH_MAX] >= 0 && context[CONTEXT_LENGTH_MAX] <= TLV.LENGTH_1BYTE_MAX) {
-      length = (short) (context[CONTEXT_OFFSET] - context[CONTEXT_LENGTH_PTR] - 1);
-      if (length > TLV.LENGTH_1BYTE_MAX) ISOException.throwIt(ISO7816.SW_UNKNOWN);
-      data[context[CONTEXT_LENGTH_PTR]] = (byte) (length & (short) 0x007F);
-    } else if (context[CONTEXT_LENGTH_MAX] >= 0
-        && context[CONTEXT_LENGTH_MAX] <= TLV.LENGTH_2BYTE_MAX) {
-      length = (short) (context[CONTEXT_OFFSET] - context[CONTEXT_LENGTH_PTR] - 1);
-      if (length > TLV.LENGTH_2BYTE_MAX) ISOException.throwIt(ISO7816.SW_UNKNOWN);
-      data[context[CONTEXT_LENGTH_PTR]] = (byte) (length & (short) 0x00FF);
-    } else if (context[CONTEXT_LENGTH_MAX] >= 0
-        && context[CONTEXT_LENGTH_MAX] <= TLV.LENGTH_3BYTE_MAX) {
-      length = (short) (context[CONTEXT_OFFSET] - context[CONTEXT_LENGTH_PTR] - 2);
-      Util.setShort(data, context[CONTEXT_LENGTH_PTR], length);
-    } else {
-      // Invalid length supplied
-      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    short contentStart = context[CONTEXT_CONTENT_START];
+    short contentLength = (short) (context[CONTEXT_OFFSET] - contentStart);
+    if (contentLength < (short) 0 || contentLength > context[CONTEXT_LENGTH_MAX]) {
+      ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
+    short reservedSize = TLV.encodedLengthSize(context[CONTEXT_LENGTH_MAX]);
+    short minimalSize = TLV.encodedLengthSize(contentLength);
+    short lengthOffset = (short) (contentStart - reservedSize);
 
-    // Update length to calculate the total length of bytes written
-    length = (short) (context[CONTEXT_OFFSET] - context[CONTEXT_OFFSET_RESET]);
+    if (minimalSize < reservedSize) {
+      short shift = (short) (reservedSize - minimalSize);
+      Util.arrayCopyNonAtomic(
+          data, contentStart, data, (short) (contentStart - shift), contentLength);
+      Util.arrayFillNonAtomic(data, (short) (context[CONTEXT_OFFSET] - shift), shift, (byte) 0x00);
+    }
+    TLV.writeLength(data, lengthOffset, contentLength);
+
+    short length =
+        (short)
+            ((short) (lengthOffset + minimalSize + contentLength) - context[CONTEXT_OFFSET_RESET]);
 
     // Reset all internal state (this will also unlock)
     reset();
@@ -197,7 +189,6 @@ final class TLVWriter {
 
     context[CONTEXT_OFFSET_RESET] = (short) 0;
     context[CONTEXT_OFFSET] = (short) 0;
-    context[CONTEXT_LENGTH_PTR] = (short) 0;
     context[CONTEXT_LENGTH_MAX] = (short) 0;
     context[CONTEXT_BUFFER_END] = (short) 0;
     context[CONTEXT_CONTENT_START] = (short) 0;

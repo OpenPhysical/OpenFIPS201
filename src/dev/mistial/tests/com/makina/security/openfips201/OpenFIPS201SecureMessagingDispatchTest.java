@@ -2246,6 +2246,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
       {"8E not last", mac + "970100", "6988"},
       {"unknown tag", "85020000" + mac, "6988"},
       {"87 after 97", "970100" + "871101" + block + mac, "6988"},
+      // ISO/IEC 7816-4 Section 6.3 shortest length coding, as TLV.valueLengthOrInvalid enforces.
+      {"non-minimal 87 81 05", "8781050100112233" + mac, "6988"},
+      {"non-minimal 87 82 00 10", "87820010" + "01" + block.substring(2) + mac, "6988"},
+      {"non-minimal 87 81 11", "878111" + "01" + block + mac, "6988"},
+      {"non-minimal 87 82 00 11", "87820011" + "01" + block + mac, "6988"},
+      {"non-minimal 8E 81 08", "871101" + block + "8E81080102030405060708", "6988"},
       {"missing 8E", "970100", "6987"},
       {"no objects", "", "6987"},
     };
@@ -2326,6 +2332,59 @@ class OpenFIPS201SecureMessagingDispatchTest {
           row[0] + ": final frame");
       assertEquals(
           false, method(sm.getClass(), "isEstablished").invoke(sm), row[0] + ": session destroyed");
+    }
+  }
+
+  /**
+   * The bounded parser for a rejected contactless PUT DATA chain reads the object 87 length one
+   * octet at a time. It applies the shortest-coding rule of TLV.valueLengthOrInvalid (ISO/IEC
+   * 7816-4 Section 6.3), so a non-minimal 81 or 82 length is "secure messaging data objects are
+   * incorrect" ('69 88', SP 800-73-5 Part 2 Section 4.2.7) and destroys the session (Section 4.3).
+   * The same lengths in minimal form keep the chain open.
+   */
+  @Test
+  void nonMinimalEncryptedLengthInRejectedCommandStreamDestroysSession() throws Exception {
+    assertSw(
+        0x9000,
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
+        "SELECT PIV");
+    Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
+    Object piv = field(applet, "piv").get(applet);
+    Object sm = field(piv, "secureMessaging").get(piv);
+
+    String ciphertext = "00112233445566778899AABBCCDDEEFF";
+    Object[][] rows = {
+      {"87 81 05", "878105" + "01" + ciphertext, 0x6988},
+      {"87 82 00 10", "87820010" + "01" + ciphertext, 0x6988},
+      // Otherwise valid: one indicator octet and whole AES blocks.
+      {"87 81 71", "878171" + "01" + ciphertext, 0x6988},
+      {"87 82 00 81", "87820081" + "01" + ciphertext, 0x6988},
+      {"87 82 00 F1", "878200F1" + "01" + ciphertext, 0x6988},
+      {"minimal 87 81 81", "878181" + "01" + ciphertext, 0x9000},
+      {"minimal 87 82 01 01", "87820101" + "01" + ciphertext, 0x9000},
+    };
+    for (Object[] row : rows) {
+      byte[] body = hex((String) row[1]);
+      byte[] command = new byte[5 + body.length];
+      command[ISO7816.OFFSET_INS] = (byte) 0xDB;
+      command[ISO7816.OFFSET_P1] = (byte) 0x3F;
+      command[ISO7816.OFFSET_P2] = (byte) 0xFF;
+      System.arraycopy(body, 0, command, 5, body.length);
+      try (AutoCloseable ignored = enterEngineContext()) {
+        establishSyntheticSession(sm);
+        method(piv.getClass(), "setIsContactless", boolean.class).invoke(piv, true);
+      }
+      int expected = (Integer) row[2];
+      assertSw(
+          expected,
+          transmit(new CommandAPDU(commandFragment(command, 5, body.length, false))),
+          row[0] + ": first frame");
+      try (AutoCloseable ignored = enterEngineContext()) {
+        assertEquals(
+            expected == 0x9000,
+            method(sm.getClass(), "isEstablished").invoke(sm),
+            row[0] + ": session state");
+      }
     }
   }
 

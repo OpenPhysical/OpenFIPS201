@@ -430,7 +430,10 @@ final class PIVSecureMessaging {
         commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_LENGTH;
       } else if (phase == COMMAND_STREAM_LENGTH) {
         // SP 800-73-5 uses BER definite lengths. This parser accepts the forms needed for the
-        // APDU-size range: one short-form byte, 81, or 82.
+        // APDU-size range: one short-form byte, 81, or 82. Each must be the shortest coding, the
+        // rule TLV.valueLengthOrInvalid applies to every buffered command (ISO/IEC 7816-4
+        // Section 6.3 "recommends to use the shortest possible coding of the length field,
+        // according to DER encoding rules").
         updateCommandStreamMac(apdu, (short) (cursor - 1));
         short unsigned = (short) (value & (short) 0x00FF);
         if (unsigned < (short) 0x80) {
@@ -446,11 +449,24 @@ final class PIVSecureMessaging {
       } else if (phase == COMMAND_STREAM_LONG_LENGTH) {
         updateCommandStreamMac(apdu, (short) (cursor - 1));
         short current = commandStreamState[OFFSET_COMMAND_STREAM_VALUE_LENGTH];
-        if (current > (short) 0x007F) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
-        current = (short) ((short) (current << 8) | (short) (value & (short) 0x00FF));
+        short remaining = commandStreamState[OFFSET_COMMAND_STREAM_LENGTH_BYTES];
+        short octet = (short) (value & (short) 0x00FF);
+        // The first subsequent octet decides minimality, as in TLV.valueLengthOrInvalid: 81 must
+        // encode at least 80, and 82 at least 0100 while remaining a non-negative short, so its
+        // first octet lies in 01..7F. A zero first octet is rejected, so current is zero only
+        // while the first subsequent octet is being read.
+        if (current == (short) 0) {
+          boolean minimal;
+          if (remaining == (short) 1) {
+            minimal = octet > TLV.LENGTH_1BYTE_MAX;
+          } else {
+            minimal = octet != (short) 0 && octet <= TLV.LENGTH_1BYTE_MAX;
+          }
+          if (!minimal) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
+        }
+        current = (short) ((short) (current << 8) | octet);
         commandStreamState[OFFSET_COMMAND_STREAM_VALUE_LENGTH] = current;
-        short remaining =
-            (short) (commandStreamState[OFFSET_COMMAND_STREAM_LENGTH_BYTES] - (short) 1);
+        remaining = (short) (remaining - (short) 1);
         commandStreamState[OFFSET_COMMAND_STREAM_LENGTH_BYTES] = remaining;
         if (remaining == (short) 0) startRejectedEncryptedValue(current);
       } else if (phase == COMMAND_STREAM_PADDING_INDICATOR) {
