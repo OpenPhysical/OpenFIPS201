@@ -194,7 +194,9 @@ final class PIV {
   private final byte[] smCommand;
   // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
   private final byte[] secureMessagingCommand;
+  // #if FIPS_MODE
   private final FipsPowerUpSelfTests fipsSelfTest;
+  // #endif
   /**
    * Allocates the PIV state and composes the command handlers.
    *
@@ -216,8 +218,9 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    fipsSelfTest =
-        FipsPolicy.ENABLED ? new FipsPowerUpSelfTests(crypto, curves, ecPointValidator) : null;
+    // #if FIPS_MODE
+    fipsSelfTest = new FipsPowerUpSelfTests(crypto, curves, ecPointValidator);
+    // #endif
 
     // Create our configuration provider
     config = new Config();
@@ -303,14 +306,15 @@ final class PIV {
     //
   }
 
+  // #if FIPS_MODE
   boolean runFipsSelfTests() {
-    if (!FipsPolicy.ENABLED) return true;
     try {
       return fipsSelfTest.run(scratch) && opacity.runCryptographicAlgorithmSelfTest();
     } finally {
       PIVSecurityProvider.zeroise(scratch, ZERO, FipsPowerUpSelfTests.LENGTH_SCRATCH);
     }
   }
+  // #endif
 
   /**
    * Starts or continues processing of an incoming data stream, which will be written directly to a
@@ -713,9 +717,11 @@ final class PIV {
   }
   // #endif
 
+  // #if FIPS_MODE
   private boolean isVciConfigured() {
     return config.readValue(Config.CONFIG_VCI_MODE) != Config.VCI_MODE_DISABLED;
   }
+  // #endif
 
   boolean isVciSatisfied() {
     return PIVDataCommandHandler.hasPolicyBits(
@@ -749,6 +755,7 @@ final class PIV {
     return dataCommands.isGlobalPinAdvertised();
   }
 
+  // #if FIPS_MODE
   boolean isFipsPersonalizationReady() {
     // SP 800-73-5 Part 1, Table 1 requires these seven data objects. The
     // certification profile also requires its PIN, PUK, 9A, and 9E material
@@ -835,6 +842,15 @@ final class PIV {
     return false;
   }
 
+  private boolean hasStructurallyValidMandatoryObject(byte suffix) {
+    scratch[ZERO] = (byte) 0x5F;
+    scratch[(short) 1] = (byte) 0xC1;
+    scratch[(short) 2] = suffix;
+    PIVDataObject object = dataStore.find(scratch, ZERO, (short) 3);
+    return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
+  }
+  // #endif
+
   /**
    * Returns whether {@code id} is one of the SP 800-73-5 Part 1 Table 5 cardholder asymmetric key
    * references: '9A' PIV Authentication, '9C' Digital Signature, '9D' Key Management or '9E' Card
@@ -847,14 +863,6 @@ final class PIV {
   /** Returns whether {@code id} is a Table 5 retired key management reference '82' to '95'. */
   static boolean isRetiredKeyManagementKey(byte id) {
     return id >= ID_KEY_RETIRED_FIRST && id <= ID_KEY_RETIRED_LAST;
-  }
-
-  private boolean hasStructurallyValidMandatoryObject(byte suffix) {
-    scratch[ZERO] = (byte) 0x5F;
-    scratch[(short) 1] = (byte) 0xC1;
-    scratch[(short) 2] = suffix;
-    PIVDataObject object = dataStore.find(scratch, ZERO, (short) 3);
-    return PIVDataCommandHandler.isStructurallyValidMandatoryObject(object, suffix);
   }
 
   void rejectUnsupportedOccAccessMode(byte mode) {

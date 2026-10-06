@@ -2,7 +2,6 @@ package com.makina.security.openfips201;
 
 import javacard.framework.Util;
 import javacard.security.AESKey;
-// #if FIPS_MODE
 import javacard.security.CryptoException;
 import javacard.security.ECKey;
 import javacard.security.ECPrivateKey;
@@ -10,7 +9,6 @@ import javacard.security.ECPublicKey;
 import javacard.security.KeyBuilder;
 import javacard.security.RSAPrivateKey;
 import javacard.security.RSAPublicKey;
-// #endif
 
 /**
  * Power-up cryptographic algorithm self-tests (CASTs) of the FIPS profile.
@@ -82,7 +80,6 @@ final class FipsPowerUpSelfTests {
     (byte) 0x34, (byte) 0xC8, (byte) 0x25, (byte) 0xA7
   };
   // #endif
-  // #if FIPS_MODE
   // ECC CDH P-256: NIST CAVS KAS ECC CDH primitive vector, COUNT = 0 (dIUT, QIUT, QCAVS, ZIUT).
   // The same key pair is the ECDSA P-256 test key.
   private static final byte[] ECC_P256_PRIVATE = {
@@ -373,7 +370,6 @@ final class FipsPowerUpSelfTests {
   private final ECPublicKey eccPublic;
   private final RSAPrivateKey rsaPrivate;
   private final RSAPublicKey rsaPublic;
-  // #endif
 
   private final AESKey aesKey = PIVCrypto.buildTransientAes128Key();
   private final PIVCrypto crypto;
@@ -387,7 +383,6 @@ final class FipsPowerUpSelfTests {
    */
   FipsPowerUpSelfTests(PIVCrypto crypto, ECCurveRegistry curves, ECPointValidator validator) {
     this.crypto = crypto;
-    // #if FIPS_MODE
     p256 = curves.forMechanism(PIV.ID_ALG_ECC_P256);
     this.validator = validator;
 
@@ -433,7 +428,6 @@ final class FipsPowerUpSelfTests {
     }
     rsaPrivate = privateRsa;
     rsaPublic = publicRsa;
-    // #endif
   }
 
   /**
@@ -444,17 +438,12 @@ final class FipsPowerUpSelfTests {
    */
   boolean run(byte[] scratch) {
     try {
-      if (!runSymmetric(scratch)) return false;
-      // #if FIPS_MODE
-      if (!runEcc(scratch) || !runRsa(scratch)) return false;
-      // #endif
-      return true;
+      return runSymmetric(scratch) && runEcc(scratch) && runRsa(scratch);
     } catch (RuntimeException e) {
       return false;
     }
   }
 
-  // #if FIPS_MODE
   private static void setDomainParameters(ECKey key, ECParams params) {
     byte[] a = params.getA();
     byte[] b = params.getB();
@@ -533,7 +522,6 @@ final class FipsPowerUpSelfTests {
         && PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, recovered, scratch, (short) 0, LENGTH_RSA);
   }
-  // #endif
 
   private boolean runSymmetric(byte[] scratch) {
     Util.arrayFillNonAtomic(scratch, (short) 0, (short) 64, (byte) 0);

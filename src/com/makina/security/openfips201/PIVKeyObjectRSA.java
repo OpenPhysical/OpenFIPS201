@@ -404,6 +404,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     }
   }
 
+  // #if ATTESTATION_ENABLED
   @Override
   short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset)
       throws ISOException {
@@ -473,4 +474,5 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     (byte) 0x01,
     (byte) 0x01
   };
+  // #endif
 }

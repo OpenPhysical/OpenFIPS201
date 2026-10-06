@@ -32,6 +32,8 @@ import pro.javacard.engine.JavaCardEngine;
 class PIVAttestationStateTest {
 
   private static final byte PERSONALIZED = (byte) 0x0F;
+  // A key definition with no role bits set.
+  private static final byte ROLE_NONE = (byte) 0x00;
 
   private final JavaCardEngine engine = JavaCardEngine.create();
   private AutoCloseable context;
@@ -183,7 +185,7 @@ class PIVAttestationStateTest {
                 PIVObject.ACCESS_MODE_ALWAYS,
                 (byte) 0x00,
                 PIV.ID_ALG_ECC_P256,
-                PIVKeyObject.ROLE_NONE,
+                ROLE_NONE,
                 PIVKeyObject.ATTR_NONE,
                 crypto,
                 new ECCurveRegistry());

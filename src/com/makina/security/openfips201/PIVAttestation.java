@@ -105,7 +105,6 @@ final class PIVAttestation {
   static final short PARSE_SPKI_OFFSET = (short) 0x0C;
   static final short PARSE_SPKI_LENGTH = (short) 0x0E;
   static final short PARSE_KEY_ID_OFFSET = (short) 0x10;
-  static final short LENGTH_PARSE_RESULT = (short) 0x12;
 
   // Load workspace inside the response buffer.
   private static final short WORK_SPKI = (short) 0x20;

@@ -542,6 +542,7 @@ final class PIVCrypto {
     return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
+  // #if FIPS_MODE
   static AESKey buildTransientAes128Key() {
     return buildTransientAesKey(KeyBuilder.LENGTH_AES_128);
   }
@@ -551,6 +552,7 @@ final class PIVCrypto {
     return (AESKey)
         KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, keyLengthBits, false);
   }
+  // #endif
 
   /**
    * Builds a clear-on-reset AES key for PIV secure-messaging session keys.

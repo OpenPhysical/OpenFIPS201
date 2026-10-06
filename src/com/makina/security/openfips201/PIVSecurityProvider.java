@@ -403,6 +403,7 @@ final class PIVSecurityProvider {
     key.runGc();
   }
 
+  // #if ATTESTATION_ENABLED
   void clearKeyMaterialExcept(byte retainedId) {
     PIVKeyObject key = firstKey;
     while (key != null) {
@@ -415,6 +416,7 @@ final class PIVSecurityProvider {
     // are cleared so provisioning profiles do not need to recreate object metadata.
     clearAuthenticatedKey();
   }
+  // #endif
 
   /**
    * Validates the current security conditions for administering the specified object.
@@ -567,6 +569,7 @@ final class PIVSecurityProvider {
     return persistentState[STATE_PUK_PROVISIONED] == FLAG_TRUE;
   }
 
+  // #if FIPS_MODE
   boolean areMandatoryCvmsProvisioned() {
     return persistentState[STATE_LOCAL_PIN_PROVISIONED] == FLAG_TRUE
         && persistentState[STATE_PUK_PROVISIONED] == FLAG_TRUE;
@@ -596,6 +599,7 @@ final class PIVSecurityProvider {
     }
     return false;
   }
+  // #endif
 
   /**
    * Replaces the reference data of a PIN or PUK and records PIN history.

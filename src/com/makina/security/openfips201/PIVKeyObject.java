@@ -39,9 +39,6 @@ abstract class PIVKeyObject extends PIVObject {
   // set at once.
   //
 
-  // Undefined role
-  static final byte ROLE_NONE = (byte) 0x00;
-
   // This key can be used for card/host authentication
   // SYM: Supported for all types
   // RSA: Not supported (RSA authentication is just signing)
@@ -201,9 +198,11 @@ abstract class PIVKeyObject extends PIVObject {
     return header[HEADER_ROLE];
   }
 
+  // #if ATTESTATION_ENABLED
   final byte getAttributes() {
     return header[HEADER_ATTRIBUTES];
   }
+  // #endif
 
   final boolean hasRole(byte role) {
     return ((header[HEADER_ROLE] & role) == role);

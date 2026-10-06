@@ -133,9 +133,11 @@ final class PIVAdministrationCommandHandler {
     }
     // The FIPS certification profile may enter its irreversible operational
     // lifecycle only after its SP 800-73-5 Part 1, Table 1 profile is ready.
-    if (FipsPolicy.ENABLED && !owner.isFipsPersonalizationReady()) {
+    // #if FIPS_MODE
+    if (!owner.isFipsPersonalizationReady()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
+    // #endif
     if (!GPSystem.setCardContentState(APP_STATE_PERSONALIZED)) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }

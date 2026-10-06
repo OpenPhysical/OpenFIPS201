@@ -83,6 +83,8 @@ class OpenFIPS201UninstallTest extends OpenFIPS201TestSupport {
       classes.add(node.getClass());
     ClassLoader loader = applet.getClass().getClassLoader();
     for (String name : SHARED_SERVICES) {
+      // DERWriter is compiled only into builds with attestation.
+      if (name.equals("DERWriter") && !isAttestationEnabledBuild()) continue;
       classes.add(Class.forName("com.makina.security.openfips201." + name, false, loader));
     }
     classes.add(Class.forName("com.makina.security.openfips201.TLV", false, loader));

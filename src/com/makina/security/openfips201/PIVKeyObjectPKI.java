@@ -158,6 +158,7 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
 
   abstract boolean hasPrivateMaterial();
 
+  // #if ATTESTATION_ENABLED
   /**
    * Writes the public key as an X.509 SubjectPublicKeyInfo structure.
    *
@@ -167,4 +168,5 @@ abstract class PIVKeyObjectPKI extends PIVKeyObject {
    * @return length of the DER SubjectPublicKeyInfo
    */
   abstract short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset);
+  // #endif
 }

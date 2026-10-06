@@ -457,6 +457,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     return crypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
+  // #if ATTESTATION_ENABLED
   boolean verify(
       byte[] hash,
       short hashOffset,
@@ -469,7 +470,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
   }
 
-  // #if ATTESTATION_ENABLED
   /**
    * Writes the uncompressed public point {@code 04 || X || Y} (ANSI X9.62).
    *
@@ -485,7 +485,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
     }
     return publicKey.getW(outBuffer, outOffset);
   }
-  // #endif
 
   @Override
   short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset)
@@ -530,4 +529,5 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   private static final byte[] OID_SECP384R1 = {
     (byte) 0x2B, (byte) 0x81, (byte) 0x04, (byte) 0x00, (byte) 0x22
   };
+  // #endif
 }

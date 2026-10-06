@@ -79,15 +79,18 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final short ZERO_SHORT = (short) 0;
   private static final byte SC_MASK =
       SecureChannel.AUTHENTICATED | SecureChannel.C_DECRYPTION | SecureChannel.C_MAC;
+  // #if FIPS_MODE
   private static final byte FIPS_STATE_PASSED = (byte) 1;
   private static final byte FIPS_STATE_FAILED = (byte) 2;
+  // #endif
   private final PIV piv;
   private final TLVReader tlvReader;
+  // #if FIPS_MODE
   private final byte[] fipsState;
+  // #endif
   // ISO 7816 transport blocks fit 256 bytes. Preserve a prefix when the final receive must
   // reuse the start of CDATA rather than the short remaining tail of the APDU array.
   static final short MAX_SHORT_APDU_RESPONSE_LENGTH = (short) 256;
-  static final short MAX_SHORT_APDU_DATA_LENGTH = (short) (MAX_SHORT_APDU_RESPONSE_LENGTH - 1);
   private final byte[] receivePrefix;
 
   //
@@ -112,14 +115,19 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     PIVCrypto crypto = new PIVCrypto();
     tlvReader = new TLVReader();
     piv = new PIV(crypto, tlvReader, new TLVWriter());
+    // #if FIPS_MODE
     fipsState = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_RESET);
+    // #endif
     receivePrefix =
         JCSystem.makeTransientByteArray(MAX_SHORT_APDU_RESPONSE_LENGTH, JCSystem.CLEAR_ON_DESELECT);
+    // #if FIPS_MODE
     ensureFipsOperational();
+    // #endif
   }
 
+  // #if FIPS_MODE
   private void ensureFipsOperational() {
-    if (!FipsPolicy.ENABLED || fipsState[0] == FIPS_STATE_PASSED) return;
+    if (fipsState[0] == FIPS_STATE_PASSED) return;
     if (fipsState[0] == FIPS_STATE_FAILED) {
       ISOException.throwIt(ISO7816.SW_UNKNOWN);
     }
@@ -127,6 +135,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     if (!piv.runFipsSelfTests()) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     fipsState[0] = FIPS_STATE_PASSED;
   }
+  // #endif
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {
     byte aidLength = (bArray == null || bArray.length == 0) ? (byte) 0 : bArray[bOffset];
@@ -267,7 +276,9 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   @Override
   public void process(APDU apdu) {
 
+    // #if FIPS_MODE
     ensureFipsOperational();
+    // #endif
 
     //
     // Handle incoming APDUs

@@ -78,6 +78,7 @@ final class PIVDataStore {
     object.runGc();
   }
 
+  // #if ATTESTATION_ENABLED
   /**
    * Erases every defined data object's value without deleting its directory entry.
    *
@@ -91,6 +92,7 @@ final class PIVDataStore {
       object = (PIVDataObject) object.getNext();
     }
   }
+  // #endif
 
   /**
    * Erases every unpublished data-object replacement after deselection or reset recovery.

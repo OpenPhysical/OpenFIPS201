@@ -37,6 +37,7 @@ final class PIVOpacity {
   static final short OFFSET_N = (short) (OFFSET_Z + FIELD_LENGTH);
   static final short OFFSET_ID_SICC = (short) (OFFSET_N + NONCE_LENGTH);
 
+  // #if FIPS_MODE
   // #if VCI_CS2
   private static final byte[] KDA_EXPECTED = {
     (byte) 0xA4, (byte) 0x28, (byte) 0xFA, (byte) 0x53,
@@ -92,6 +93,7 @@ final class PIVOpacity {
     (byte) 0x29, (byte) 0xFB, (byte) 0xAE, (byte) 0xD2
   };
   // #endif
+  // #endif
 
   private final PIVCrypto crypto;
   private final byte[] output;
@@ -103,6 +105,7 @@ final class PIVOpacity {
     this.workspace = workspace;
   }
 
+  // #if FIPS_MODE
   /**
    * Runs the compiled suite's SP 800-56C one-step KDA known-answer test.
    *
@@ -134,6 +137,7 @@ final class PIVOpacity {
       buffer[(short) (offset + index)] = (byte) (firstValue + (byte) index);
     }
   }
+  // #endif
 
   /**
    * Derives the compiled suite's session keys from the shared workspace layout ({@link

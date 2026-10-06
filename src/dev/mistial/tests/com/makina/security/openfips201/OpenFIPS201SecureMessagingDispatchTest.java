@@ -19,6 +19,7 @@ import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.security.AESKey;
+import javacard.security.KeyBuilder;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.AfterEach;
@@ -36,11 +37,13 @@ import pro.javacard.engine.JavaCardEngine;
  */
 @Tag("slow")
 class OpenFIPS201SecureMessagingDispatchTest {
+  // Short APDU command data field: Lc encodes at most 255 octets.
+  private static final short MAX_SHORT_APDU_DATA_LENGTH =
+      (short) (OpenFIPS201.MAX_SHORT_APDU_RESPONSE_LENGTH - 1);
   // Deliberately leave only one octet free after a full T=1 input block.
-  private static final short INPUT_BLOCK_BYTES =
-      (short) (OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH - 1);
+  private static final short INPUT_BLOCK_BYTES = (short) (MAX_SHORT_APDU_DATA_LENGTH - 1);
   private static final int SHORT_APDU_BUFFER_BYTES =
-      ISO7816.OFFSET_CDATA + OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH;
+      ISO7816.OFFSET_CDATA + MAX_SHORT_APDU_DATA_LENGTH;
   private static final byte SYNTHETIC_PLAINTEXT_BYTE = (byte) 0x42;
   private static final short MAX_SAFE_SECURE_RESPONSE_PLAINTEXT = (short) 191;
   private static final byte[] OPENFIPS201_AID_BYTES = hex("A000000308000010000100");
@@ -149,7 +152,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       api.when(APDU::getInBlockSize).thenReturn(INPUT_BLOCK_BYTES);
       Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
       Method receive = method(applet.getClass(), "receiveAllIncomingData", APDU.class);
-      byte[] expected = new byte[OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH];
+      byte[] expected = new byte[MAX_SHORT_APDU_DATA_LENGTH];
       for (int i = 0; i < expected.length; i++) expected[i] = (byte) i;
       for (int[] receiveCase :
           new int[][] {
@@ -168,7 +171,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
         APDU apdu = Mockito.mock(APDU.class);
         when(apdu.getBuffer()).thenReturn(buffer);
         when(apdu.getOffsetCdata()).thenReturn((short) ISO7816.OFFSET_CDATA);
-        when(apdu.getIncomingLength()).thenReturn(OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH);
+        when(apdu.getIncomingLength()).thenReturn(MAX_SHORT_APDU_DATA_LENGTH);
         when(apdu.setIncomingAndReceive()).thenReturn((short) initialLength);
         doAnswer(
                 call -> {
@@ -182,7 +185,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
             .when(apdu)
             .receiveBytes(Mockito.anyShort());
         if (valid) {
-          assertEquals(OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH, receive.invoke(applet, apdu));
+          assertEquals(MAX_SHORT_APDU_DATA_LENGTH, receive.invoke(applet, apdu));
           assertArrayEquals(
               expected, java.util.Arrays.copyOfRange(buffer, ISO7816.OFFSET_CDATA, buffer.length));
         } else {
@@ -689,7 +692,10 @@ class OpenFIPS201SecureMessagingDispatchTest {
       byte[] work = new byte[128];
       byte[] macInput = new byte[64];
       short macLength = buildMacOnlyCommandInput(command, macInput);
-      AESKey macKey = PIVCrypto.buildTransientAesKey(activeSessionKeyBits());
+      AESKey macKey =
+          (AESKey)
+              KeyBuilder.buildKey(
+                  KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, activeSessionKeyBits(), false);
       macKey.setKey(sessionKeys, activeSessionKeyBytes());
       crypto.doAesCmac(macKey, macInput, (short) 0, macLength, work, (short) 0);
       System.arraycopy(work, 0, command, 7, 8);
@@ -2563,7 +2569,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
    */
   private static byte[] commandFragment(
       byte[] complete, int bodyOffset, int bodyLength, boolean finalFrame) {
-    if (bodyLength > OpenFIPS201.MAX_SHORT_APDU_DATA_LENGTH) {
+    if (bodyLength > MAX_SHORT_APDU_DATA_LENGTH) {
       throw new IllegalArgumentException("A short command APDU frame cannot exceed 255 bytes");
     }
     byte[] fragment = new byte[5 + bodyLength];

@@ -235,9 +235,13 @@
     <taskdef resource="jpp.xml" classpath="${jpp.jar}"/>
     <jpp destdir="${build.sourcepath}" force="true" readonly="false" verbose="false">
       <fileset dir="${applet.sourcepath}" includes="**/*.java">
-        <!-- DERValidator carries no preprocessor directives (the SAM build shares it from the
-             source tree), so builds without attestation omit the file to keep it out of the CAP. -->
+        <!-- DERValidator and DERWriter carry no preprocessor directives (the SAM build shares
+             them from the source tree), so builds without attestation omit the files to keep them
+             out of the CAP. -->
         <exclude name="DERValidator.java" unless="ATTESTATION_ENABLED"/>
+        <exclude name="DERWriter.java" unless="ATTESTATION_ENABLED"/>
+        <!-- The power-up self-tests exist only in the FIPS profile. -->
+        <exclude name="FipsPowerUpSelfTests.java" unless="FIPS_MODE"/>
       </fileset>
     </jpp>
     <echo file="${build.sourcepath}/BuildProfile.java">package com.makina.security.openfips201;
@@ -299,6 +303,12 @@ platform.id=${build.platform.id}
                unless="ATTESTATION_ENABLED"/>
       <exclude name="com/makina/security/openfips201/PIVAttestationDerValidationTest.java"
                unless="ATTESTATION_ENABLED"/>
+      <exclude name="com/makina/security/openfips201/DERWriterTest.java"
+               unless="ATTESTATION_ENABLED"/>
+      <exclude name="com/makina/security/openfips201/FipsPowerUpSelfTestsBehaviorTest.java"
+               unless="FIPS_MODE"/>
+      <exclude name="com/makina/security/openfips201/PIVOpacitySelfTestBehaviorTest.java"
+               unless="FIPS_MODE"/>
       <classpath>
         <path refid="test.compile.classpath"/>
         <pathelement location="${tool.outputpath}"/>
