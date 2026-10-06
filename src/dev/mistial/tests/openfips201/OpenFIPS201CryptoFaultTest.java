@@ -3,10 +3,7 @@ package dev.mistial.tests.openfips201;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import com.makina.security.openfips201.OpenFIPS201;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.security.KeyPair;
@@ -19,15 +16,12 @@ import java.security.spec.RSAKeyGenParameterSpec;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.security.CryptoException;
 import javax.crypto.Cipher;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 /**
  * Provider faults and malformed key material at the card edge.
@@ -36,8 +30,8 @@ import org.mockito.Mockito;
  * parameter in command data field" ('6A80', SP 800-73-5 Part 2 Sections 3.2.2 and 3.2.4) and never
  * leaves usable partial state: a key whose pair-wise consistency test faulted is cleared, and SP
  * 800-73-5 Part 2 Section 2.4.2 requires "An aborted or failed execution of an authentication
- * protocol" to abandon the exchange. The faults are injected by intercepting {@code PIVCrypto} in
- * the class loader that loaded the installed applet.
+ * protocol" to abandon the exchange. The faults are injected by intercepting the installed applet
+ * instance's {@code PIVCrypto} through {@link AppletCryptoInterceptor}.
  */
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201CryptoFaultTest extends OpenFIPS201TestSupport {
@@ -50,7 +44,6 @@ class OpenFIPS201CryptoFaultTest extends OpenFIPS201TestSupport {
   private static final byte ATTR_NONE = (byte) 0x00;
   private static final byte ATTR_IMPORTABLE = (byte) 0x10;
   private static final int RSA_2048_BYTES = 256;
-  private static final String PIV_CRYPTO = "com.makina.security.openfips201.PIVCrypto";
 
   /**
    * The RSA private-key sign of the import pair-wise consistency test faults inside the provider.
@@ -69,7 +62,7 @@ class OpenFIPS201CryptoFaultTest extends OpenFIPS201TestSupport {
         });
 
     AtomicInteger faults = new AtomicInteger();
-    try (MockedStatic<?> crypto =
+    try (AutoCloseable crypto =
         failingCrypto("doSign", javacard.security.RSAPrivateKey.class, faults)) {
       withMockedScp(
           () ->
@@ -124,7 +117,7 @@ class OpenFIPS201CryptoFaultTest extends OpenFIPS201TestSupport {
 
     byte[] hostPoint = p256Point();
     AtomicInteger faults = new AtomicInteger();
-    try (MockedStatic<?> crypto =
+    try (AutoCloseable crypto =
         failingCrypto("doKeyAgreement", javacard.security.ECPrivateKey.class, faults)) {
       assertSw(
           ISO7816.SW_WRONG_DATA,
@@ -269,16 +262,14 @@ class OpenFIPS201CryptoFaultTest extends OpenFIPS201TestSupport {
   }
 
   /**
-   * Intercepts {@code PIVCrypto} in the applet class loader: the named method whose first parameter
-   * has the given type raises {@code CryptoException.ILLEGAL_VALUE}; every other method runs
-   * unchanged.
+   * Intercepts the installed applet's {@code PIVCrypto}: the named method whose first parameter has
+   * the given type raises {@code CryptoException.ILLEGAL_VALUE}; every other method runs unchanged.
    */
-  private MockedStatic<?> failingCrypto(
+  private AutoCloseable failingCrypto(
       final String name, final Class<?> firstParameter, final AtomicInteger faults)
       throws Exception {
-    Class<?> crypto = Class.forName(PIV_CRYPTO, true, appletClassLoader());
-    return Mockito.mockStatic(
-        crypto,
+    return AppletCryptoInterceptor.intercept(
+        AppletCryptoInterceptor.unwrap(engine.getApplet(OPENFIPS201_AID)),
         invocation -> {
           Method method = invocation.getMethod();
           if (method.getName().equals(name)
@@ -289,27 +280,6 @@ class OpenFIPS201CryptoFaultTest extends OpenFIPS201TestSupport {
           }
           return invocation.callRealMethod();
         });
-  }
-
-  private ClassLoader appletClassLoader() throws Exception {
-    Applet proxy = engine.getApplet(OPENFIPS201_AID);
-    if (proxy.getClass().getName().equals(OpenFIPS201.class.getName())) {
-      return proxy.getClass().getClassLoader();
-    }
-    for (Field proxyField : proxy.getClass().getDeclaredFields()) {
-      if (!InvocationHandler.class.isAssignableFrom(proxyField.getType())) continue;
-      proxyField.setAccessible(true);
-      Object handler = proxyField.get(null);
-      for (Field handlerField : handler.getClass().getDeclaredFields()) {
-        handlerField.setAccessible(true);
-        Object value = handlerField.get(handler);
-        if (value instanceof Applet
-            && value.getClass().getName().equals(OpenFIPS201.class.getName())) {
-          return value.getClass().getClassLoader();
-        }
-      }
-    }
-    throw new IllegalStateException("Unable to unwrap simulator applet proxy");
   }
 
   private static byte[] keyAgreementRequest(byte[] point) {

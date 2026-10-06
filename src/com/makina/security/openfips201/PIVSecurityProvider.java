@@ -41,6 +41,7 @@ import javacard.security.KeyBuilder;
  */
 final class PIVSecurityProvider {
 
+  private final PIVCrypto crypto;
   private final ECCurveRegistry curves;
 
   /** Compares the entire requested range without returning early on a mismatch. */
@@ -117,11 +118,9 @@ final class PIVSecurityProvider {
   private static final byte FLAG_FALSE = (byte) 0;
   private static final byte FLAG_TRUE = (byte) 0xFF;
 
-  PIVSecurityProvider(ECCurveRegistry curves) {
+  PIVSecurityProvider(PIVCrypto crypto, ECCurveRegistry curves) {
+    this.crypto = crypto;
     this.curves = curves;
-
-    // Initialise our PIV crypto provider
-    PIVCrypto.init();
 
     // Create our internal state. SP 800-73-5 Part 2 Section 3.1.1 leaves "all security status
     // indicators" unchanged when PIV is reselected, while JCRE 3.0.5 Section 5.1 clears
@@ -156,7 +155,7 @@ final class PIVSecurityProvider {
         JCSystem.makeTransientByteArray(LENGTH_PIN_HISTORY_ENTRY, JCSystem.CLEAR_ON_DESELECT);
     pinHistoryKey =
         (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
-    PIVCrypto.doGenerateRandom(pinHistoryCandidate, (short) 0, PIVCrypto.LENGTH_BLOCK_AES);
+    crypto.doGenerateRandom(pinHistoryCandidate, (short) 0, PIVCrypto.LENGTH_BLOCK_AES);
     pinHistoryKey.setKey(pinHistoryCandidate, (short) 0);
     zeroise(pinHistoryCandidate, (short) 0, LENGTH_PIN_HISTORY_ENTRY);
   }
@@ -325,7 +324,7 @@ final class PIVSecurityProvider {
       ISOException.throwIt(PIV.SW_OBJECT_EXISTS);
     }
 
-    if (!PIVCrypto.supportsKeyRole(mechanism, role)) {
+    if (!crypto.supportsKeyRole(mechanism, role)) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
@@ -338,7 +337,15 @@ final class PIVSecurityProvider {
     try {
       key =
           PIVKeyObject.create(
-              id, modeContact, modeContactless, adminKey, mechanism, role, attributes, curves);
+              id,
+              modeContact,
+              modeContactless,
+              adminKey,
+              mechanism,
+              role,
+              attributes,
+              crypto,
+              curves);
     } catch (CryptoException e) {
       if (JCSystem.isObjectDeletionSupported()) JCSystem.requestObjectDeletion();
       if (e.getReason() == CryptoException.NO_SUCH_ALGORITHM) {
@@ -691,8 +698,8 @@ final class PIVSecurityProvider {
    * give equal entries, while testing a candidate PIN against a stored entry requires the key.
    */
   private void encodePinHistoryEntry(byte[] buffer, short offset, byte length) {
-    PIVCrypto.doSha256(buffer, offset, length, pinHistoryCandidate, (short) 0);
-    PIVCrypto.doAesEcbEncrypt(
+    crypto.doSha256(buffer, offset, length, pinHistoryCandidate, (short) 0);
+    crypto.doAesEcbEncrypt(
         pinHistoryKey,
         pinHistoryCandidate,
         (short) 0,

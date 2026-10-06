@@ -77,9 +77,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       byte mechanism,
       byte role,
       byte attributes,
+      PIVCrypto crypto,
       ECParams params)
       throws ISOException {
-    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
     this.params = params;
     if (params == null) {
       // No curve is registered for this mechanism: ISO/IEC 7816-4 Table 7 '6A81' (function not
@@ -106,6 +107,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       byte mechanism,
       byte role,
       byte attributes,
+      PIVCrypto crypto,
       ECCurveRegistry curves) {
     validateRoleAttributes(role, attributes);
     return new PIVKeyObjectECC(
@@ -116,6 +118,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         mechanism,
         role,
         attributes,
+        crypto,
         curves.forMechanism(mechanism));
   }
 
@@ -260,7 +263,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   }
 
   @Override
-  short generate(byte[] scratch, short offset) throws CardRuntimeException {
+  short generate(TLVWriter writer, byte[] scratch, short offset) throws CardRuntimeException {
 
     short length = 0;
     try {
@@ -281,8 +284,6 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
         // Table 6 '6F00' (no precise diagnosis).
         ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
-
-      TLVWriter writer = TLVWriter.getInstance();
 
       // We know that the worst-case of this will fit into a short-form length.
       writer.init(scratch, offset, TLV.LENGTH_1BYTE_MAX, CONST_TAG_RESPONSE);
@@ -308,14 +309,14 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   @Override
   boolean pairwiseConsistencyTest(byte[] scratch, short offset) {
     if ((getRoles() & ROLE_KEY_ESTABLISH) != (byte) 0) {
-      return PIVCrypto.pairwiseAgreementTest(privateKey, publicKey, params, scratch, offset);
+      return crypto.pairwiseAgreementTest(privateKey, publicKey, params, scratch, offset);
     }
     short hashLength = getKeyLengthBytes();
     javacard.framework.Util.arrayFillNonAtomic(scratch, offset, hashLength, (byte) 0x5A);
     short signatureOffset = (short) (offset + hashLength);
     short signatureLength =
-        PIVCrypto.doSign(privateKey, scratch, offset, hashLength, scratch, signatureOffset);
-    return PIVCrypto.doVerify(
+        crypto.doSign(privateKey, scratch, offset, hashLength, scratch, signatureOffset);
+    return crypto.doVerify(
         publicKey, scratch, offset, hashLength, scratch, signatureOffset, signatureLength);
   }
 
@@ -436,7 +437,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       short outOffset,
       ECPointValidator validator)
       throws ISOException {
-    return PIVCrypto.doKeyAgreement(
+    return crypto.doKeyAgreement(
         privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset, validator, params);
   }
 
@@ -453,7 +454,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   @Override
   short sign(byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset)
       throws ISOException {
-    return PIVCrypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return crypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   boolean verify(
@@ -464,7 +465,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
       short signatureOffset,
       short signatureLength)
       throws ISOException {
-    return PIVCrypto.doVerify(
+    return crypto.doVerify(
         publicKey, hash, hashOffset, hashLength, signature, signatureOffset, signatureLength);
   }
 
@@ -487,13 +488,13 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   // #endif
 
   @Override
-  short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {
+  short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset)
+      throws ISOException {
     if (publicKey == null || !publicKey.isInitialized()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
       return (short) 0x00;
     }
 
-    DERWriter writer = DERWriter.getNestedInstance();
     writer.init(outBuffer, outOffset);
     writer.begin((byte) 0x30);
     writer.begin((byte) 0x30);

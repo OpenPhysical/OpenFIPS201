@@ -161,7 +161,11 @@ final class PIVSecureMessaging {
   private final AESKey skEnc;
   private final AESKey skRmac;
 
-  PIVSecureMessaging() {
+  // The applet instance's cryptographic engines (AES-CBC and the command and response CMACs).
+  private final PIVCrypto crypto;
+
+  PIVSecureMessaging(PIVCrypto crypto) {
+    this.crypto = crypto;
     // SP 800-73-5 Part 2 Section 3.1.1: when the PIV Card Application is reselected "the setting
     // of all security status indicators in the PIV Card Application SHALL be unchanged". JCRE 3.0.5
     // Section 5.1 clears CLEAR_ON_DESELECT objects "regardless of whether the SELECT FILE command
@@ -270,7 +274,7 @@ final class PIVSecureMessaging {
 
   short computeConfirmationMac(
       byte[] buffer, short offset, short length, byte[] out, short outOffset) {
-    return PIVCrypto.doAesCmac(skCfrm, buffer, offset, length, out, outOffset);
+    return crypto.doAesCmac(skCfrm, buffer, offset, length, out, outOffset);
   }
 
   void clearConfirmationKey() {
@@ -290,7 +294,7 @@ final class PIVSecureMessaging {
    */
   short unwrapCommand(byte[] apdu, short offset, short length, byte[] work, short workOffset) {
     try {
-      PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
+      crypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
       return unwrapCommandChecked(apdu, offset, length, work, workOffset);
     } catch (ISOException ex) {
       // NIST SP 800-73-5 Part 2 Section 4.3 requires key zeroization on secure messaging errors.
@@ -372,7 +376,7 @@ final class PIVSecureMessaging {
   boolean processRejectedCommandFragment(
       byte[] apdu, short offset, short length, boolean finalFrame, byte[] work, short workOffset) {
     try {
-      PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
+      crypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
       return processRejectedCommandFragmentChecked(
           apdu, offset, length, finalFrame, work, workOffset);
     } catch (ISOException ex) {
@@ -474,7 +478,7 @@ final class PIVSecureMessaging {
         requireStreamByte(value, PADDING_INDICATOR);
         updateCommandStreamMac(apdu, (short) (cursor - 1));
         buildIv(false, responseIv, (short) 0);
-        PIVCrypto.doAesCbcDecryptInit(skEnc, responseIv, (short) 0, LENGTH_BLOCK);
+        crypto.doAesCbcDecryptInit(skEnc, responseIv, (short) 0, LENGTH_BLOCK);
         commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_CIPHERTEXT;
       } else if (phase == COMMAND_STREAM_AFTER_ENCRYPTED) {
         // Object 97 is optional. Object 8E is mandatory and must be last.
@@ -523,7 +527,7 @@ final class PIVSecureMessaging {
       ISOException.throwIt(SW_SM_EXPECTED_OBJECTS_MISSING);
     }
 
-    PIVCrypto.doAesCmacFinal(work, workOffset, (short) 0, work, workOffset);
+    crypto.doAesCmacFinal(work, workOffset, (short) 0, work, workOffset);
     // Do not report padding validity until the C-MAC is valid. This ordering prevents a padding
     // oracle and follows Section 4.2.3 command-authentication processing.
     if (!PIVSecurityProvider.arrayEqualsConstantTime(
@@ -558,9 +562,9 @@ final class PIVSecureMessaging {
     commandStreamHeader[(short) 2] = apdu[ISO7816.OFFSET_P2];
     commandStreamState[OFFSET_COMMAND_STREAM_PHASE] = COMMAND_STREAM_ENCRYPTED_TAG;
     buildPaddedCommandHeader(apdu, work, workOffset);
-    PIVCrypto.doAesCmacInit(skMac);
-    PIVCrypto.doAesCmacUpdate(commandMcv, (short) 0, LENGTH_BLOCK);
-    PIVCrypto.doAesCmacUpdate(work, workOffset, LENGTH_BLOCK);
+    crypto.doAesCmacInit(skMac);
+    crypto.doAesCmacUpdate(commandMcv, (short) 0, LENGTH_BLOCK);
+    crypto.doAesCmacUpdate(work, workOffset, LENGTH_BLOCK);
   }
 
   /**
@@ -602,7 +606,7 @@ final class PIVSecureMessaging {
     short available = (short) (end - cursor);
     short consumed = available < remaining ? available : remaining;
     short consumedEnd = (short) (cursor + consumed);
-    PIVCrypto.doAesCmacUpdate(apdu, cursor, consumed);
+    crypto.doAesCmacUpdate(apdu, cursor, consumed);
 
     while (cursor < consumedEnd) {
       short blockLength = commandStreamState[OFFSET_COMMAND_STREAM_BLOCK_LENGTH];
@@ -621,7 +625,7 @@ final class PIVSecureMessaging {
         if (remaining == (short) 0) {
           // Only the last block can contain Section 4.2.2 padding.
           plainLength =
-              PIVCrypto.doAesCbcDecryptFinal(
+              crypto.doAesCbcDecryptFinal(
                   commandStreamBlock, (short) 0, LENGTH_BLOCK, work, workOffset);
           commandStreamState[OFFSET_COMMAND_STREAM_PADDING_VALID] =
               hasValidPadding(work, workOffset, plainLength) ? (short) 1 : (short) 0;
@@ -629,7 +633,7 @@ final class PIVSecureMessaging {
         } else {
           // The scratch block is overwritten by the next decrypted block and is never retained.
           plainLength =
-              PIVCrypto.doAesCbcDecryptUpdate(
+              crypto.doAesCbcDecryptUpdate(
                   commandStreamBlock, (short) 0, LENGTH_BLOCK, work, workOffset);
         }
         if (plainLength != LENGTH_BLOCK) ISOException.throwIt(SW_SM_OBJECTS_INCORRECT);
@@ -646,7 +650,7 @@ final class PIVSecureMessaging {
    * @param offset source-octet offset
    */
   private void updateCommandStreamMac(byte[] buffer, short offset) {
-    PIVCrypto.doAesCmacUpdate(buffer, offset, (short) 1);
+    crypto.doAesCmacUpdate(buffer, offset, (short) 1);
   }
 
   /**
@@ -740,10 +744,10 @@ final class PIVSecureMessaging {
     // almost as large as the shared APDU work buffer, so feed CMAC incrementally instead of
     // staging MCV || padded-header || body in smResponse.
     buildPaddedCommandHeader(apdu, work, workOffset);
-    PIVCrypto.doAesCmacInit(skMac);
-    PIVCrypto.doAesCmacUpdate(commandMcv, (short) 0, LENGTH_BLOCK);
-    PIVCrypto.doAesCmacUpdate(work, workOffset, LENGTH_BLOCK);
-    PIVCrypto.doAesCmacFinal(apdu, offset, (short) (macTlvOffset - offset), work, workOffset);
+    crypto.doAesCmacInit(skMac);
+    crypto.doAesCmacUpdate(commandMcv, (short) 0, LENGTH_BLOCK);
+    crypto.doAesCmacUpdate(work, workOffset, LENGTH_BLOCK);
+    crypto.doAesCmacFinal(apdu, offset, (short) (macTlvOffset - offset), work, workOffset);
     if (!PIVSecurityProvider.arrayEqualsConstantTime(
         work, workOffset, apdu, macValueOffset, LENGTH_SHORT_MAC)) {
       // A C-MAC ('8E') that fails verification is an incorrect secure messaging data object:
@@ -768,7 +772,7 @@ final class PIVSecureMessaging {
     // preserve CBC chaining material when input and output partially overlap.
     buildIv(false, responseIv, (short) 0);
     short plainLength =
-        PIVCrypto.doAesCbcDecrypt(
+        crypto.doAesCbcDecrypt(
             skEnc,
             responseIv,
             (short) 0,
@@ -784,13 +788,13 @@ final class PIVSecureMessaging {
   }
 
   void beginResponseStream(short plaintextLength, short sw) {
-    PIVCrypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
+    crypto.requireAesCmac(SW_SM_NOT_SUPPORTED);
     clearResponseState();
     responseState[OFFSET_RESPONSE_SW] = sw;
     responseState[OFFSET_RESPONSE_PLAIN_REMAINING] = plaintextLength;
 
-    PIVCrypto.doAesResponseCmacInit(skRmac);
-    PIVCrypto.doAesResponseCmacUpdate(responseMcv, (short) 0, LENGTH_BLOCK);
+    crypto.doAesResponseCmacInit(skRmac);
+    crypto.doAesResponseCmacUpdate(responseMcv, (short) 0, LENGTH_BLOCK);
 
     if (plaintextLength > (short) 0) {
       short paddedLength = paddedLength(plaintextLength);
@@ -878,7 +882,7 @@ final class PIVSecureMessaging {
     while (cursor < end && responseState[OFFSET_RESPONSE_PHASE_OFFSET] < headerLength) {
       short index = responseState[OFFSET_RESPONSE_PHASE_OFFSET];
       out[cursor] = responseTail[index];
-      PIVCrypto.doAesResponseCmacUpdate(out, cursor, (short) 1);
+      crypto.doAesResponseCmacUpdate(out, cursor, (short) 1);
       cursor++;
       responseState[OFFSET_RESPONSE_PHASE_OFFSET]++;
     }
@@ -944,10 +948,9 @@ final class PIVSecureMessaging {
       responseBlock[index] ^= responseIv[index];
     }
 
-    PIVCrypto.doAesEcbEncrypt(
-        skEnc, responseBlock, (short) 0, LENGTH_BLOCK, responseBlock, (short) 0);
+    crypto.doAesEcbEncrypt(skEnc, responseBlock, (short) 0, LENGTH_BLOCK, responseBlock, (short) 0);
     Util.arrayCopyNonAtomic(responseBlock, (short) 0, responseIv, (short) 0, LENGTH_BLOCK);
-    PIVCrypto.doAesResponseCmacUpdate(responseBlock, (short) 0, LENGTH_BLOCK);
+    crypto.doAesResponseCmacUpdate(responseBlock, (short) 0, LENGTH_BLOCK);
   }
 
   private void prepareFinalResponseTail() {
@@ -957,7 +960,7 @@ final class PIVSecureMessaging {
     // Keep the candidate R-MCV private until every response byte has been delivered. If response
     // chaining is interrupted, the host never received this MAC and must continue from the prior
     // delivered R-MCV.
-    PIVCrypto.doAesResponseCmacFinal(
+    crypto.doAesResponseCmacFinal(
         responseTail, (short) 0, (short) 4, responseCandidateMcv, (short) 0);
     responseTail[(short) 4] = TAG_MAC;
     responseTail[(short) 5] = (byte) LENGTH_SHORT_MAC;
@@ -1023,7 +1026,7 @@ final class PIVSecureMessaging {
   private void buildIv(boolean response, byte[] out, short outOffset) {
     Util.arrayCopyNonAtomic(encCounter, (short) 0, responseBlock, (short) 0, LENGTH_BLOCK);
     if (response) responseBlock[0] = (byte) (responseBlock[0] | (byte) 0x80);
-    PIVCrypto.doAesEcbEncrypt(skEnc, responseBlock, (short) 0, LENGTH_BLOCK, out, outOffset);
+    crypto.doAesEcbEncrypt(skEnc, responseBlock, (short) 0, LENGTH_BLOCK, out, outOffset);
   }
 
   private short stripPadding(byte[] buffer, short offset, short length) {

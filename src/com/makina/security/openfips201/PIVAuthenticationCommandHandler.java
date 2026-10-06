@@ -18,6 +18,9 @@ import javacard.security.CryptoException;
 /** Handles GENERAL AUTHENTICATE, OPACITY dispatch, and asymmetric key generation. */
 final class PIVAuthenticationCommandHandler {
   private final PIV owner;
+  private final PIVCrypto crypto;
+  private final TLVReader tlvReader;
+  private final TLVWriter tlvWriter;
   private final PIVSecurityProvider cspPIV;
   private final ChainBuffer chainBuffer;
   private final PIVSecureMessaging secureMessaging;
@@ -33,6 +36,9 @@ final class PIVAuthenticationCommandHandler {
 
   PIVAuthenticationCommandHandler(
       PIV owner,
+      PIVCrypto crypto,
+      TLVReader tlvReader,
+      TLVWriter tlvWriter,
       PIVSecurityProvider cspPIV,
       ChainBuffer chainBuffer,
       PIVSecureMessaging secureMessaging,
@@ -47,6 +53,9 @@ final class PIVAuthenticationCommandHandler {
       // #endif
       ) {
     this.owner = owner;
+    this.crypto = crypto;
+    this.tlvReader = tlvReader;
+    this.tlvWriter = tlvWriter;
     this.cspPIV = cspPIV;
     this.chainBuffer = chainBuffer;
     this.secureMessaging = secureMessaging;
@@ -143,7 +152,7 @@ final class PIVAuthenticationCommandHandler {
     // original buffer still contains the APDU header.
 
     // Set up our TLV reader
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(scratch, ZERO, length);
 
     //
@@ -543,14 +552,14 @@ final class PIVAuthenticationCommandHandler {
     // inside keyAgreement(). Keeping validation there prevents OPACITY and generic ECDH from
     // drifting into different curve checks.
     key.keyAgreement(smResponse, offQeh, pointLen, smResponse, offZ, ecPointValidator); // C5
-    PIVCrypto.doGenerateRandom(smResponse, offN, nLen); // C6
+    crypto.doGenerateRandom(smResponse, offN, nLen); // C6
 
     // C1: ID_sICC = T_8(SHA-256(C_ICC)) — always SHA-256, both suites
     // The challenge was copied to smResponse above, so scratch holds the transient CVC copy, which
     // fits for both suites (LENGTH_SCRATCH exceeds the CS7 CVC limit).
     short cvcLen = key.getSmCvcLength();
     key.getSmCvc(scratch, ZERO);
-    PIVCrypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
+    crypto.doSha256(scratch, ZERO, cvcLen, smResponse, offIdSicc);
     PIVSecurityProvider.zeroise(scratch, ZERO, cvcLen);
 
     // C7: session keys → scratch[0..]; C9: cryptogram overwrites scratch after AESKey load
@@ -567,7 +576,7 @@ final class PIVAuthenticationCommandHandler {
     // that both lengths take the shortest form (ISO/IEC 7816-4 Section 6.3 recommends "the
     // shortest possible coding of the length field, according to DER encoding rules").
     final short responseLength = (short) (1 + nLen + 16 + cvcLen);
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     writer.init(
         smResponse,
         ZERO,
@@ -649,7 +658,7 @@ final class PIVAuthenticationCommandHandler {
       maximumResponseLength = (short) ((short) (challengeLength * (short) 2) + (short) 8);
     }
 
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     short offset = beginChallengeResponse(writer, maximumResponseLength);
 
     // Sign the CHALLENGE data to the location specified by 'offset'
@@ -694,7 +703,7 @@ final class PIVAuthenticationCommandHandler {
     }
 
     // The raw RSA result is written in place after reserving its exact BER length field.
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     short offset = beginChallengeResponse(writer, challengeLength);
 
     // Decrypt the CHALLENGE data
@@ -809,7 +818,7 @@ final class PIVAuthenticationCommandHandler {
    */
   private short sendEncipheredBlock(
       byte tag, PIVKeyObjectSYM key, byte[] in, short inOffset, short inLength) {
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     writer.init(scratch, ZERO, TLVWriter.encodedLength(tag, inLength), CONST_TAG_AUTH_TEMPLATE);
     writer.writeTag(tag);
     writer.writeLength(inLength);
@@ -857,7 +866,7 @@ final class PIVAuthenticationCommandHandler {
     short length = key.getBlockLength();
 
     // Write out the response TLV, passing through the block length as an indicative maximum
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     writer.init(
         scratch,
         ZERO,
@@ -870,7 +879,7 @@ final class PIVAuthenticationCommandHandler {
 
     // Generate the CHALLENGE data and write it to the output buffer
     short offset = writer.getOffset();
-    PIVCrypto.doGenerateRandom(scratch, offset, length);
+    crypto.doGenerateRandom(scratch, offset, length);
 
     try {
       // Generate and store the encrypted CHALLENGE in our context, so we can compare it without
@@ -995,7 +1004,7 @@ final class PIVAuthenticationCommandHandler {
 
     // Generate a block length worth of WITNESS data
     short length = key.getBlockLength();
-    PIVCrypto.doGenerateRandom(authenticationContext.buffer(), OFFSET_AUTH_CHALLENGE, length);
+    crypto.doGenerateRandom(authenticationContext.buffer(), OFFSET_AUTH_CHALLENGE, length);
 
     // Respond with the enciphered WITNESS as 7C { 80 <block> }
     length =
@@ -1118,7 +1127,7 @@ final class PIVAuthenticationCommandHandler {
     }
 
     // Write out the response TLV, passing through the block length as an indicative maximum
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     writer.init(
         scratch,
         ZERO,
@@ -1192,7 +1201,7 @@ final class PIVAuthenticationCommandHandler {
     //
 
     // PRE-CONDITION 1 - The command data must be exactly one well-formed TEMPLATE.
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(buffer, offset, length);
     short limit = (short) (offset + length);
     if (buffer[offset] != CONST_TAG_TEMPLATE || TLV.objectEnd(buffer, offset, limit) != limit) {
@@ -1296,7 +1305,7 @@ final class PIVAuthenticationCommandHandler {
     // #if ATTESTATION_ENABLED
     if (keyReference == ID_KEY_ATTESTATION) attestation.beginAuthorityGeneration();
     // #endif
-    length = keyPair.generate(scratch, ZERO);
+    length = keyPair.generate(tlvWriter, scratch, ZERO);
     keyPair.markGenerated();
     // #if ATTESTATION_ENABLED
     if (keyReference == ID_KEY_ATTESTATION) attestation.completeAuthorityGeneration();

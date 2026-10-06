@@ -5,16 +5,30 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Method;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.security.ECPrivateKey;
 import javacard.security.KeyBuilder;
 import javacard.security.RSAPrivateKey;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import pro.javacard.engine.JavaCardEngine;
 
 class PIVCryptoLengthTest {
   private static final byte[] INPUT = new byte[130];
   private static final byte[] OUTPUT = new byte[384];
+  private PIVCrypto crypto;
+
+  @BeforeEach
+  void createCrypto() throws Exception {
+    JavaCardEngine engine = JavaCardEngine.create();
+    Method asCurrent = engine.getClass().getMethod("asCurrent");
+    asCurrent.setAccessible(true);
+    try (AutoCloseable ignored = (AutoCloseable) asCurrent.invoke(engine)) {
+      crypto = new PIVCrypto();
+    }
+  }
 
   /**
    * The canonical point validator owns the encoding-length check; SP 800-73-5 Part 2 Table 16 C4:
@@ -39,14 +53,14 @@ class PIVCryptoLengthTest {
     when(key.getSize()).thenReturn(KeyBuilder.LENGTH_RSA_1024);
 
     assertWrongLength(
-        () -> PIVCrypto.doKeyTransport(key, INPUT, (short) 0, (short) 127, OUTPUT, (short) 0));
+        () -> crypto.doKeyTransport(key, INPUT, (short) 0, (short) 127, OUTPUT, (short) 0));
     assertWrongLength(
-        () -> PIVCrypto.doKeyTransport(key, INPUT, (short) 0, (short) 129, OUTPUT, (short) 0));
+        () -> crypto.doKeyTransport(key, INPUT, (short) 0, (short) 129, OUTPUT, (short) 0));
   }
 
-  private static void keyAgreement(
+  private void keyAgreement(
       ECPrivateKey key, short length, ECPointValidator validator, ECParams params) {
-    PIVCrypto.doKeyAgreement(key, INPUT, (short) 0, length, OUTPUT, (short) 0, validator, params);
+    crypto.doKeyAgreement(key, INPUT, (short) 0, length, OUTPUT, (short) 0, validator, params);
   }
 
   private static void assertWrongData(Runnable operation) {

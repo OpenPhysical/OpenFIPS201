@@ -82,6 +82,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   private static final byte FIPS_STATE_PASSED = (byte) 1;
   private static final byte FIPS_STATE_FAILED = (byte) 2;
   private final PIV piv;
+  private final TLVReader tlvReader;
   private final byte[] fipsState;
   // ISO 7816 transport blocks fit 256 bytes. Preserve a prefix when the final receive must
   // reuse the start of CDATA rather than the short remaining tail of the APDU array.
@@ -93,10 +94,24 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   // Persistent state definitions
   //
 
+  /**
+   * Allocates every object the instance uses, including the cryptographic engines and the TLV
+   * codecs it shares among its handlers.
+   *
+   * <p>The shared services belong to this instance and no static field references them. JCRE 3.0.5
+   * Section 11.3.4.2 refuses deleting an applet instance when "An object owned by the applet
+   * instance is referenced from a static field on any package on the card", so instance ownership
+   * keeps deletion possible without any release step in {@link #uninstall()}. JC 3.0.5 API
+   * AppletEvent states "The Java Card runtime environment will not rollback state automatically if
+   * applet deletion fails"; since uninstall() changes nothing, an instance whose deletion fails
+   * keeps working unchanged, and a second instance of the package never shares these objects.
+   */
   public OpenFIPS201() {
 
-    // Create our PIV provider
-    piv = new PIV();
+    // Create the shared services, then our PIV provider
+    PIVCrypto crypto = new PIVCrypto();
+    tlvReader = new TLVReader();
+    piv = new PIV(crypto, tlvReader, new TLVWriter());
     fipsState = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_RESET);
     receivePrefix =
         JCSystem.makeTransientByteArray(MAX_SHORT_APDU_RESPONSE_LENGTH, JCSystem.CLEAR_ON_DESELECT);
@@ -111,28 +126,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     fipsState[0] = FIPS_STATE_FAILED;
     if (!piv.runFipsSelfTests()) ISOException.throwIt(ISO7816.SW_UNKNOWN);
     fipsState[0] = FIPS_STATE_PASSED;
-  }
-
-  /**
-   * Recreates the package-wide engines and codec singletons after {@link #uninstall()} released
-   * them.
-   *
-   * <p>JCRE 3.0.5 Section 11.3.4.2 refuses deleting an applet instance when "An object owned by the
-   * applet instance is referenced from a static field on any package on the card", so uninstall()
-   * must release these statics. The deletion can still fail, and JC 3.0.5 API AppletEvent states
-   * "The Java Card runtime environment will not rollback state automatically if applet deletion
-   * fails"; another instance of this package also shares the statics. Either instance therefore
-   * rebuilds them on its next command, and the rebuilt engines repeat the FIPS self-tests before
-   * first use. Command processing allocates only on this path, which follows an uninstall().
-   */
-  private void restoreSharedServices() {
-    if (PIVCrypto.isInitialised()) return;
-    PIVCrypto.init();
-    TLVReader.getInstance();
-    TLVWriter.getInstance();
-    DERWriter.initialize();
-    // A failed self-test stays latched until reset; a passed one is repeated on the new engines.
-    if (fipsState[0] == FIPS_STATE_PASSED) fipsState[0] = (byte) 0;
   }
 
   public static void install(byte[] bArray, short bOffset, byte bLength) {
@@ -199,15 +192,15 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
     }
   }
 
+  /**
+   * Prepares for deletion. Nothing is required: every object this instance allocated is referenced
+   * only from the instance itself, never from a static field, so JCRE 3.0.5 Section 11.3.4.2 does
+   * not block the deletion and the objects are released with the instance. Leaving the state
+   * untouched also keeps the instance fully operational if the deletion then fails.
+   */
   @Override
   public void uninstall() {
-    // Release package-level singleton references so cards that enforce object reachability can
-    // delete this applet instance and package cleanly. A surviving instance rebuilds them through
-    // restoreSharedServices().
-    TLVReader.terminate();
-    TLVWriter.terminate();
-    DERWriter.terminate();
-    PIVCrypto.terminate();
+    // Intentionally empty: there is no static reference to release.
   }
 
   /**
@@ -274,7 +267,6 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   @Override
   public void process(APDU apdu) {
 
-    restoreSharedServices();
     ensureFipsOperational();
 
     //
@@ -634,7 +626,7 @@ public final class OpenFIPS201 extends Applet implements AppletEvent, ExtendedLe
   }
 
   private boolean hasOpacityCase1aTemplate(byte[] buffer, short offset, short length) {
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(buffer, offset, length);
     if (!reader.match(PIV.CONST_TAG_AUTH_TEMPLATE) || !reader.moveInto()) return false;
     if (!reader.match(PIV.CONST_TAG_AUTH_CHALLENGE) || reader.isNull() || !reader.moveNext()) {

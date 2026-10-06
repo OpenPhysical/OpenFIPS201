@@ -76,6 +76,7 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
   private final SamLedger ledger;
   private final SamPersonalization personalization;
   private final ApduChain chain;
+  private final DERWriter certificateWriter;
   private final byte[] io;
   private final byte[] scratch;
   private final byte[] nonce;
@@ -90,7 +91,7 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
             (short) (SamConst.LENGTH_NONCE + 1), JCSystem.CLEAR_ON_DESELECT);
     flags = JCSystem.makeTransientByteArray(LENGTH_FLAGS, JCSystem.CLEAR_ON_DESELECT);
     result = JCSystem.makeTransientShortArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    DERWriter.initialize();
+    certificateWriter = new DERWriter();
     state = new SamState();
     crypto = new SamCrypto(io);
     ledger = new SamLedger(state, crypto, io, scratch, nonce);
@@ -117,10 +118,17 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
     state.operatorPin.reset();
   }
 
+  /**
+   * Prepares for deletion. Nothing is required: every object this instance allocated, the DER
+   * writer included, is referenced only from the instance itself, never from a static field, so
+   * JCRE 3.0.5 Section 11.3.4.2 does not block the deletion and the objects are released with the
+   * instance. JC 3.0.5 API AppletEvent states "The Java Card runtime environment will not rollback
+   * state automatically if applet deletion fails"; leaving the state untouched keeps the instance
+   * fully operational in that case.
+   */
   @Override
   public void uninstall() {
-    DERWriter.terminate();
-    TLVReader.terminate();
+    // Intentionally empty: there is no static reference to release.
   }
 
   @Override
@@ -250,7 +258,7 @@ public final class IssuerSam extends Applet implements AppletEvent, ExtendedLeng
         // Step 1: lifecycle, secure channel and operator PIN.
         requireOperator();
         requireP1P2(p1, p2, (byte) 0, SamConst.P2_ISSUE_F9);
-        short issued = ledger.issue(DERWriter.getInstance(), buffer, offset, length);
+        short issued = ledger.issue(certificateWriter, buffer, offset, length);
         result[RESULT_LENGTH] = issued;
         flags[FLAG_RESULT_VALID] = (byte) 1;
         send(apdu, issued);

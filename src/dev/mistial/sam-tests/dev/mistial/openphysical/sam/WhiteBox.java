@@ -87,11 +87,12 @@ final class WhiteBox {
     final SamState state;
     final SamCrypto crypto;
     final SamLedger ledger;
+    final DERWriter writer;
     final KeyPair f9 = newP256();
     byte[] request;
 
     Fixture() throws Exception {
-      DERWriter.initialize();
+      writer = new DERWriter();
       state = new SamState();
       crypto = new SamCrypto(io);
       ledger = new SamLedger(state, crypto, io, scratch, nonce);
@@ -144,7 +145,7 @@ final class WhiteBox {
     }
 
     short issue() {
-      return ledger.issue(DERWriter.getInstance(), request, (short) 0, (short) request.length);
+      return ledger.issue(writer, request, (short) 0, (short) request.length);
     }
   }
 

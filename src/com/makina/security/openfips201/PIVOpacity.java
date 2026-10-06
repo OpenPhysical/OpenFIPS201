@@ -93,10 +93,12 @@ final class PIVOpacity {
   };
   // #endif
 
+  private final PIVCrypto crypto;
   private final byte[] output;
   private final byte[] workspace;
 
-  PIVOpacity(byte[] output, byte[] workspace) {
+  PIVOpacity(PIVCrypto crypto, byte[] output, byte[] workspace) {
+    this.crypto = crypto;
     this.output = output;
     this.workspace = workspace;
   }
@@ -190,7 +192,7 @@ final class PIVOpacity {
                 hostPointOffset,
                 cardIdOffset,
                 hostControlByte);
-        PIVCrypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
+        crypto.doSha(hashLength, output, KDF_INPUT_OFFSET, inputLength, workspace, hashOffset);
         short copyLength = hashLength;
         if ((short) (written + copyLength) > outputLength) {
           copyLength = (short) (outputLength - written);

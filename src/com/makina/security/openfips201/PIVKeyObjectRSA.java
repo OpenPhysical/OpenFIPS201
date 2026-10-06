@@ -71,8 +71,9 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes) {
-    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+      byte attributes,
+      PIVCrypto crypto) {
+    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
     allocatePrivate();
     allocatePublic();
   }
@@ -84,10 +85,11 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes) {
+      byte attributes,
+      PIVCrypto crypto) {
     validateRoleAttributes(role, attributes);
     return new PIVKeyObjectRSA(
-        id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+        id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
   }
 
   /**
@@ -266,7 +268,7 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   @Override
   short sign(byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset)
       throws ISOException {
-    return PIVCrypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return crypto.doSign(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   /* Implements RSA Key Transport, which is just a private decrypt operation */
@@ -279,11 +281,11 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
       short outOffset,
       ECPointValidator validator) {
     // PIVCrypto.doKeyTransport rejects a block whose length differs from the modulus length.
-    return PIVCrypto.doKeyTransport(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return crypto.doKeyTransport(privateKey, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   @Override
-  short generate(byte[] outBuffer, short outOffset) throws CardRuntimeException {
+  short generate(TLVWriter writer, byte[] outBuffer, short outOffset) throws CardRuntimeException {
 
     try {
       // Clear any key material
@@ -304,8 +306,6 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
         // Table 6 '6F00' (no precise diagnosis).
         ISOException.throwIt(ISO7816.SW_UNKNOWN);
       }
-
-      TLVWriter writer = TLVWriter.getInstance();
 
       // Create the TLV response with the appropriate expected length for public key + header
       if (getMechanism() == PIV.ID_ALG_RSA_1024) {
@@ -352,9 +352,9 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
     Util.arrayFillNonAtomic(scratch, offset, blockLength, (byte) 0);
     scratch[(short) (offset + blockLength - 1)] = (byte) 0x5A;
     short transformedLength =
-        PIVCrypto.doSign(privateKey, scratch, offset, blockLength, scratch, transformedOffset);
+        crypto.doSign(privateKey, scratch, offset, blockLength, scratch, transformedOffset);
     short recoveredLength =
-        PIVCrypto.doRsaPublic(
+        crypto.doRsaPublic(
             publicKey, scratch, transformedOffset, transformedLength, scratch, offset);
     if (recoveredLength <= (short) 0
         || recoveredLength > blockLength
@@ -405,13 +405,13 @@ final class PIVKeyObjectRSA extends PIVKeyObjectPKI {
   }
 
   @Override
-  short writeSubjectPublicKeyInfo(byte[] outBuffer, short outOffset) throws ISOException {
+  short writeSubjectPublicKeyInfo(DERWriter writer, byte[] outBuffer, short outOffset)
+      throws ISOException {
     if (publicKey == null || !publicKey.isInitialized()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
       return (short) 0x00;
     }
 
-    DERWriter writer = DERWriter.getNestedInstance();
     writer.init(outBuffer, outOffset);
     writer.begin((byte) 0x30);
     writer.begin((byte) 0x30);

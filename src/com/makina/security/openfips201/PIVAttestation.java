@@ -121,6 +121,9 @@ final class PIVAttestation {
   private static final short LENGTH_POP_WORK =
       (short) (POP_SIGNATURE_OFFSET + LENGTH_SIGNATURE_MAX);
 
+  private final PIVCrypto crypto;
+  private final DERWriter certificateWriter;
+  private final DERWriter spkiWriter;
   private final byte[] authorityCertificate;
   private final byte[] responseBuffer;
   private byte authorityState;
@@ -133,8 +136,16 @@ final class PIVAttestation {
   private short opidLength;
   private short keyIdOffset;
 
-  /** Allocates the persistent certificate container and the certificate response buffer. */
-  PIVAttestation() {
+  /**
+   * Allocates the persistent certificate container, the certificate response buffer and the two DER
+   * writers: one for the certificate and one for the SubjectPublicKeyInfo nested inside it.
+   *
+   * @param crypto the applet instance's engines (SHA-256 and the serial-number RNG)
+   */
+  PIVAttestation(PIVCrypto crypto) {
+    this.crypto = crypto;
+    certificateWriter = new DERWriter();
+    spkiWriter = new DERWriter();
     authorityCertificate =
         new byte[(short) (LENGTH_AUTHORITY_CERT_MAX + LENGTH_CONTAINER_OVERHEAD)];
     responseBuffer = allocateResponseBuffer();
@@ -291,7 +302,7 @@ final class PIVAttestation {
               POP_PREFIX, (short) 0, scratch, (short) 0, (short) POP_PREFIX.length);
       cursor = Util.arrayCopyNonAtomic(nonce, nonceOffset, scratch, cursor, nonceLength);
       cursor = (short) (cursor + authority.getPublicPoint(scratch, cursor));
-      PIVCrypto.doSha256(scratch, (short) 0, cursor, scratch, POP_HASH_OFFSET);
+      crypto.doSha256(scratch, (short) 0, cursor, scratch, POP_HASH_OFFSET);
       signatureLength =
           authority.sign(
               scratch, POP_HASH_OFFSET, HASH_SHA256_LENGTH, scratch, POP_SIGNATURE_OFFSET);
@@ -334,7 +345,7 @@ final class PIVAttestation {
       // The certificate must certify this card's F9 public key and nothing else.
       short spkiOffset = Util.getShort(work, PARSE_SPKI_OFFSET);
       short spkiLength = Util.getShort(work, PARSE_SPKI_LENGTH);
-      short ownLength = authority.writeSubjectPublicKeyInfo(work, WORK_SPKI);
+      short ownLength = authority.writeSubjectPublicKeyInfo(spkiWriter, work, WORK_SPKI);
       if (ownLength != LENGTH_P256_SPKI
           || spkiLength != ownLength
           || Util.arrayCompare(certificate, spkiOffset, work, WORK_SPKI, ownLength) != (byte) 0) {
@@ -342,7 +353,7 @@ final class PIVAttestation {
       }
 
       short pointOffset = (short) (WORK_SPKI + LENGTH_P256_SPKI - LENGTH_P256_POINT);
-      PIVCrypto.doSha256(work, pointOffset, LENGTH_P256_POINT, work, WORK_KEY_ID);
+      crypto.doSha256(work, pointOffset, LENGTH_P256_POINT, work, WORK_KEY_ID);
       if (Util.arrayCompare(
               certificate,
               Util.getShort(work, PARSE_KEY_ID_OFFSET),
@@ -828,7 +839,7 @@ final class PIVAttestation {
     // Build the certificate directly into the caller-provided response buffer. The TBS certificate
     // remains contiguous in that buffer so it can be hashed in place before the signature is
     // appended.
-    DERWriter writer = DERWriter.getInstance();
+    DERWriter writer = certificateWriter;
     writer.init(out, outOffset);
     writer.begin((byte) 0x30);
 
@@ -844,13 +855,13 @@ final class PIVAttestation {
     writeSubjectName(writer, slot);
 
     short spkiOffset = writer.getOffset();
-    short spkiLength = target.writeSubjectPublicKeyInfo(out, spkiOffset);
+    short spkiLength = target.writeSubjectPublicKeyInfo(spkiWriter, out, spkiOffset);
     writer.setOffset((short) (spkiOffset + spkiLength));
     writeExtensions(writer, target, slot, keyUsage);
     writer.end();
 
     short tbsLength = (short) (writer.getOffset() - tbsOffset);
-    PIVCrypto.doSha256(out, tbsOffset, tbsLength, scratch, CERT_HASH_OFFSET);
+    crypto.doSha256(out, tbsOffset, tbsLength, scratch, CERT_HASH_OFFSET);
     short signatureLength =
         authority.sign(
             scratch, CERT_HASH_OFFSET, HASH_SHA256_LENGTH, scratch, CERT_SIGNATURE_OFFSET);
@@ -906,8 +917,8 @@ final class PIVAttestation {
    * @param writer certificate writer
    * @param scratch temporary random-number buffer
    */
-  private static void writeRandomSerial(DERWriter writer, byte[] scratch) {
-    PIVCrypto.doGenerateRandom(scratch, SERIAL_OFFSET, SERIAL_RANDOM_LENGTH);
+  private void writeRandomSerial(DERWriter writer, byte[] scratch) {
+    crypto.doGenerateRandom(scratch, SERIAL_OFFSET, SERIAL_RANDOM_LENGTH);
     scratch[SERIAL_OFFSET] &= (byte) 0x7F;
     short last = (short) (SERIAL_OFFSET + SERIAL_RANDOM_LENGTH - 1);
     short cursor = SERIAL_OFFSET;

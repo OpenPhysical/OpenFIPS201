@@ -61,9 +61,10 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes)
+      byte attributes,
+      PIVCrypto crypto)
       throws ISOException {
-    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+    super(id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
     keyA = allocateKey();
     keyB = allocateKey();
   }
@@ -75,13 +76,14 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       byte adminKey,
       byte mechanism,
       byte role,
-      byte attributes) {
+      byte attributes,
+      PIVCrypto crypto) {
     if ((role & (ROLE_SIGN | ROLE_KEY_ESTABLISH)) != (byte) 0
         || (attributes & ATTR_IMPORTABLE) == (byte) 0) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     return new PIVKeyObjectSYM(
-        id, modeContact, modeContactless, adminKey, mechanism, role, attributes);
+        id, modeContact, modeContactless, adminKey, mechanism, role, attributes, crypto);
   }
 
   @Override
@@ -248,6 +250,6 @@ final class PIVKeyObjectSYM extends PIVKeyObject {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    return PIVCrypto.doEncrypt(key, inBuffer, inOffset, inLength, outBuffer, outOffset);
+    return crypto.doEncrypt(key, inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 }

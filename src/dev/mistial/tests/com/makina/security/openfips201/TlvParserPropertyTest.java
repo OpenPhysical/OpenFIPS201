@@ -304,8 +304,7 @@ class TlvParserPropertyTest {
   // ---------------------------------------------------------------------------------------------
 
   private static TLVReader freshReader() {
-    TLVReader.terminate();
-    return TLVReader.getInstance();
+    return new TLVReader();
   }
 
   private static MockedStatic<JCSystem> mockTransientStorage() {

@@ -28,7 +28,6 @@ package com.makina.security.openfips201;
 
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
-import javacard.framework.JCSystem;
 import javacard.security.AESKey;
 import javacard.security.CryptoException;
 import javacard.security.ECPrivateKey;
@@ -43,18 +42,29 @@ import javacard.security.SecretKey;
 import javacard.security.Signature;
 import javacardx.crypto.Cipher;
 
+/**
+ * The cryptographic engines of one applet instance.
+ *
+ * <p>Goals of this class:
+ *
+ * <ul>
+ *   <li>Provide a simple way to access the required PIV crypto operations.
+ *   <li>Prevent encryption keys from being generally exposed to the PIV application.
+ *   <li>Keep the engines out of static fields, so primitives cannot be reached from outside the
+ *       owning instance (for example to start an operation, switch applets and abuse the engine
+ *       mid-operation).
+ * </ul>
+ *
+ * <p>The applet constructor creates one instance at install and passes it to every object that
+ * needs it. No static field references an engine, so JCRE 3.0.5 Section 11.3.4.2 ("An object owned
+ * by the applet instance is referenced from a static field on any package on the card") never
+ * blocks deleting the instance, the engines are released together with it, and a second instance of
+ * the package owns engines of its own.
+ *
+ * <p>An engine the platform does not provide is left null and the mechanisms that need it are
+ * reported as unsupported by {@link #supportsMechanism} and {@link #supportsKeyRole}.
+ */
 final class PIVCrypto {
-
-  private PIVCrypto() {}
-
-  //
-  // Goals of this class:
-  // - Provide a simple way to to access the required PIV crypto operations
-  // - Provide simple de-coupling between 3.0.4 and 3.0.5 JCRE
-  // - Prevent encryption keys from being generally exposed to the PIV application
-  // - Prevent the need for static access to crypto primitives that could be misused (i.e. start an
-  // operation, switch applets, abuse the crypto mid-operation)
-  // - Fix the applet instance deletion problem identified by @dmercer
 
   //
   // Crypto Constants
@@ -65,149 +75,94 @@ final class PIVCrypto {
   //
   // Crypto Providers
   //
-  private static Cipher cspTDEA;
-  private static Cipher cspRSA;
-  private static Cipher cspAES;
-  private static Cipher cspAESCBC;
+  private final Cipher cspTDEA;
+  private final Cipher cspRSA;
+  private final Cipher cspAES;
+  private final Cipher cspAESCBC;
 
-  private static MessageDigest cspSHA256;
+  private final MessageDigest cspSHA256;
   // #if VCI_CS7
-  private static MessageDigest cspSHA384;
+  private final MessageDigest cspSHA384;
   // #endif
 
-  private static KeyAgreement cspECDH;
+  private final KeyAgreement cspECDH;
 
-  private static Signature cspECCSHA256;
-  private static Signature cspECCSHA384;
-  private static Signature cspAESCMAC;
-  private static Signature cspAESResponseCMAC;
+  private final Signature cspECCSHA256;
+  private final Signature cspECCSHA384;
+  private final Signature cspAESCMAC;
+  private final Signature cspAESResponseCMAC;
 
-  private static RandomData cspRNG;
+  private final RandomData cspRNG;
 
-  static void terminate() {
-    cspRNG = null;
-    cspTDEA = null;
-    cspAES = null;
-    cspAESCBC = null;
-    cspRSA = null;
-    cspECDH = null;
-    cspECCSHA256 = null;
-    cspECCSHA384 = null;
-    cspAESCMAC = null;
-    cspAESResponseCMAC = null;
-    cspSHA256 = null;
-    // #if VCI_CS7
-    cspSHA384 = null;
-    // #endif
-
-    JCSystem.requestObjectDeletion();
-  }
-
-  /** Returns whether {@link #init()} has created the engines and no later terminate() ran. */
-  static boolean isInitialised() {
-    return cspRNG != null;
-  }
-
-  static void init() {
-    // Create all CSP's
-
-    // Mandatory - RNG
+  /**
+   * Creates the engines. Called once, from the applet constructor at install.
+   *
+   * @throws ISOException {@link ISO7816#SW_FUNC_NOT_SUPPORTED} if the platform has no secure random
+   *     number generator, which every PIV operation depends on
+   */
+  PIVCrypto() {
+    RandomData rng = null;
     try {
-      cspRNG = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
+      rng = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
     } catch (CryptoException ex) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
+    cspRNG = rng;
 
+    cspTDEA = cipher(Cipher.ALG_DES_ECB_NOPAD);
+    cspAES = cipher(Cipher.ALG_AES_BLOCK_128_ECB_NOPAD);
+    cspAESCBC = cipher(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD);
+    cspRSA = cipher(Cipher.ALG_RSA_NOPAD);
+
+    KeyAgreement ecdh = null;
     try {
-      cspTDEA = Cipher.getInstance(Cipher.ALG_DES_ECB_NOPAD, false);
+      ecdh = KeyAgreement.getInstance(KeyAgreement.ALG_EC_SVDP_DH_PLAIN, false);
     } catch (CryptoException ex) {
-      // We couldn't create this algorithm, the card may not support it!
-      cspTDEA = null;
+      // Not provided by the platform: the ECDH mechanisms are reported as unsupported.
     }
+    cspECDH = ecdh;
 
-    try {
-      cspAES = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_ECB_NOPAD, false);
-    } catch (CryptoException ex) {
-      // We couldn't create this algorithm, the card may not support it!
-      cspAES = null;
-    }
+    cspECCSHA256 = signature(Signature.ALG_ECDSA_SHA_256);
+    cspECCSHA384 = signature(Signature.ALG_ECDSA_SHA_384);
+    cspAESCMAC = signature(Signature.ALG_AES_CMAC_128);
+    cspAESResponseCMAC = signature(Signature.ALG_AES_CMAC_128);
 
-    try {
-      cspAESCBC = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
-    } catch (CryptoException ex) {
-      cspAESCBC = null;
-    }
-
-    if (cspRSA == null) {
-      try {
-        cspRSA = Cipher.getInstance(Cipher.ALG_RSA_NOPAD, false);
-      } catch (CryptoException ex) {
-        // We couldn't create this algorithm, the card may not support it!
-        cspRSA = null;
-      }
-    }
-
-    if (cspECDH == null) {
-      try {
-        cspECDH = KeyAgreement.getInstance(KeyAgreement.ALG_EC_SVDP_DH_PLAIN, false);
-      } catch (CryptoException ex) {
-        cspECDH = null;
-      }
-    }
-
-    if (cspECCSHA256 == null) {
-      try {
-        cspECCSHA256 = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
-      } catch (CryptoException ex) {
-        cspECCSHA256 = null;
-      }
-    }
-
-    if (cspECCSHA384 == null) {
-      try {
-        cspECCSHA384 = Signature.getInstance(Signature.ALG_ECDSA_SHA_384, false);
-      } catch (CryptoException ex) {
-        cspECCSHA384 = null;
-      }
-    }
-
-    if (cspAESCMAC == null) {
-      try {
-        cspAESCMAC = Signature.getInstance(Signature.ALG_AES_CMAC_128, false);
-      } catch (CryptoException ex) {
-        cspAESCMAC = null;
-      }
-    }
-
-    if (cspAESResponseCMAC == null) {
-      try {
-        cspAESResponseCMAC = Signature.getInstance(Signature.ALG_AES_CMAC_128, false);
-      } catch (CryptoException ex) {
-        cspAESResponseCMAC = null;
-      }
-    }
-
-    if (cspSHA256 == null) {
-      try {
-        cspSHA256 = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
-      } catch (CryptoException ex) {
-        cspSHA256 = null;
-      }
-    }
-
+    cspSHA256 = digest(MessageDigest.ALG_SHA_256);
     // #if VCI_CS7
-    if (cspSHA384 == null) {
-      try {
-        cspSHA384 = MessageDigest.getInstance(MessageDigest.ALG_SHA_384, false);
-      } catch (CryptoException ex) {
-        cspSHA384 = null;
-      }
-    }
+    cspSHA384 = digest(MessageDigest.ALG_SHA_384);
     // #endif
-
   }
 
-  static boolean pairwiseAgreementTest(
+  /** Returns the cipher engine for the algorithm, or null if the platform does not provide it. */
+  private static Cipher cipher(byte algorithm) {
+    try {
+      return Cipher.getInstance(algorithm, false);
+    } catch (CryptoException ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Returns the signature engine for the algorithm, or null if the platform does not provide it.
+   */
+  private static Signature signature(byte algorithm) {
+    try {
+      return Signature.getInstance(algorithm, false);
+    } catch (CryptoException ex) {
+      return null;
+    }
+  }
+
+  /** Returns the digest engine for the algorithm, or null if the platform does not provide it. */
+  private static MessageDigest digest(byte algorithm) {
+    try {
+      return MessageDigest.getInstance(algorithm, false);
+    } catch (CryptoException ex) {
+      return null;
+    }
+  }
+
+  boolean pairwiseAgreementTest(
       ECPrivateKey privateKey,
       ECPublicKey publicKey,
       ECParams params,
@@ -226,7 +181,7 @@ final class PIVCrypto {
             scratch, secretOffset, scratch, (short) (offset + 1), fieldLength);
   }
 
-  static boolean supportsMechanism(byte mechanism) {
+  boolean supportsMechanism(byte mechanism) {
 
     if (!FipsPolicy.allowsMechanism(mechanism)) return false;
 
@@ -289,7 +244,7 @@ final class PIVCrypto {
    * and a key-establishment key needs ECDH, so a definition the card could never use is rejected
    * when it is created rather than failing at GENERAL AUTHENTICATE.
    */
-  static boolean supportsKeyRole(byte mechanism, byte role) {
+  boolean supportsKeyRole(byte mechanism, byte role) {
     switch (mechanism) {
       case PIV.ID_ALG_ECC_P256:
       case PIV.ID_ALG_ECC_P384:
@@ -303,7 +258,7 @@ final class PIVCrypto {
     }
   }
 
-  private static Signature ecdsaForMechanism(byte mechanism) {
+  private Signature ecdsaForMechanism(byte mechanism) {
     return (mechanism == PIV.ID_ALG_ECC_P384) ? cspECCSHA384 : cspECCSHA256;
   }
 
@@ -333,7 +288,7 @@ final class PIVCrypto {
    * @param outOffset the location of the first byte of the signature
    * @return the length of the encrypted block
    */
-  static short doEncrypt(
+  short doEncrypt(
       SecretKey theKey,
       byte[] inBuffer,
       short inOffset,
@@ -394,7 +349,7 @@ final class PIVCrypto {
    * @param outOffset the location of the first byte of the signature
    * @return the length of the signature
    */
-  static short doSign(
+  short doSign(
       ECPrivateKey theKey,
       byte[] inBuffer,
       short inOffset,
@@ -419,7 +374,7 @@ final class PIVCrypto {
     return signer.signPreComputedHash(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static boolean doVerify(
+  boolean doVerify(
       ECPublicKey theKey,
       byte[] inBuffer,
       short inOffset,
@@ -446,13 +401,13 @@ final class PIVCrypto {
         inBuffer, inOffset, inLength, signature, signatureOffset, signatureLength);
   }
 
-  static short doSha256(
+  short doSha256(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspSHA256.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
   // #if VCI_CS7
-  static short doSha384(
+  short doSha384(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspSHA384.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
@@ -462,7 +417,7 @@ final class PIVCrypto {
    * Suite hash for OPACITY KDF: SHA-256 when {@code fieldLen == 32} (CS2), SHA-384 when {@code
    * fieldLen == 48} (CS7).
    */
-  static short doSha(
+  short doSha(
       short fieldLen,
       byte[] inBuffer,
       short inOffset,
@@ -479,7 +434,7 @@ final class PIVCrypto {
     // #endif
   }
 
-  static short doAesCmac(
+  short doAesCmac(
       SecretKey key,
       byte[] inBuffer,
       short inOffset,
@@ -491,43 +446,43 @@ final class PIVCrypto {
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static void doAesCmacInit(SecretKey key) {
+  void doAesCmacInit(SecretKey key) {
     requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     cspAESCMAC.init(key, Signature.MODE_SIGN);
   }
 
-  static void doAesCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
+  void doAesCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
     if (inLength != (short) 0) {
       cspAESCMAC.update(inBuffer, inOffset, inLength);
     }
   }
 
-  static short doAesCmacFinal(
+  short doAesCmacFinal(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     return cspAESCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static void doAesResponseCmacInit(SecretKey key) {
+  void doAesResponseCmacInit(SecretKey key) {
     requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     cspAESResponseCMAC.init(key, Signature.MODE_SIGN);
   }
 
-  static void doAesResponseCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
+  void doAesResponseCmacUpdate(byte[] inBuffer, short inOffset, short inLength) {
     if (inLength != (short) 0) cspAESResponseCMAC.update(inBuffer, inOffset, inLength);
   }
 
-  static short doAesResponseCmacFinal(
+  short doAesResponseCmacFinal(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     requireAesCmac(ISO7816.SW_FUNC_NOT_SUPPORTED);
     return cspAESResponseCMAC.sign(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static void requireAesCmac(short sw) {
+  void requireAesCmac(short sw) {
     if (cspAESCMAC == null || cspAESResponseCMAC == null) ISOException.throwIt(sw);
   }
 
-  static short doAesEcbEncrypt(
+  short doAesEcbEncrypt(
       SecretKey key,
       byte[] inBuffer,
       short inOffset,
@@ -538,7 +493,7 @@ final class PIVCrypto {
     return cspAES.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
 
-  static short doAesCbcDecrypt(
+  short doAesCbcDecrypt(
       SecretKey key,
       byte[] iv,
       short ivOffset,
@@ -563,7 +518,7 @@ final class PIVCrypto {
    * @param ivOffset first IV octet
    * @param ivLength IV length, which must equal one AES block
    */
-  static void doAesCbcDecryptInit(SecretKey key, byte[] iv, short ivOffset, short ivLength) {
+  void doAesCbcDecryptInit(SecretKey key, byte[] iv, short ivOffset, short ivLength) {
     cspAESCBC.init(key, Cipher.MODE_DECRYPT, iv, ivOffset, ivLength);
   }
 
@@ -572,7 +527,7 @@ final class PIVCrypto {
    *
    * @return number of plaintext octets written
    */
-  static short doAesCbcDecryptUpdate(
+  short doAesCbcDecryptUpdate(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspAESCBC.update(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
@@ -582,7 +537,7 @@ final class PIVCrypto {
    *
    * @return number of plaintext octets written
    */
-  static short doAesCbcDecryptFinal(
+  short doAesCbcDecryptFinal(
       byte[] inBuffer, short inOffset, short inLength, byte[] outBuffer, short outOffset) {
     return cspAESCBC.doFinal(inBuffer, inOffset, inLength, outBuffer, outOffset);
   }
@@ -623,7 +578,7 @@ final class PIVCrypto {
    * @param outOffset the location of the first byte of the signature
    * @return the length of the signature
    */
-  static short doSign(
+  short doSign(
       RSAPrivateKey theKey,
       byte[] inBuffer,
       short inOffset,
@@ -645,7 +600,7 @@ final class PIVCrypto {
    * @param outOffset the location of the first byte of the key agreement output
    * @return the length of the key agreement output
    */
-  static short doKeyAgreement(
+  short doKeyAgreement(
       ECPrivateKey theKey,
       byte[] inBuffer,
       short inOffset,
@@ -679,7 +634,7 @@ final class PIVCrypto {
    * @param outOffset the location of the first byte of the key agreement output
    * @return the length of the key agreement output
    */
-  static short doKeyTransport(
+  short doKeyTransport(
       RSAPrivateKey theKey,
       byte[] inBuffer,
       short inOffset,
@@ -697,7 +652,7 @@ final class PIVCrypto {
     }
   }
 
-  static short doRsaPublic(
+  short doRsaPublic(
       RSAPublicKey key,
       byte[] inBuffer,
       short inOffset,
@@ -715,7 +670,7 @@ final class PIVCrypto {
    * @param offset The starting offset to write the random data
    * @param length The number of bytes to generate
    */
-  static void doGenerateRandom(byte[] buffer, short offset, short length) {
+  void doGenerateRandom(byte[] buffer, short offset, short length) {
     cspRNG.generateData(buffer, offset, length);
   }
 }

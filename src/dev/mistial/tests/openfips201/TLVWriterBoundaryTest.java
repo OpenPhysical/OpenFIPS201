@@ -201,7 +201,7 @@ class TLVWriterBoundaryTest {
       mocked
           .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
           .thenReturn(new short[6]);
-      TLVWriter writer = TLVWriter.getInstance();
+      TLVWriter writer = new TLVWriter();
       writer.reset();
       return writer;
     }

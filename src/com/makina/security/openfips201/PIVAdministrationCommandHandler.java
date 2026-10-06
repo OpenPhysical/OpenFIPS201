@@ -19,6 +19,9 @@ import org.globalplatform.GPSystem;
 /** Handles proprietary administration, configuration, deletion, version, and status commands. */
 final class PIVAdministrationCommandHandler {
   private final PIV owner;
+  private final PIVCrypto crypto;
+  private final TLVReader tlvReader;
+  private final TLVWriter tlvWriter;
   private final Config config;
   private final PIVSecurityProvider cspPIV;
   private final PIVDataStore dataStore;
@@ -32,6 +35,9 @@ final class PIVAdministrationCommandHandler {
 
   PIVAdministrationCommandHandler(
       PIV owner,
+      PIVCrypto crypto,
+      TLVReader tlvReader,
+      TLVWriter tlvWriter,
       Config config,
       PIVSecurityProvider cspPIV,
       PIVDataStore dataStore,
@@ -45,6 +51,9 @@ final class PIVAdministrationCommandHandler {
       // #endif
       ) {
     this.owner = owner;
+    this.crypto = crypto;
+    this.tlvReader = tlvReader;
+    this.tlvWriter = tlvWriter;
     this.config = config;
     this.cspPIV = cspPIV;
     this.dataStore = dataStore;
@@ -252,7 +261,7 @@ final class PIVAdministrationCommandHandler {
     reader.moveNext();
 
     // PRE-CONDITION 11 - The supplied mechanism must be supported by this instance
-    if (!PIVCrypto.supportsMechanism(keyMechanism)) {
+    if (!crypto.supportsMechanism(keyMechanism)) {
       ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
     }
 
@@ -400,7 +409,7 @@ final class PIVAdministrationCommandHandler {
     // the original buffer still contains the APDU header.
 
     // Initialise our TLV reader
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(scratch, ZERO, length);
 
     //
@@ -646,7 +655,7 @@ final class PIVAdministrationCommandHandler {
       }
 
       // Set up our TLV reader
-      TLVReader reader = TLVReader.getInstance();
+      TLVReader reader = tlvReader;
       reader.init(scratch, ZERO, length);
 
       // PRE-CONDITION 3 - The parent tag MUST be of type SEQUENCE
@@ -952,7 +961,7 @@ final class PIVAdministrationCommandHandler {
       ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
     }
     Util.arrayCopyNonAtomic(buffer, offset, scratch, ZERO, length);
-    TLVReader reader = TLVReader.getInstance();
+    TLVReader reader = tlvReader;
     reader.init(scratch, ZERO, length);
 
     // PRE-CONDITION 1 - The 'TAG' data element must be present
@@ -982,7 +991,7 @@ final class PIVAdministrationCommandHandler {
     // An assumption is made here that all responses can fit within a short length TLV object
     // so we put a sanity check at the end to make sure this is the case.
     //
-    TLVWriter writer = TLVWriter.getInstance();
+    TLVWriter writer = tlvWriter;
     writer.init(scratch, ZERO, TLV.LENGTH_1BYTE_MAX, PIV.CONST_TAG_DATA);
 
     switch (id) {

@@ -6,27 +6,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import pro.javacard.engine.JavaCardEngine;
 
 class PIVOpacitySelfTestBehaviorTest {
   private JavaCardEngine engine;
+  private PIVCrypto crypto;
 
   @BeforeEach
   void initializeCryptoProvider() throws Exception {
     engine = JavaCardEngine.create();
     try (AutoCloseable ignored = enterEngineContext()) {
-      PIVCrypto.terminate();
-      PIVCrypto.init();
-    }
-  }
-
-  @AfterEach
-  void releaseCryptoProvider() throws Exception {
-    try (AutoCloseable ignored = enterEngineContext()) {
-      PIVCrypto.terminate();
+      crypto = new PIVCrypto();
     }
   }
 
@@ -36,7 +28,7 @@ class PIVOpacitySelfTestBehaviorTest {
     byte[] workspace = filled((short) 448);
 
     try (AutoCloseable ignored = enterEngineContext()) {
-      assertTrue(new PIVOpacity(output, workspace).runCryptographicAlgorithmSelfTest());
+      assertTrue(new PIVOpacity(crypto, output, workspace).runCryptographicAlgorithmSelfTest());
     }
 
     assertZeroised(output);
@@ -53,7 +45,8 @@ class PIVOpacitySelfTestBehaviorTest {
     try {
       try (AutoCloseable ignored = enterEngineContext()) {
         assertFalse(
-            new PIVOpacity(new byte[768], new byte[448]).runCryptographicAlgorithmSelfTest());
+            new PIVOpacity(crypto, new byte[768], new byte[448])
+                .runCryptographicAlgorithmSelfTest());
       }
     } finally {
       expected[0] = original;
@@ -68,7 +61,7 @@ class PIVOpacitySelfTestBehaviorTest {
         workspace, PIVOpacity.OFFSET_Z, PIVOpacity.OFFSET_Z + PIVOpacity.FIELD_LENGTH, (byte) 0x5A);
 
     try (AutoCloseable ignored = enterEngineContext()) {
-      new PIVOpacity(output, workspace).deriveSuiteSessionKeys((byte) 0x00);
+      new PIVOpacity(crypto, output, workspace).deriveSuiteSessionKeys((byte) 0x00);
     }
 
     boolean derivedKeyPresent = false;

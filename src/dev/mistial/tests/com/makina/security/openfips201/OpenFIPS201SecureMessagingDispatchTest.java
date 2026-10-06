@@ -8,6 +8,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 import apdu4j.core.BIBO;
+import dev.mistial.tests.openfips201.AppletCryptoInterceptor;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -48,13 +49,14 @@ class OpenFIPS201SecureMessagingDispatchTest {
 
   private JavaCardEngine engine;
   private BIBO session;
+  // Host-side engines for building reference MACs; the installed applet owns its own instance.
+  private PIVCrypto crypto;
 
   @BeforeEach
   void setUpCard() throws Exception {
     engine = JavaCardEngine.create();
     try (AutoCloseable ignored = enterEngineContext()) {
-      PIVCrypto.terminate();
-      PIVCrypto.init();
+      crypto = new PIVCrypto();
     }
     engine.installApplet(OPENFIPS201_AID, OpenFIPS201.class, new byte[0]);
     session = engine.connect();
@@ -114,19 +116,16 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Object sm = field(piv, "secureMessaging").get(piv);
       establishSyntheticSession(sm);
       seedWorkBuffers(piv);
-      Class<?> cryptoClass = piv.getClass().getClassLoader().loadClass(PIVCrypto.class.getName());
-      Method initMac =
-          method(cryptoClass, "doAesResponseCmacInit", javacard.security.SecretKey.class);
       APDU apdu = Mockito.mock(APDU.class);
       when(apdu.getBuffer()).thenReturn(new byte[SHORT_APDU_BUFFER_BYTES]);
       when(apdu.setOutgoing()).thenReturn(OpenFIPS201.MAX_SHORT_APDU_RESPONSE_LENGTH);
-      try (org.mockito.MockedStatic<?> crypto =
-          Mockito.mockStatic(cryptoClass, Mockito.CALLS_REAL_METHODS)) {
-        crypto
-            .when(() -> initMac.invoke(null, Mockito.any(javacard.security.SecretKey.class)))
-            .thenThrow(
-                new javacard.security.CryptoException(
-                    javacard.security.CryptoException.ILLEGAL_USE));
+      try (AutoCloseable crypto =
+          failingCrypto(
+              applet,
+              "doAesResponseCmacInit",
+              1,
+              new javacard.security.CryptoException(
+                  javacard.security.CryptoException.ILLEGAL_USE))) {
         InvocationTargetException failure =
             assertThrows(
                 InvocationTargetException.class,
@@ -266,51 +265,17 @@ class OpenFIPS201SecureMessagingDispatchTest {
       Applet applet = unwrapApplet(engine.getApplet(OPENFIPS201_AID));
       Object piv = field(applet, "piv").get(applet);
       Object sm = field(piv, "secureMessaging").get(piv);
-      Class<?> cryptoClass = piv.getClass().getClassLoader().loadClass(PIVCrypto.class.getName());
       for (boolean decrypt : new boolean[] {false, true}) {
         establishSyntheticSession(sm);
         seedWorkBuffers(piv);
         byte[] command = authenticatedEncryptedDataCommand(hex("5300"));
-        try (org.mockito.MockedStatic<?> crypto =
-            Mockito.mockStatic(cryptoClass, Mockito.CALLS_REAL_METHODS)) {
-          org.mockito.MockedStatic.Verification operation;
-          if (decrypt) {
-            Method decryptMethod =
-                method(
-                    cryptoClass,
-                    "doAesCbcDecrypt",
-                    javacard.security.SecretKey.class,
-                    byte[].class,
-                    short.class,
-                    short.class,
-                    byte[].class,
-                    short.class,
-                    short.class,
-                    byte[].class,
-                    short.class);
-            operation =
-                () ->
-                    decryptMethod.invoke(
-                        null,
-                        Mockito.any(javacard.security.SecretKey.class),
-                        Mockito.any(byte[].class),
-                        Mockito.anyShort(),
-                        Mockito.anyShort(),
-                        Mockito.any(byte[].class),
-                        Mockito.anyShort(),
-                        Mockito.anyShort(),
-                        Mockito.any(byte[].class),
-                        Mockito.anyShort());
-          } else {
-            Method initMac =
-                method(cryptoClass, "doAesCmacInit", javacard.security.SecretKey.class);
-            operation = () -> initMac.invoke(null, Mockito.any(javacard.security.SecretKey.class));
-          }
-          crypto
-              .when(operation)
-              .thenThrow(
-                  new javacard.security.CryptoException(
-                      javacard.security.CryptoException.ILLEGAL_USE));
+        try (AutoCloseable crypto =
+            failingCrypto(
+                applet,
+                decrypt ? "doAesCbcDecrypt" : "doAesCmacInit",
+                decrypt ? 9 : 1,
+                new javacard.security.CryptoException(
+                    javacard.security.CryptoException.ILLEGAL_USE))) {
           ISOException failure =
               assertThrows(
                   ISOException.class,
@@ -726,7 +691,7 @@ class OpenFIPS201SecureMessagingDispatchTest {
       short macLength = buildMacOnlyCommandInput(command, macInput);
       AESKey macKey = PIVCrypto.buildTransientAesKey(activeSessionKeyBits());
       macKey.setKey(sessionKeys, activeSessionKeyBytes());
-      PIVCrypto.doAesCmac(macKey, macInput, (short) 0, macLength, work, (short) 0);
+      crypto.doAesCmac(macKey, macInput, (short) 0, macLength, work, (short) 0);
       System.arraycopy(work, 0, command, 7, 8);
 
       short plaintextLength =
@@ -1623,18 +1588,14 @@ class OpenFIPS201SecureMessagingDispatchTest {
         transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES, 0)),
         "SELECT before CMAC provider check");
     try (AutoCloseable ignored = enterEngineContext()) {
-      Object original = staticField(PIVCrypto.class, "cspAESCMAC").get(null);
-      try {
-        staticField(PIVCrypto.class, "cspAESCMAC").set(null, null);
-        PIVSecureMessaging secureMessaging = new PIVSecureMessaging();
-        ISOException thrown =
-            assertThrows(
-                ISOException.class,
-                () -> secureMessaging.beginResponseStream((short) 0, ISO7816.SW_NO_ERROR));
-        assertEquals((short) 0x6882, thrown.getReason());
-      } finally {
-        staticField(PIVCrypto.class, "cspAESCMAC").set(null, original);
-      }
+      PIVCrypto withoutCmac = new PIVCrypto();
+      field(withoutCmac, "cspAESCMAC").set(withoutCmac, null);
+      PIVSecureMessaging secureMessaging = new PIVSecureMessaging(withoutCmac);
+      ISOException thrown =
+          assertThrows(
+              ISOException.class,
+              () -> secureMessaging.beginResponseStream((short) 0, ISO7816.SW_NO_ERROR));
+      assertEquals((short) 0x6882, thrown.getReason());
     }
   }
 
@@ -1905,17 +1866,12 @@ class OpenFIPS201SecureMessagingDispatchTest {
       establishSyntheticSession(sm);
       seedWorkBuffers(piv);
       ((byte[]) field(piv, "secureMessagingCommand").get(piv))[0] = (byte) 1;
-      Class<?> cryptoClass = piv.getClass().getClassLoader().loadClass(PIVCrypto.class.getName());
-      Method update =
-          method(cryptoClass, "doAesResponseCmacUpdate", byte[].class, short.class, short.class);
-      try (org.mockito.MockedStatic<?> crypto =
-          Mockito.mockStatic(cryptoClass, Mockito.CALLS_REAL_METHODS)) {
-        crypto
-            .when(
-                () ->
-                    update.invoke(
-                        null, Mockito.any(byte[].class), Mockito.anyShort(), Mockito.anyShort()))
-            .thenThrow(new ArrayIndexOutOfBoundsException("injected"));
+      try (AutoCloseable crypto =
+          failingCrypto(
+              applet,
+              "doAesResponseCmacUpdate",
+              3,
+              new ArrayIndexOutOfBoundsException("injected"))) {
         InvocationTargetException failure =
             assertThrows(
                 InvocationTargetException.class,
@@ -2774,6 +2730,24 @@ class OpenFIPS201SecureMessagingDispatchTest {
     Field field = target.getDeclaredField(name);
     field.setAccessible(true);
     return field;
+  }
+
+  /**
+   * Makes the installed applet's engines throw {@code fault} from the named method with the given
+   * parameter count; every other call runs unchanged until the handle is closed.
+   */
+  private static AutoCloseable failingCrypto(
+      Applet applet, final String name, final int parameterCount, final RuntimeException fault)
+      throws Exception {
+    return AppletCryptoInterceptor.intercept(
+        applet,
+        invocation -> {
+          Method called = invocation.getMethod();
+          if (called.getName().equals(name) && called.getParameterCount() == parameterCount) {
+            throw fault;
+          }
+          return invocation.callRealMethod();
+        });
   }
 
   private static Applet unwrapApplet(Applet appletProxy) throws Exception {

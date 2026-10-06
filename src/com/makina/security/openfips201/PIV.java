@@ -195,8 +195,14 @@ final class PIV {
   // TRANSIENT - Current APDU response state: non-zero means return under PIV secure messaging.
   private final byte[] secureMessagingCommand;
   private final FipsPowerUpSelfTests fipsSelfTest;
-  /** Constructor */
-  PIV() {
+  /**
+   * Allocates the PIV state and composes the command handlers.
+   *
+   * @param crypto the applet instance's cryptographic engines
+   * @param tlvReader the applet instance's BER-TLV reader
+   * @param tlvWriter the applet instance's BER-TLV writer
+   */
+  PIV(PIVCrypto crypto, TLVReader tlvReader, TLVWriter tlvWriter) {
 
     //
     // Data Allocation
@@ -210,7 +216,8 @@ final class PIV {
     smResponse = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     smCommand = JCSystem.makeTransientByteArray(LENGTH_SM_RESPONSE, JCSystem.CLEAR_ON_DESELECT);
     secureMessagingCommand = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
-    fipsSelfTest = FipsPolicy.ENABLED ? new FipsPowerUpSelfTests(curves, ecPointValidator) : null;
+    fipsSelfTest =
+        FipsPolicy.ENABLED ? new FipsPowerUpSelfTests(crypto, curves, ecPointValidator) : null;
 
     // Create our configuration provider
     config = new Config();
@@ -222,23 +229,26 @@ final class PIV {
     chainBuffer = new ChainBuffer();
 
     // Create our PIV Security Provider
-    cspPIV = new PIVSecurityProvider(curves);
+    cspPIV = new PIVSecurityProvider(crypto, curves);
     dataCommands = new PIVDataCommandHandler(config, cspPIV, dataStore, chainBuffer, scratch);
 
     // #if ATTESTATION_ENABLED
     // Attestation authority state, certificate container, and response buffer are allocated at
     // install time; strict JavaCard platforms may reject transient allocations during APDU
     // processing.
-    attestation = new PIVAttestation();
+    attestation = new PIVAttestation(crypto);
     // #endif
 
-    secureMessaging = new PIVSecureMessaging();
-    opacity = new PIVOpacity(scratch, smResponse);
+    secureMessaging = new PIVSecureMessaging(crypto);
+    opacity = new PIVOpacity(crypto, scratch, smResponse);
     pinCommands =
         new PIVPinCommandHandler(this, config, cspPIV, dataStore, secureMessaging, scratch);
     authenticationCommands =
         new PIVAuthenticationCommandHandler(
             this,
+            crypto,
+            tlvReader,
+            tlvWriter,
             cspPIV,
             chainBuffer,
             secureMessaging,
@@ -255,6 +265,9 @@ final class PIV {
     administrationCommands =
         new PIVAdministrationCommandHandler(
             this,
+            crypto,
+            tlvReader,
+            tlvWriter,
             config,
             cspPIV,
             dataStore,
@@ -267,25 +280,20 @@ final class PIV {
             attestation
             // #endif
             );
-    // Create our TLV objects (we don't care about the result, this is just to allocate)
-    TLVReader.getInstance();
-    TLVWriter.getInstance();
-    DERWriter.initialize();
-
     // NOTE:
     // - Javacard does not specify the behaviour of an OwnerPIN that has not ever been
     //   initialised with a value, so we explicitly set one to prevent usage.
     //
 
     // Generate a random PIN value to initialise it
-    PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
+    crypto.doGenerateRandom(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
     cspPIV.updatePIN(ID_CVM_LOCAL_PIN, scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH, ZERO);
     PIVSecurityProvider.zeroise(scratch, ZERO, Config.LIMIT_PIN_MAX_LENGTH);
 
     // Generate a random PUK value to initialise it. The PUK stays unprovisioned until the issuer
     // sets it, and RESET RETRY COUNTER and CHANGE REFERENCE DATA '81' refuse it in that state even
     // if the random value were presented (PIVSecurityProvider.isPukProvisioned()).
-    PIVCrypto.doGenerateRandom(scratch, ZERO, Config.LENGTH_PUK);
+    crypto.doGenerateRandom(scratch, ZERO, Config.LENGTH_PUK);
     cspPIV.updatePIN(ID_CVM_PUK, scratch, ZERO, Config.LENGTH_PUK, ZERO);
     PIVSecurityProvider.zeroise(scratch, ZERO, Config.LENGTH_PUK);
     cspPIV.clearBootstrapCvmProvisioningState();

@@ -66,25 +66,14 @@ final class TLVWriter {
   private final Object[] dataPtr;
   private final short[] context;
 
-  private static TLVWriter instance;
-
-  private TLVWriter() {
+  /**
+   * Allocates the writer state. The applet constructor creates the writer once at install and
+   * passes it to its users; no static field references it, so it is released with the applet
+   * instance.
+   */
+  TLVWriter() {
     dataPtr = JCSystem.makeTransientObjectArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
     context = JCSystem.makeTransientShortArray(LENGTH_CONTEXT, JCSystem.CLEAR_ON_DESELECT);
-  }
-
-  static TLVWriter getInstance() {
-
-    if (instance == null) {
-      instance = new TLVWriter();
-    }
-
-    return instance;
-  }
-
-  static void terminate() {
-    instance = null;
-    JCSystem.requestObjectDeletion();
   }
 
   /**

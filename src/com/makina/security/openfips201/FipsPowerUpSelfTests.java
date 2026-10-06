@@ -376,14 +376,17 @@ final class FipsPowerUpSelfTests {
   // #endif
 
   private final AESKey aesKey = PIVCrypto.buildTransientAes128Key();
+  private final PIVCrypto crypto;
 
   /**
    * Allocates and loads the test keys at install time.
    *
+   * @param crypto the applet instance's engines, which the CASTs exercise
    * @param curves the install-time curve registry supplying the P-256 domain parameters
    * @param validator the EC public-point validator used by the ECC CDH entry point
    */
-  FipsPowerUpSelfTests(ECCurveRegistry curves, ECPointValidator validator) {
+  FipsPowerUpSelfTests(PIVCrypto crypto, ECCurveRegistry curves, ECPointValidator validator) {
+    this.crypto = crypto;
     // #if FIPS_MODE
     p256 = curves.forMechanism(PIV.ID_ALG_ECC_P256);
     this.validator = validator;
@@ -468,15 +471,15 @@ final class FipsPowerUpSelfTests {
 
   /** ECDSA P-256 signature verification and generation, and ECC CDH P-256 shared secret. */
   private boolean runEcc(byte[] scratch) {
-    if (!PIVCrypto.supportsMechanism(PIV.ID_ALG_ECC_P256)) return true;
+    if (!crypto.supportsMechanism(PIV.ID_ALG_ECC_P256)) return true;
     if (eccPrivate == null) return false;
     short hashLength = (short) SHA256_ABC.length;
 
     // Each part runs when the platform offers the engine a P-256 key of that role uses
     // (PIVCrypto.supportsKeyRole), the same check that admits such a key definition.
-    if (PIVCrypto.supportsKeyRole(PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN)) {
+    if (crypto.supportsKeyRole(PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN)) {
       // Verification: the fixed signature must verify under the fixed public key.
-      if (!PIVCrypto.doVerify(
+      if (!crypto.doVerify(
           eccPublic,
           SHA256_ABC,
           (short) 0,
@@ -488,18 +491,18 @@ final class FipsPowerUpSelfTests {
       // Generation: ECDSA uses a random per-message secret, so the generated signature is checked
       // by verification under the fixed public key rather than against a fixed value.
       short signatureLength =
-          PIVCrypto.doSign(eccPrivate, SHA256_ABC, (short) 0, hashLength, scratch, (short) 0);
-      if (!PIVCrypto.doVerify(
+          crypto.doSign(eccPrivate, SHA256_ABC, (short) 0, hashLength, scratch, (short) 0);
+      if (!crypto.doVerify(
           eccPublic, SHA256_ABC, (short) 0, hashLength, scratch, (short) 0, signatureLength)) {
         return false;
       }
     }
 
-    if (!PIVCrypto.supportsKeyRole(PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_KEY_ESTABLISH)) {
+    if (!crypto.supportsKeyRole(PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_KEY_ESTABLISH)) {
       return true;
     }
     short length =
-        PIVCrypto.doKeyAgreement(
+        crypto.doKeyAgreement(
             eccPrivate,
             ECC_CDH_PEER,
             (short) 0,
@@ -515,18 +518,17 @@ final class FipsPowerUpSelfTests {
 
   /** RSA-2048 private-key primitive known answer and its public-key inverse. */
   private boolean runRsa(byte[] scratch) {
-    if (!PIVCrypto.supportsMechanism(PIV.ID_ALG_RSA_2048)) return true;
+    if (!crypto.supportsMechanism(PIV.ID_ALG_RSA_2048)) return true;
     if (rsaPrivate == null) return false;
     for (short index = (short) 0; index < LENGTH_RSA; index++) {
       scratch[index] = (byte) index;
     }
-    short length =
-        PIVCrypto.doSign(rsaPrivate, scratch, (short) 0, LENGTH_RSA, scratch, LENGTH_RSA);
+    short length = crypto.doSign(rsaPrivate, scratch, (short) 0, LENGTH_RSA, scratch, LENGTH_RSA);
     if (length != LENGTH_RSA
         || !PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, LENGTH_RSA, RSA_SIGNATURE, (short) 0, LENGTH_RSA)) return false;
     short recovered = (short) (LENGTH_RSA * (short) 2);
-    length = PIVCrypto.doRsaPublic(rsaPublic, scratch, LENGTH_RSA, LENGTH_RSA, scratch, recovered);
+    length = crypto.doRsaPublic(rsaPublic, scratch, LENGTH_RSA, LENGTH_RSA, scratch, recovered);
     return length == LENGTH_RSA
         && PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, recovered, scratch, (short) 0, LENGTH_RSA);
@@ -537,7 +539,7 @@ final class FipsPowerUpSelfTests {
     Util.arrayFillNonAtomic(scratch, (short) 0, (short) 64, (byte) 0);
     aesKey.setKey(scratch, (short) 0);
     short length =
-        PIVCrypto.doAesEcbEncrypt(aesKey, scratch, (short) 0, (short) 16, scratch, (short) 16);
+        crypto.doAesEcbEncrypt(aesKey, scratch, (short) 0, (short) 16, scratch, (short) 16);
     if (length != PIVCrypto.LENGTH_BLOCK_AES
         || !PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, (short) 16, AES_ENCRYPT_ZERO, (short) 0, (short) AES_ENCRYPT_ZERO.length))
@@ -546,7 +548,7 @@ final class FipsPowerUpSelfTests {
     // FIPS 140-3 IG 10.3.A Resolution 1 requires separate encryption and decryption CASTs.
     // CBC with an all-zero IV is used here so the test exercises the inverse cipher used by PIV SM.
     length =
-        PIVCrypto.doAesCbcDecrypt(
+        crypto.doAesCbcDecrypt(
             aesKey,
             scratch,
             (short) 48,
@@ -561,7 +563,7 @@ final class FipsPowerUpSelfTests {
             scratch, (short) 32, AES_DECRYPT_PLAINTEXT, (short) 0, PIVCrypto.LENGTH_BLOCK_AES))
       return false;
 
-    length = PIVCrypto.doAesCmac(aesKey, scratch, (short) 0, (short) 0, scratch, (short) 16);
+    length = crypto.doAesCmac(aesKey, scratch, (short) 0, (short) 0, scratch, (short) 16);
     if (length != PIVCrypto.LENGTH_BLOCK_AES
         || !PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, (short) 16, CMAC_EMPTY, (short) 0, (short) CMAC_EMPTY.length)) return false;
@@ -569,7 +571,7 @@ final class FipsPowerUpSelfTests {
     scratch[0] = (byte) 'a';
     scratch[1] = (byte) 'b';
     scratch[2] = (byte) 'c';
-    length = PIVCrypto.doSha256(scratch, (short) 0, (short) 3, scratch, (short) 16);
+    length = crypto.doSha256(scratch, (short) 0, (short) 3, scratch, (short) 16);
     if (length != (short) SHA256_ABC.length
         || !PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, (short) 16, SHA256_ABC, (short) 0, (short) SHA256_ABC.length)) return false;
@@ -579,7 +581,7 @@ final class FipsPowerUpSelfTests {
     scratch[0] = (byte) 'a';
     scratch[1] = (byte) 'b';
     scratch[2] = (byte) 'c';
-    length = PIVCrypto.doSha384(scratch, (short) 0, (short) 3, scratch, (short) 16);
+    length = crypto.doSha384(scratch, (short) 0, (short) 3, scratch, (short) 16);
     if (length != (short) SHA384_ABC.length
         || !PIVSecurityProvider.arrayEqualsConstantTime(
             scratch, (short) 16, SHA384_ABC, (short) 0, (short) SHA384_ABC.length)) return false;

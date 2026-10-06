@@ -36,12 +36,15 @@ class PIVAttestationStateTest {
   private final JavaCardEngine engine = JavaCardEngine.create();
   private AutoCloseable context;
   private MockedStatic<GPSystem> gpSystem;
+  private PIVCrypto crypto;
+  private TLVWriter tlvWriter;
 
   @BeforeEach
   void enterEngine() throws Exception {
     Method asCurrent = engine.getClass().getMethod("asCurrent");
     context = (AutoCloseable) asCurrent.invoke(engine);
-    PIVCrypto.init();
+    crypto = new PIVCrypto();
+    tlvWriter = new TLVWriter();
     gpSystem = Mockito.mockStatic(GPSystem.class);
     gpSystem.when(GPSystem::getCardContentState).thenReturn(GPSystem.APPLICATION_SELECTABLE);
   }
@@ -54,7 +57,7 @@ class PIVAttestationStateTest {
 
   @Test
   void lifecycleMovesThroughGeneratedActivatingAndActive() throws Exception {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     assertEquals(PIVAttestation.STATE_NONE, attestation.getAuthorityState());
     attestation.requireAuthorityProvisionable();
 
@@ -77,7 +80,7 @@ class PIVAttestationStateTest {
 
   @Test
   void regenerationDiscardsStoredProfile() throws Exception {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     attestation.completeAuthorityGeneration();
     setShort(attestation, "certificateLength", (short) 0x200);
     setShort(attestation, "opidLength", (short) 18);
@@ -91,14 +94,14 @@ class PIVAttestationStateTest {
 
   @Test
   void personalizedApplicationIsNotProvisionable() {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     gpSystem.when(GPSystem::getCardContentState).thenReturn(PERSONALIZED);
     assertConditionsNotSatisfied(attestation::requireAuthorityProvisionable);
   }
 
   @Test
   void proofAndLoadRequireGeneratedAuthority() {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     PIVKeyObjectECC authority = authority();
     byte[] scratch = new byte[0x100];
     assertConditionsNotSatisfied(
@@ -111,7 +114,7 @@ class PIVAttestationStateTest {
                 authority, new byte[0x200], (short) 0, (short) 0x200));
 
     // Generated material without the GENERATED state is still refused.
-    authority.generate(scratch, (short) 0);
+    authority.generate(tlvWriter, scratch, (short) 0);
     authority.markGenerated();
     assertConditionsNotSatisfied(
         () ->
@@ -121,7 +124,7 @@ class PIVAttestationStateTest {
 
   @Test
   void possessionProofSignsDomainSeparatedMessageAndZeroisesWorkspace() throws Exception {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     PIVKeyObjectECC authority = generatedAuthority(attestation);
     byte[] point = new byte[65];
     authority.getPublicPoint(point, (short) 0);
@@ -154,7 +157,7 @@ class PIVAttestationStateTest {
 
   @Test
   void loadRejectsOversizeCertificateBeforeParsing() throws Exception {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     PIVKeyObjectECC authority = generatedAuthority(attestation);
     ISOException thrown =
         assertThrows(
@@ -168,7 +171,7 @@ class PIVAttestationStateTest {
 
   @Test
   void attestRejectsRoleWithoutSignOrKeyEstablish() throws Exception {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     PIVKeyObjectECC authority = generatedAuthority(attestation);
     setState(attestation, PIVAttestation.STATE_ACTIVE);
 
@@ -182,9 +185,10 @@ class PIVAttestationStateTest {
                 PIV.ID_ALG_ECC_P256,
                 PIVKeyObject.ROLE_NONE,
                 PIVKeyObject.ATTR_NONE,
+                crypto,
                 new ECCurveRegistry());
     byte[] scratch = new byte[0x300];
-    target.generate(scratch, (short) 0);
+    target.generate(tlvWriter, scratch, (short) 0);
     target.markGenerated();
 
     assertConditionsNotSatisfied(
@@ -195,7 +199,7 @@ class PIVAttestationStateTest {
 
   @Test
   void attestRequiresActiveGeneratedAuthority() throws Exception {
-    PIVAttestation attestation = new PIVAttestation();
+    PIVAttestation attestation = new PIVAttestation(crypto);
     PIVKeyObjectECC authority = generatedAuthority(attestation);
     byte[] scratch = new byte[0x300];
     // GENERATED is not ACTIVE.
@@ -205,7 +209,7 @@ class PIVAttestationStateTest {
                 authority, authority, (byte) 0x9A, scratch, new byte[0x400], (short) 0));
   }
 
-  private static PIVKeyObjectECC authority() {
+  private PIVKeyObjectECC authority() {
     return (PIVKeyObjectECC)
         PIVKeyObject.create(
             PIV.ID_KEY_ATTESTATION,
@@ -215,13 +219,14 @@ class PIVAttestationStateTest {
             PIV.ID_ALG_ECC_P256,
             PIVKeyObject.ROLE_SIGN,
             PIVKeyObject.ATTR_NONE,
+            crypto,
             new ECCurveRegistry());
   }
 
-  private static PIVKeyObjectECC generatedAuthority(PIVAttestation attestation) {
+  private PIVKeyObjectECC generatedAuthority(PIVAttestation attestation) {
     PIVKeyObjectECC authority = authority();
     attestation.beginAuthorityGeneration();
-    authority.generate(new byte[0x100], (short) 0);
+    authority.generate(tlvWriter, new byte[0x100], (short) 0);
     authority.markGenerated();
     attestation.completeAuthorityGeneration();
     return authority;

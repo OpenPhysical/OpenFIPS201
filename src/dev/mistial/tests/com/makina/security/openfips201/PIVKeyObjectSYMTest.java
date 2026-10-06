@@ -66,7 +66,8 @@ class PIVKeyObjectSYMTest {
               (byte) 0x9B,
               PIV.ID_ALG_AES_192,
               PIVKeyObject.ROLE_AUTHENTICATE,
-              (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE));
+              (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE),
+              new PIVCrypto());
       byte[] repeated = concat(new byte[][] {block((byte) 7), block((byte) 7), block((byte) 7)});
       key.updateElement(PIVKeyObjectSYM.ELEMENT_KEY, repeated, (short) 0, (short) 24);
       assertTrue(key.isInitialised());
@@ -89,7 +90,8 @@ class PIVKeyObjectSYMTest {
               (byte) 0x9B,
               PIV.ID_ALG_AES_128,
               PIVKeyObject.ROLE_AUTHENTICATE,
-              (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE));
+              (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE),
+              new PIVCrypto());
       Object first = field("keyA").get(key);
       Object second = field("keyB").get(key);
       assertNotNull(first);
@@ -141,7 +143,8 @@ class PIVKeyObjectSYMTest {
         (byte) 0x9B,
         PIV.ID_ALG_TDEA_3KEY,
         PIVKeyObject.ROLE_AUTHENTICATE,
-        (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE));
+        (byte) (PIVKeyObject.ATTR_PERMIT_EXTERNAL | PIVKeyObject.ATTR_IMPORTABLE),
+        new PIVCrypto());
   }
 
   private static byte[] block(byte seed) {

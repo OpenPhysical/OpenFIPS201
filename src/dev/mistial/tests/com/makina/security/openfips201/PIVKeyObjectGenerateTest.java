@@ -35,11 +35,13 @@ class PIVKeyObjectGenerateTest {
                   PIV.ID_ALG_ECC_P256,
                   PIVKeyObject.ROLE_SIGN,
                   PIVKeyObject.ATTR_NONE,
+                  new PIVCrypto(),
                   new ECCurveRegistry());
+      TLVWriter writer = new TLVWriter();
 
       // One byte cannot hold the 7F49 response header, so the response writer throws 6700.
       ISOException thrown =
-          assertThrows(ISOException.class, () -> key.generate(new byte[1], (short) 0));
+          assertThrows(ISOException.class, () -> key.generate(writer, new byte[1], (short) 0));
       assertEquals(ISO7816.SW_WRONG_LENGTH, thrown.getReason());
       assertFalse(key.isInitialised(), "A failed generation must leave no key pair");
     }
@@ -58,11 +60,13 @@ class PIVKeyObjectGenerateTest {
               (byte) 0x9B,
               PIV.ID_ALG_RSA_2048,
               PIVKeyObject.ROLE_SIGN,
-              PIVKeyObject.ATTR_NONE);
+              PIVKeyObject.ATTR_NONE,
+              new PIVCrypto());
+      TLVWriter writer = new TLVWriter();
 
       // Three bytes hold the staged public exponent but not the 7F49 response header.
       ISOException thrown =
-          assertThrows(ISOException.class, () -> key.generate(new byte[3], (short) 0));
+          assertThrows(ISOException.class, () -> key.generate(writer, new byte[3], (short) 0));
       assertEquals(ISO7816.SW_WRONG_LENGTH, thrown.getReason());
       assertFalse(key.isInitialised(), "A failed generation must leave no key pair");
     }

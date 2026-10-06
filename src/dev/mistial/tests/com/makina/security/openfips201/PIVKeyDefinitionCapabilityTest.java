@@ -26,6 +26,7 @@ import pro.javacard.engine.JavaCardEngine;
 class PIVKeyDefinitionCapabilityTest {
   private JavaCardEngine engine;
   private AutoCloseable engineContext;
+  private PIVCrypto crypto;
 
   @BeforeEach
   void enterCardContext() throws Exception {
@@ -33,26 +34,24 @@ class PIVKeyDefinitionCapabilityTest {
     Method asCurrent = engine.getClass().getMethod("asCurrent");
     asCurrent.setAccessible(true);
     engineContext = (AutoCloseable) asCurrent.invoke(engine);
-    PIVCrypto.terminate();
-    PIVCrypto.init();
+    crypto = new PIVCrypto();
   }
 
   @AfterEach
   void leaveCardContext() throws Exception {
-    PIVCrypto.terminate();
     engineContext.close();
   }
 
   @Test
   void signingKeyOnCurveWithoutItsEcdsaEngineIsUnsupported() throws Exception {
-    PIVSecurityProvider provider = new PIVSecurityProvider(new ECCurveRegistry());
+    PIVSecurityProvider provider = new PIVSecurityProvider(crypto, new ECCurveRegistry());
     Field ecdsaP384 = PIVCrypto.class.getDeclaredField("cspECCSHA384");
     ecdsaP384.setAccessible(true);
-    ecdsaP384.set(null, null);
+    ecdsaP384.set(crypto, null);
 
-    assertFalse(PIVCrypto.supportsKeyRole(PIV.ID_ALG_ECC_P384, PIVKeyObject.ROLE_SIGN));
-    assertTrue(PIVCrypto.supportsKeyRole(PIV.ID_ALG_ECC_P384, PIVKeyObject.ROLE_KEY_ESTABLISH));
-    assertTrue(PIVCrypto.supportsKeyRole(PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN));
+    assertFalse(crypto.supportsKeyRole(PIV.ID_ALG_ECC_P384, PIVKeyObject.ROLE_SIGN));
+    assertTrue(crypto.supportsKeyRole(PIV.ID_ALG_ECC_P384, PIVKeyObject.ROLE_KEY_ESTABLISH));
+    assertTrue(crypto.supportsKeyRole(PIV.ID_ALG_ECC_P256, PIVKeyObject.ROLE_SIGN));
 
     ISOException thrown =
         assertThrows(
@@ -77,7 +76,7 @@ class PIVKeyDefinitionCapabilityTest {
    */
   @Test
   void unsupportedKeyLengthIsReportedWhenTheKeyIsDefined() {
-    PIVSecurityProvider provider = new PIVSecurityProvider(new ECCurveRegistry());
+    PIVSecurityProvider provider = new PIVSecurityProvider(crypto, new ECCurveRegistry());
 
     try (MockedStatic<KeyBuilder> keyBuilder =
         Mockito.mockStatic(KeyBuilder.class, Mockito.CALLS_REAL_METHODS)) {

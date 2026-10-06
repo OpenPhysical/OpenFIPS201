@@ -428,7 +428,7 @@ class PIVPinCommandHandlerRetryTest {
       mocked
           .when(() -> JCSystem.makeTransientShortArray(Mockito.anyShort(), Mockito.anyByte()))
           .thenAnswer(call -> new short[(short) call.getArgument(0)]);
-      TLVReader reader = TLVReader.getInstance();
+      TLVReader reader = new TLVReader();
       reader.init(encoded, (short) 0, (short) encoded.length);
       config.update(reader);
     }

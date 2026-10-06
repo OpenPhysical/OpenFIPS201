@@ -4,24 +4,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-import com.makina.security.openfips201.OpenFIPS201;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.security.CryptoException;
 import javax.smartcardio.ResponseAPDU;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 import org.mockito.stubbing.Answer;
 
 /**
@@ -31,7 +25,8 @@ import org.mockito.stubbing.Answer;
  *
  * <p>The FIPS profile runs the test on every generated cardholder key. The attestation authority F9
  * runs it in every profile, because its public key is certified by the issuer. The failure is
- * forced by intercepting {@code PIVCrypto} in the class loader that loaded the installed applet.
+ * forced by intercepting the installed applet instance's {@code PIVCrypto} through {@link
+ * AppletCryptoInterceptor}.
  */
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport {
@@ -41,7 +36,6 @@ class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport 
   private static final byte KEY_ATTESTATION = (byte) 0xF9;
   private static final byte ROLE_KEY_ESTABLISH = (byte) 0x02;
   private static final byte[] F9_DEFINITION = hex("6612 8B01F9 8C0100 8D0100 8E0111 8F0104 900100");
-  private static final String PIV_CRYPTO = "com.makina.security.openfips201.PIVCrypto";
   private static final String FIPS_ONLY =
       "Cardholder keys run the generation consistency test only in the FIPS profile";
 
@@ -51,7 +45,7 @@ class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport 
     defineKeyManagementKey(ALG_ECC_P256);
 
     AtomicInteger calls = new AtomicInteger();
-    try (MockedStatic<?> crypto =
+    try (AutoCloseable crypto =
         interceptCrypto("pairwiseAgreementTest", calls, invocation -> Boolean.FALSE)) {
       assertGenerateFails(ALG_ECC_P256, "ECDH consistency failure");
     }
@@ -71,7 +65,7 @@ class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport 
     defineKeyManagementKey(ALG_RSA_2048);
 
     AtomicInteger calls = new AtomicInteger();
-    try (MockedStatic<?> crypto =
+    try (AutoCloseable crypto =
         interceptCrypto(
             "doRsaPublic",
             calls,
@@ -97,7 +91,7 @@ class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport 
     defineKeyManagementKey(ALG_RSA_2048);
 
     AtomicInteger calls = new AtomicInteger();
-    try (MockedStatic<?> crypto =
+    try (AutoCloseable crypto =
         interceptCrypto(
             "doSign",
             calls,
@@ -123,7 +117,7 @@ class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport 
         () -> {
           assertSw(0x9000, selectApplet(), "SELECT before F9 definition");
           assertSw(0x9000, transmit(0x84, 0xDB, 0xFF, 0xFF, F9_DEFINITION), "Define F9");
-          try (MockedStatic<?> crypto =
+          try (AutoCloseable crypto =
               interceptCrypto("doVerify", calls, invocation -> Boolean.FALSE)) {
             assertSw(
                 ISO7816.SW_UNKNOWN,
@@ -242,40 +236,18 @@ class OpenFIPS201GeneratePairwiseConsistencyTest extends OpenFIPS201TestSupport 
   }
 
   /**
-   * Intercepts {@code PIVCrypto} in the applet class loader: calls to the named method are counted
-   * and answered by {@code answer}; every other method runs unchanged.
+   * Intercepts the installed applet's {@code PIVCrypto}: calls to the named method are counted and
+   * answered by {@code answer}; every other method runs unchanged.
    */
-  private MockedStatic<?> interceptCrypto(
+  private AutoCloseable interceptCrypto(
       final String name, final AtomicInteger calls, final Answer<Object> answer) throws Exception {
-    Class<?> crypto = Class.forName(PIV_CRYPTO, true, appletClassLoader());
-    return Mockito.mockStatic(
-        crypto,
+    return AppletCryptoInterceptor.intercept(
+        AppletCryptoInterceptor.unwrap(engine.getApplet(OPENFIPS201_AID)),
         invocation -> {
           Method method = invocation.getMethod();
           if (!method.getName().equals(name)) return invocation.callRealMethod();
           calls.incrementAndGet();
           return answer.answer(invocation);
         });
-  }
-
-  private ClassLoader appletClassLoader() throws Exception {
-    Applet proxy = engine.getApplet(OPENFIPS201_AID);
-    if (proxy.getClass().getName().equals(OpenFIPS201.class.getName())) {
-      return proxy.getClass().getClassLoader();
-    }
-    for (Field proxyField : proxy.getClass().getDeclaredFields()) {
-      if (!InvocationHandler.class.isAssignableFrom(proxyField.getType())) continue;
-      proxyField.setAccessible(true);
-      Object handler = proxyField.get(null);
-      for (Field handlerField : handler.getClass().getDeclaredFields()) {
-        handlerField.setAccessible(true);
-        Object value = handlerField.get(handler);
-        if (value instanceof Applet
-            && value.getClass().getName().equals(OpenFIPS201.class.getName())) {
-          return value.getClass().getClassLoader();
-        }
-      }
-    }
-    throw new IllegalStateException("Unable to unwrap simulator applet proxy");
   }
 }

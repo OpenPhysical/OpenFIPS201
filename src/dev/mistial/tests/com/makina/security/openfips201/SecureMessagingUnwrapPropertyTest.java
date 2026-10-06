@@ -84,10 +84,6 @@ class SecureMessagingUnwrapPropertyTest {
   @BeforeEach
   void setUpCard() throws Exception {
     engine = JavaCardEngine.create();
-    try (AutoCloseable ignored = enterEngineContext()) {
-      PIVCrypto.terminate();
-      PIVCrypto.init();
-    }
     engine.installApplet(OPENFIPS201_AID, OpenFIPS201.class, new byte[0]);
     session = engine.connect();
     ResponseAPDU select =

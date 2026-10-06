@@ -4,14 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
-import com.makina.security.openfips201.OpenFIPS201;
 import dev.mistial.tools.openfips201.provisioning.StandardCardProfile;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationHandler;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.security.CryptoException;
 import javax.crypto.Cipher;
@@ -21,8 +17,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 
 /**
  * Symmetric GENERAL AUTHENTICATE across every PIV symmetric mechanism, and provider faults in the
@@ -32,7 +26,8 @@ import org.mockito.Mockito;
  * protocol SHALL set the security status indicator associated with the credential used in the
  * protocol to FALSE." A provider {@code CryptoException} is reported as '6A80' and abandons the
  * exchange, so a witness issued before the failure is never accepted afterwards. Faults are
- * injected by intercepting {@code PIVCrypto} in the class loader that loaded the installed applet.
+ * injected by intercepting the installed applet instance's {@code PIVCrypto} through {@link
+ * AppletCryptoInterceptor}.
  */
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
 class OpenFIPS201SymmetricAuthenticationFaultTest extends OpenFIPS201TestSupport {
@@ -45,7 +40,6 @@ class OpenFIPS201SymmetricAuthenticationFaultTest extends OpenFIPS201TestSupport
   // ATTR_PERMIT_EXTERNAL | ATTR_PERMIT_MUTUAL | ATTR_IMPORTABLE.
   private static final byte ATTR_MUTUAL_IMPORTABLE = (byte) 0x1C;
   private static final byte[] PROBE_OBJECT_TAG_LIST = hex("5C035FFF10");
-  private static final String PIV_CRYPTO = "com.makina.security.openfips201.PIVCrypto";
 
   /** Provisions a 9B key that permits mutual authentication instead of the standard card's. */
   @Override
@@ -112,7 +106,7 @@ class OpenFIPS201SymmetricAuthenticationFaultTest extends OpenFIPS201TestSupport
     byte[] witness = decryptWitness(requestWitness());
 
     AtomicInteger faults = new AtomicInteger();
-    try (MockedStatic<?> crypto = failingEncrypt(faults)) {
+    try (AutoCloseable crypto = failingEncrypt(faults)) {
       assertSw(
           ISO7816.SW_WRONG_DATA,
           transmit(0x00, 0x87, ALG_AES_128, KEY_CARD_MANAGEMENT & 0xFF, hex("7C028000")),
@@ -148,7 +142,7 @@ class OpenFIPS201SymmetricAuthenticationFaultTest extends OpenFIPS201TestSupport
     byte[] request = mutualResponse(witness, filled(16, (byte) 0x5A));
 
     AtomicInteger faults = new AtomicInteger();
-    try (MockedStatic<?> crypto = failingEncrypt(faults)) {
+    try (AutoCloseable crypto = failingEncrypt(faults)) {
       assertSw(
           ISO7816.SW_WRONG_DATA,
           transmit(0x00, 0x87, ALG_AES_128, KEY_CARD_MANAGEMENT & 0xFF, request),
@@ -282,10 +276,9 @@ class OpenFIPS201SymmetricAuthenticationFaultTest extends OpenFIPS201TestSupport
   }
 
   /** {@code PIVCrypto.doEncrypt} raises {@code CryptoException.ILLEGAL_USE}; all else is real. */
-  private MockedStatic<?> failingEncrypt(final AtomicInteger faults) throws Exception {
-    Class<?> crypto = Class.forName(PIV_CRYPTO, true, appletClassLoader());
-    return Mockito.mockStatic(
-        crypto,
+  private AutoCloseable failingEncrypt(final AtomicInteger faults) throws Exception {
+    return AppletCryptoInterceptor.intercept(
+        AppletCryptoInterceptor.unwrap(engine.getApplet(OPENFIPS201_AID)),
         invocation -> {
           if (!invocation.getMethod().getName().equals("doEncrypt")) {
             return invocation.callRealMethod();
@@ -293,27 +286,6 @@ class OpenFIPS201SymmetricAuthenticationFaultTest extends OpenFIPS201TestSupport
           faults.incrementAndGet();
           throw new CryptoException(CryptoException.ILLEGAL_USE);
         });
-  }
-
-  private ClassLoader appletClassLoader() throws Exception {
-    Applet proxy = engine.getApplet(OPENFIPS201_AID);
-    if (proxy.getClass().getName().equals(OpenFIPS201.class.getName())) {
-      return proxy.getClass().getClassLoader();
-    }
-    for (Field proxyField : proxy.getClass().getDeclaredFields()) {
-      if (!InvocationHandler.class.isAssignableFrom(proxyField.getType())) continue;
-      proxyField.setAccessible(true);
-      Object handler = proxyField.get(null);
-      for (Field handlerField : handler.getClass().getDeclaredFields()) {
-        handlerField.setAccessible(true);
-        Object value = handlerField.get(handler);
-        if (value instanceof Applet
-            && value.getClass().getName().equals(OpenFIPS201.class.getName())) {
-          return value.getClass().getClassLoader();
-        }
-      }
-    }
-    throw new IllegalStateException("Unable to unwrap simulator applet proxy");
   }
 
   private static byte[] mutualResponse(byte[] witness, byte[] challenge) {

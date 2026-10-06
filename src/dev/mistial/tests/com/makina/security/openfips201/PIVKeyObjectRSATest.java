@@ -25,7 +25,8 @@ class PIVKeyObjectRSATest {
               (byte) 0x9B,
               PIV.ID_ALG_RSA_2048,
               PIVKeyObject.ROLE_SIGN,
-              PIVKeyObject.ATTR_IMPORTABLE);
+              PIVKeyObject.ATTR_IMPORTABLE,
+              new PIVCrypto());
 
       key.setPublicExponent(new byte[] {0x01, 0x00, 0x01}, (short) 0, (short) 3);
 
@@ -55,7 +56,8 @@ class PIVKeyObjectRSATest {
               (byte) 0x9B,
               PIV.ID_ALG_RSA_2048,
               PIVKeyObject.ROLE_KEY_ESTABLISH,
-              PIVKeyObject.ATTR_IMPORTABLE);
+              PIVKeyObject.ATTR_IMPORTABLE,
+              new PIVCrypto());
       byte[] modulus = new byte[256];
       byte[] privateExponent = new byte[256];
       modulus[0] = (byte) 0x80;
@@ -83,7 +85,8 @@ class PIVKeyObjectRSATest {
               (byte) 0x9B,
               PIV.ID_ALG_RSA_2048,
               PIVKeyObject.ROLE_KEY_ESTABLISH,
-              PIVKeyObject.ATTR_IMPORTABLE);
+              PIVKeyObject.ATTR_IMPORTABLE,
+              new PIVCrypto());
       byte[] modulus = new byte[256];
       modulus[1] = (byte) 0xFF;
       modulus[255] = (byte) 0x03;

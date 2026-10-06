@@ -35,9 +35,9 @@ import javacard.framework.Util;
  *
  * <p>Java Card does not provide a growable DER stream, so {@link #begin(byte)} reserves the largest
  * length form this applet needs and {@link #end()} backpatches and compacts the content to the
- * shortest DER length encoding. The main singleton writes the outer certificate and the nested
- * singleton is available for helpers that need to build an embedded structure, such as Subject
- * Public Key Info, without disturbing the outer writer's depth stack.
+ * shortest DER length encoding. A certificate builder writes the outer certificate with one writer
+ * and passes a second writer to helpers that build an embedded structure, such as Subject Public
+ * Key Info, without disturbing the outer writer's depth stack.
  *
  * <p>All cursor state (output buffer reference, write offset, limit and depth stack) is held in
  * CLEAR_ON_DESELECT transient memory. Building a certificate therefore performs no persistent
@@ -62,39 +62,20 @@ final class DERWriter {
   private static final short STATE_DEPTH = (short) (MAX_DEPTH + 2);
   private static final short LENGTH_STATE = (short) (MAX_DEPTH + 3);
 
-  private static DERWriter instance;
-  private static DERWriter nestedInstance;
-
   // Holds the output buffer reference for the current structure.
   private final Object[] bufferRef;
 
   // Depth stack of reserved length offsets, followed by offset, limit and depth.
   private final short[] state;
 
-  private DERWriter() {
+  /**
+   * Allocates the cursor state. The owning applet creates its writers once at install and passes
+   * them to their users; no static field references them, so they are released with the applet
+   * instance.
+   */
+  DERWriter() {
     bufferRef = JCSystem.makeTransientObjectArray((short) 1, JCSystem.CLEAR_ON_DESELECT);
     state = JCSystem.makeTransientShortArray(LENGTH_STATE, JCSystem.CLEAR_ON_DESELECT);
-  }
-
-  static void initialize() {
-    if (instance == null) instance = new DERWriter();
-    if (nestedInstance == null) nestedInstance = new DERWriter();
-  }
-
-  static DERWriter getInstance() {
-    if (instance == null) ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
-    return instance;
-  }
-
-  static DERWriter getNestedInstance() {
-    if (nestedInstance == null) ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
-    return nestedInstance;
-  }
-
-  static void terminate() {
-    instance = null;
-    nestedInstance = null;
-    JCSystem.requestObjectDeletion();
   }
 
   void init(byte[] out, short outOffset) {

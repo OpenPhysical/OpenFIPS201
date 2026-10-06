@@ -20,7 +20,6 @@ import java.security.spec.ECPublicKeySpec;
 import java.util.Arrays;
 import javax.crypto.KeyAgreement;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,20 +29,13 @@ import pro.javacard.engine.JavaCardEngine;
 class FipsPowerUpSelfTestsBehaviorTest {
   private static final boolean FIPS_MODE = Boolean.getBoolean("fips.mode");
   private JavaCardEngine engine;
+  private PIVCrypto crypto;
 
   @BeforeEach
   void initializeCryptoProvider() throws Exception {
     engine = JavaCardEngine.create();
     try (AutoCloseable ignored = enterEngineContext()) {
-      PIVCrypto.terminate();
-      PIVCrypto.init();
-    }
-  }
-
-  @AfterEach
-  void releaseCryptoProvider() throws Exception {
-    try (AutoCloseable ignored = enterEngineContext()) {
-      PIVCrypto.terminate();
+      crypto = new PIVCrypto();
     }
   }
 
@@ -146,8 +138,8 @@ class FipsPowerUpSelfTestsBehaviorTest {
     }
   }
 
-  private static FipsPowerUpSelfTests newSelfTests() {
-    return new FipsPowerUpSelfTests(new ECCurveRegistry(), new ECPointValidator());
+  private FipsPowerUpSelfTests newSelfTests() {
+    return new FipsPowerUpSelfTests(crypto, new ECCurveRegistry(), new ECPointValidator());
   }
 
   private static byte[] vector(String name) throws Exception {
