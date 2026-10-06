@@ -391,7 +391,8 @@ class IssuanceLedgerTest {
                   })
               .getEncoded();
       IssueResponse response =
-          IssueResponse.parse(soft.sam.issue(point, signature.sign(), validity));
+          IssueResponse.parse(
+              soft.sam.issue(point, signature.sign(), validity, new byte[32], new byte[32]));
       soft.ledger().appendIssue(response.signedEntry, null, null, null, false);
     }
     IssuanceLedger.Report report = verify();
@@ -446,7 +447,7 @@ class IssuanceLedgerTest {
                       new java.util.Date(System.currentTimeMillis() + 86_400_000L))
                 })
             .getEncoded();
-    soft.sam.issue(point, signature.sign(), validity);
+    soft.sam.issue(point, signature.sign(), validity, new byte[32], new byte[32]);
 
     IllegalStateException refused =
         assertThrows(

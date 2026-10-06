@@ -130,6 +130,35 @@ public final class AttestationCommand implements Callable<Integer> {
     String expectOpid;
 
     @Option(
+        names = "--expect-build",
+        paramLabel = "HEX",
+        description =
+            "Build identity the leaf must carry: build.sha256 from the CAP's .cap.properties"
+                + " (64 hex digits).")
+    String expectBuild;
+
+    @Option(
+        names = "--expect-cap",
+        paramLabel = "HEX",
+        description =
+            "SHA-256 of the installed PIV CAP file that the F9 issuance extension must record.")
+    String expectCap;
+
+    @Option(
+        names = "--expect-cplc",
+        paramLabel = "HEX",
+        description = "SHA-256 of the card's CPLC data that the F9 issuance extension must record.")
+    String expectCplc;
+
+    @Option(
+        names = "--receipt",
+        paramLabel = "receipt.json",
+        description =
+            "Issuance receipt: supplies the expected CAP, CPLC and build hashes it recorded"
+                + " (cap.sha256, card.cplcSha256, cap.properties build.sha256).")
+    Path receipt;
+
+    @Option(
         names = "--at",
         paramLabel = "ISO8601",
         description =
@@ -240,6 +269,24 @@ public final class AttestationCommand implements Callable<Integer> {
       if (expectOpid != null) {
         builder.expectOpid(Opid.parse(expectOpid));
       }
+      String buildValue = expectBuild;
+      String capValue = expectCap;
+      String cplcValue = expectCplc;
+      if (receipt != null) {
+        String[] recorded = receiptMeasurements(receipt);
+        capValue = agree("--expect-cap", capValue, recorded[0]);
+        cplcValue = agree("--expect-cplc", cplcValue, recorded[1]);
+        buildValue = agree("--expect-build", buildValue, recorded[2]);
+      }
+      if (buildValue != null) {
+        builder.expectBuildSha256(sha256Hex("--expect-build", buildValue));
+      }
+      if (capValue != null) {
+        builder.expectCapSha256(sha256Hex("--expect-cap", capValue));
+      }
+      if (cplcValue != null) {
+        builder.expectCplcSha256(sha256Hex("--expect-cplc", cplcValue));
+      }
       if (at != null) {
         builder.at(parseTime(at));
       }
@@ -260,6 +307,58 @@ public final class AttestationCommand implements Callable<Integer> {
         builder.voids(readVoids(voids));
       }
       return builder.build();
+    }
+
+    /**
+     * The CAP, CPLC and build hashes an issuance receipt recorded: {@code cap.sha256}, {@code
+     * card.cplcSha256} and {@code cap.properties["build.sha256"]}. A missing field is null.
+     */
+    static String[] receiptMeasurements(Path file) throws IOException {
+      com.google.gson.JsonObject document =
+          com.google.gson.JsonParser.parseString(
+                  new String(
+                      java.nio.file.Files.readAllBytes(file),
+                      java.nio.charset.StandardCharsets.UTF_8))
+              .getAsJsonObject();
+      if (!document.has("schema")
+          || !dev.mistial.tools.openfips201.issuance.IssuanceReceipt.SCHEMA.equals(
+              document.get("schema").getAsString())) {
+        throw new IllegalArgumentException(file + " is not an issuance receipt");
+      }
+      com.google.gson.JsonObject cap = member(document, "cap");
+      com.google.gson.JsonObject card = member(document, "card");
+      com.google.gson.JsonObject properties = cap == null ? null : member(cap, "properties");
+      return new String[] {
+        string(cap, "sha256"), string(card, "cplcSha256"), string(properties, "build.sha256")
+      };
+    }
+
+    private static com.google.gson.JsonObject member(
+        com.google.gson.JsonObject object, String name) {
+      return object != null && object.has(name) && object.get(name).isJsonObject()
+          ? object.getAsJsonObject(name)
+          : null;
+    }
+
+    private static String string(com.google.gson.JsonObject object, String name) {
+      return object != null && object.has(name) && object.get(name).isJsonPrimitive()
+          ? object.get(name).getAsString()
+          : null;
+    }
+
+    /** The explicit value, or the receipt's; both present must name the same hash. */
+    private static String agree(String option, String explicit, String recorded) {
+      if (explicit != null && recorded != null && !explicit.equalsIgnoreCase(recorded)) {
+        throw new IllegalArgumentException(option + " differs from the value in --receipt");
+      }
+      return explicit != null ? explicit : recorded;
+    }
+
+    private static byte[] sha256Hex(String option, String value) {
+      if (!value.matches("[0-9A-Fa-f]{64}")) {
+        throw new IllegalArgumentException(option + " must be 64 hex digits: " + value);
+      }
+      return dev.mistial.tools.openfips201.common.HexUtil.parse(value);
     }
 
     /** The VOID entries of a {@code openfips201.voids/1} file. */

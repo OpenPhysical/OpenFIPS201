@@ -183,8 +183,38 @@ class IssuerSamOperationTest extends IssuerSamTestSupport {
                   0x2A,
                   0,
                   0xF9,
-                  concat(tlv(0x9E, goodPop), tlv(0x86, point), tlv(0x93, validity))),
+                  concat(
+                      tlv(0x9E, goodPop),
+                      tlv(0x86, point),
+                      tlv(0x93, validity),
+                      tlv(0x94, CAP_SHA256),
+                      tlv(0x95, CPLC_SHA256))),
               "order");
+          // The host measurements are required: the v1 form, a missing CPLC hash, swapped or
+          // short measurements, and a repeated element are malformed.
+          byte[] request = issueDataWithoutMeasurements(point, goodPop, validity);
+          byte[][] malformed = {
+            request,
+            concat(request, tlv(0x94, CAP_SHA256)),
+            concat(request, tlv(0x95, CPLC_SHA256), tlv(0x94, CAP_SHA256)),
+            concat(request, tlv(0x94, Arrays.copyOf(CAP_SHA256, 31)), tlv(0x95, CPLC_SHA256)),
+            concat(request, tlv(0x94, CAP_SHA256), tlv(0x95, Arrays.copyOf(CPLC_SHA256, 33))),
+            concat(request, tlv(0x94, CAP_SHA256), tlv(0x94, CAP_SHA256)),
+          };
+          for (int i = 0; i < malformed.length; i++) {
+            beginIssuance();
+            assertSw(
+                0x6A80,
+                transmitChained(0x84, 0x2A, 0, 0xF9, malformed[i]),
+                "measurement form " + i);
+          }
+          // A chain longer than the largest well-formed request is refused while it is assembled.
+          beginIssuance();
+          assertSw(
+              0x6700,
+              transmitChained(
+                  0x84, 0x2A, 0, 0xF9, concat(issueData(point, goodPop, validity), new byte[40])),
+              "oversize chain");
           byte[] offCurve = point.clone();
           offCurve[64] ^= 1;
           beginIssuance();

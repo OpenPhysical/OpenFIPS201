@@ -217,12 +217,19 @@ public final class SoftIssuerSam implements SamClient {
   }
 
   @Override
-  public byte[] issue(byte[] f9Point, byte[] pop, byte[] validityDer) {
+  public byte[] issue(
+      byte[] f9Point, byte[] pop, byte[] validityDer, byte[] capSha256, byte[] cplcSha256) {
     calls++;
     byte[] current = nonce;
     nonce = null;
     if (current == null) {
       throw new SamApduException("ISSUE", 0x6985);
+    }
+    if (capSha256 == null
+        || capSha256.length != 32
+        || cplcSha256 == null
+        || cplcSha256.length != 32) {
+      throw new SamApduException("ISSUE", 0x6A80);
     }
     if (rejectIssueWith != 0) {
       throw new SamApduException("ISSUE", rejectIssueWith);
@@ -261,10 +268,12 @@ public final class SoftIssuerSam implements SamClient {
           false,
           new DERSequence(
               new org.bouncycastle.asn1.ASN1Encodable[] {
-                new ASN1Integer(1),
+                new ASN1Integer(OpenPhysicalExtensions.F9_ISSUANCE_VERSION),
                 new ASN1Integer(seq),
                 new ASN1Integer(eventSeq + 1),
-                new DEROctetString(head)
+                new DEROctetString(head),
+                new DEROctetString(capSha256),
+                new DEROctetString(cplcSha256)
               }));
       byte[] cert =
           builder
@@ -280,6 +289,8 @@ public final class SoftIssuerSam implements SamClient {
               new byte[] {(byte) printed.length},
               printed,
               f9Ski,
+              capSha256,
+              cplcSha256,
               tbsHash);
       issued = seq;
       byte[] signed = commit(SamLedgerEntry.TYPE_ISSUE, payload);

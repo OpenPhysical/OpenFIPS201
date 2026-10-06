@@ -288,8 +288,8 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     byte[] wrapped = leaf.getExtensionValue(OPENPHYSICAL_ATTESTATION_OID);
     assertNotNull(wrapped, "Leaf must carry the OpenPhysical attestation extension");
     ASN1Sequence body = ASN1Sequence.getInstance(ASN1OctetString.getInstance(wrapped).getOctets());
-    assertEquals(12, body.size());
-    assertEquals(BigInteger.ONE, ASN1Integer.getInstance(body.getObjectAt(0)).getValue());
+    assertEquals(13, body.size());
+    assertEquals(BigInteger.valueOf(2), ASN1Integer.getInstance(body.getObjectAt(0)).getValue());
     assertArrayEquals(new byte[] {1, 11, 0, 0}, octets(body, 1), "appletVersion 1.11.0");
     assertArrayEquals(new byte[] {(byte) ((FIPS_MODE ? 1 : 0) | 2)}, octets(body, 2));
     assertArrayEquals(new byte[] {isCs7Build() ? (byte) 0x2E : (byte) 0x27}, octets(body, 3));
@@ -304,6 +304,10 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertEquals(BigInteger.valueOf(2), ASN1Enumerated.getInstance(body.getObjectAt(9)).getValue());
     assertArrayEquals(new byte[] {ACCESS_MODE_PIN}, octets(body, 10));
     assertArrayEquals(new byte[] {(byte) (ACCESS_MODE_VCI | ACCESS_MODE_PIN)}, octets(body, 11));
+    assertArrayEquals(
+        capBuildSha256(),
+        octets(body, 12),
+        "buildSha256 must equal build.sha256 of the CAP build descriptor");
   }
 
   @Test
@@ -330,7 +334,30 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     Authority authority = provisionAuthorityOverScp(issuer, template, opid);
     createAsymmetricKeyOverScp(SLOT_KEY_MANAGEMENT, ALG_RSA_3072);
     generateKeyOverScp(SLOT_KEY_MANAGEMENT, "AC03800105");
-    assertValidAttestation(attest(SLOT_KEY_MANAGEMENT), authority, issuer);
+    X509Certificate leaf = attest(SLOT_KEY_MANAGEMENT);
+    assertValidAttestation(leaf, authority, issuer);
+
+    // Project the measured leaf onto the worst case of every variable-length field: a 32-octet
+    // platformId, a GeneralizedTime validity (36 octets), a 72-octet ECDSA signature and a full
+    // 16-octet serial. The DERWriter output is built in place, so the final length is the peak.
+    byte[] der = leaf.getEncoded();
+    byte[] wrapped = leaf.getExtensionValue(OPENPHYSICAL_ATTESTATION_OID);
+    ASN1Sequence body = ASN1Sequence.getInstance(ASN1OctetString.getInstance(wrapped).getOctets());
+    org.bouncycastle.asn1.x509.TBSCertificate tbs =
+        org.bouncycastle.asn1.x509.Certificate.getInstance(der).getTBSCertificate();
+    int validityLength =
+        2
+            + tbs.getStartDate().toASN1Primitive().getEncoded(ASN1Encoding.DER).length
+            + tbs.getEndDate().toASN1Primitive().getEncoded(ASN1Encoding.DER).length;
+    int platformIdSlack = 32 - octets(body, 4).length;
+    int validitySlack = 36 - validityLength;
+    int signatureSlack = 72 - leaf.getSignature().length;
+    int serialSlack =
+        16 - org.bouncycastle.util.BigIntegers.asUnsignedByteArray(leaf.getSerialNumber()).length;
+    int worstCase = der.length + platformIdSlack + validitySlack + signatureSlack + serialSlack;
+    assertTrue(
+        worstCase <= 0x400,
+        "worst-case leaf of " + worstCase + " octets exceeds the 0x400-octet response buffer");
   }
 
   @Test
@@ -1012,21 +1039,13 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     final byte[] point = defineAndGenerateAuthority();
     final String opid = opid();
 
-    // Pad with a non-critical extension until the certificate sits just above 0x2E0 octets; the
-    // signature length varies by a few octets between signings.
-    F9Profile padded = issuer.profile(point, opid, DEFAULT_TEMPLATE);
-    ASN1ObjectIdentifier paddingOid = new ASN1ObjectIdentifier("1.3.6.1.4.1.57923.99.2");
-    int padding = 0x2E8 - issuer.sign(padded).length - 20;
-    for (int attempt = 0; attempt < 4; attempt++) {
-      padded.extensions.put(
-          "padding", extension(paddingOid, false, tlv((byte) 0x04, new byte[padding])));
-      padding += 0x2E8 - issuer.sign(padded).length;
-    }
-    padded.extensions.put(
-        "padding", extension(paddingOid, false, tlv((byte) 0x04, new byte[padding])));
+    // A certificate above the 0x2F8-octet maximum no longer fits the load command staging buffer
+    // (30 82 LL LL 70 82 LL LL <certificate> in 0x300 octets): the reassembly overrun is 6700.
+    // The signature length varies by a few octets between signings.
+    F9Profile padded = paddedProfile(issuer, point, opid, 0x300);
     int oversize = issuer.sign(padded).length;
-    assertTrue(oversize > 0x2E2 && oversize < 0x2F0, "fixture size " + oversize);
-    assertLoadRejected(issuer, padded, ISO7816.SW_FILE_FULL, "oversize certificate");
+    assertTrue(oversize > 0x2FA && oversize < 0x308, "fixture size " + oversize);
+    assertLoadRejected(issuer, padded, ISO7816.SW_WRONG_LENGTH, "oversize certificate");
 
     X500Name large = new X500Name("C=US,O=" + repeated('O', 32) + ",CN=" + repeated('C', 32));
     F9Profile largeSubject = issuer.profile(point, opid(), large);
@@ -1034,6 +1053,39 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     assertLoadRejected(issuer, largeSubject, ISO7816.SW_FILE_FULL, "oversize subject");
 
     loadCertificateOk(issuer.sign(issuer.profile(point, opid, DEFAULT_TEMPLATE)));
+  }
+
+  @Test
+  void certificateNearTheMaximumIsAccepted() throws Exception {
+    // The Issuer SAM's worst-case F9 certificate (128-octet SAM subject, 96-octet template,
+    // GeneralizedTime validity, issuance extension v2) is about 0x2F4 octets.
+    final TestIssuer issuer = TestIssuer.create();
+    final byte[] point = defineAndGenerateAuthority();
+    F9Profile padded = paddedProfile(issuer, point, opid(), 0x2F4);
+    byte[] certificate = issuer.sign(padded);
+    assertTrue(
+        certificate.length > 0x2EE && certificate.length <= 0x2F8,
+        "fixture size " + certificate.length);
+    loadCertificateOk(certificate);
+  }
+
+  /**
+   * Pads the default profile with a non-critical extension until its signed certificate is about
+   * {@code target} octets long.
+   */
+  private static F9Profile paddedProfile(TestIssuer issuer, byte[] point, String opid, int target)
+      throws Exception {
+    F9Profile padded = issuer.profile(point, opid, DEFAULT_TEMPLATE);
+    ASN1ObjectIdentifier paddingOid = new ASN1ObjectIdentifier("1.3.6.1.4.1.57923.99.2");
+    int padding = target - issuer.sign(padded).length - 20;
+    for (int attempt = 0; attempt < 4; attempt++) {
+      padded.extensions.put(
+          "padding", extension(paddingOid, false, tlv((byte) 0x04, new byte[padding])));
+      padding += target - issuer.sign(padded).length;
+    }
+    padded.extensions.put(
+        "padding", extension(paddingOid, false, tlv((byte) 0x04, new byte[padding])));
+    return padded;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1707,6 +1759,17 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
   }
 
   private static String capPlatformId() throws Exception {
+    return capProperty("platform.id");
+  }
+
+  /** The {@code build.sha256} build identity of the CAP under test, as 32 octets. */
+  private static byte[] capBuildSha256() throws Exception {
+    String value = capProperty("build.sha256");
+    assertTrue(value.matches("[0-9a-f]{64}"), "build.sha256 must be 64 hex digits: " + value);
+    return hex(value);
+  }
+
+  private static String capProperty(String name) throws Exception {
     String capPath = System.getProperty("cap.path");
     Assumptions.assumeTrue(capPath != null, "cap.path identifies the CAP build descriptor");
     Properties properties = new Properties();
@@ -1716,9 +1779,9 @@ class OpenFIPS201AttestationTest extends OpenFIPS201TestSupport {
     } finally {
       input.close();
     }
-    String platform = properties.getProperty("platform.id");
-    assertNotNull(platform, "CAP descriptor must name platform.id");
-    return platform;
+    String value = properties.getProperty(name);
+    assertNotNull(value, "CAP descriptor must name " + name);
+    return value;
   }
 
   // ---------------------------------------------------------------------------------------------

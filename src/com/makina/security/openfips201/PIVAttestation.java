@@ -60,13 +60,16 @@ final class PIVAttestation {
   // Response buffer budget for the worst supported attestation certificate: issuer subject (0x80)
   // + validity (0x22) + RSA-3072 SubjectPublicKeyInfo (about 0x1A6) + signature (about 0x50) +
   // version, serial, algorithm identifiers, subject CN, extensions (including the 32-octet
-  // platform identifier) and DER staging overhead. DERWriter fails closed with SW_FILE_FULL on
-  // overflow. The same buffer is the workspace for certificate loading (see WORK_* offsets).
+  // platform identifier and the 32-octet build hash) and DER staging overhead; the worst case is
+  // about 0x3A8 octets. DERWriter fails closed with SW_FILE_FULL on overflow. The same buffer is
+  // the workspace for certificate loading (see WORK_* offsets).
   static final short LENGTH_CERT_BUFFER = (short) 0x0400;
   // The F9 subject is the issuer of every attestation certificate and is capped accordingly.
   static final short LENGTH_SUBJECT_MAX = (short) 0x80;
-  // Largest accepted issuer-signed F9 certificate.
-  static final short LENGTH_AUTHORITY_CERT_MAX = (short) 0x02E0;
+  // Largest accepted issuer-signed F9 certificate: the load command 30 82 LL LL 70 82 LL LL
+  // <certificate> is staged whole in the PIV.LENGTH_SCRATCH (0x300) buffer. The SAM's worst-case
+  // F9 certificate is about 0x2F4 octets.
+  static final short LENGTH_AUTHORITY_CERT_MAX = (short) 0x02F8;
   // Smallest certificate that the fixed two-octet container lengths can encode as DER.
   private static final short LENGTH_AUTHORITY_CERT_MIN = (short) 0x0100;
 
@@ -962,14 +965,16 @@ final class PIVAttestation {
    * extension {@code 1.3.6.1.4.1.57923.20.10.20.1}:
    *
    * <pre>
-   * SEQUENCE { version INTEGER (1), appletVersion OCTET STRING (4), buildFlags OCTET STRING (1),
+   * SEQUENCE { version INTEGER (2), appletVersion OCTET STRING (4), buildFlags OCTET STRING (1),
    *   vciSuite OCTET STRING (1), platformId OCTET STRING, keyReference OCTET STRING (1),
    *   mechanism OCTET STRING (1), role OCTET STRING (1), attributes OCTET STRING (1),
    *   origin ENUMERATED (2 = generated), contactMode OCTET STRING (1),
-   *   contactlessMode OCTET STRING (1) }
+   *   contactlessMode OCTET STRING (1), buildSha256 OCTET STRING (32) }
    * </pre>
    *
-   * <p>buildFlags bit 0 is the FIPS profile and bit 1 is attestation support.
+   * <p>buildFlags bit 0 is the FIPS profile and bit 1 is attestation support. buildSha256 is the
+   * {@code build.sha256} build identity of the preprocessed applet sources, as recorded in the
+   * CAP's {@code .cap.properties}.
    *
    * @param writer certificate writer
    * @param target attested key
@@ -1043,6 +1048,11 @@ final class PIVAttestation {
     writer.write(PIVKeyObject.ORIGIN_GENERATED);
     writeOctetByte(writer, target.getModeContact());
     writeOctetByte(writer, target.getModeContactless());
+    writer.writeTlv(
+        (byte) 0x04,
+        BuildProfile.BUILD_SHA256,
+        (short) 0x00,
+        (short) BuildProfile.BUILD_SHA256.length);
     writer.end();
     writer.end();
     writer.end();
@@ -1145,7 +1155,7 @@ final class PIVAttestation {
     (byte) 0x14,
     (byte) 0x01
   };
-  private static final byte OPENPHYSICAL_EXTENSION_VERSION = (byte) 0x01;
+  private static final byte OPENPHYSICAL_EXTENSION_VERSION = (byte) 0x02;
   private static final byte BUILD_FLAG_FIPS = (byte) 0x01;
   private static final byte BUILD_FLAG_ATTESTATION = (byte) 0x02;
   private static final byte[] DER_VERSION_V3 = {

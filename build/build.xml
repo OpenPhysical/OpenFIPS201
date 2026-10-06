@@ -244,10 +244,42 @@
         <exclude name="FipsPowerUpSelfTests.java" unless="FIPS_MODE"/>
       </fileset>
     </jpp>
+    <!-- Build identity carried in every attestation leaf (buildSha256) and in the CAP properties
+         (build.sha256): the checksum task's total SHA-256 over the preprocessed applet sources of
+         this variant. Each file is first normalized to LF line endings; the files are taken in
+         path order and each contributes SHA-256(normalized file) followed by its path relative to
+         the source root. BuildProfile.java is generated afterwards and is not covered. -->
+    <property name="build.sha256.workdir" location="${build.sourcepath}.sha256-work"/>
+    <delete dir="${build.sha256.workdir}"/>
+    <copy todir="${build.sha256.workdir}/src" encoding="ISO-8859-1" outputencoding="ISO-8859-1">
+      <fileset dir="${build.sourcepath}" includes="**/*.java" excludes="BuildProfile.java"/>
+      <filterchain>
+        <fixcrlf eol="lf"/>
+      </filterchain>
+    </copy>
+    <checksum algorithm="SHA-256" totalproperty="build.sha256"
+              todir="${build.sha256.workdir}/digests">
+      <fileset dir="${build.sha256.workdir}/src" includes="**/*.java"/>
+    </checksum>
+    <delete dir="${build.sha256.workdir}"/>
+    <fail message="build.sha256 is not a SHA-256 value: '${build.sha256}'">
+      <condition>
+        <not><matches string="${build.sha256}" pattern="^[0-9a-f]{64}$"/></not>
+      </condition>
+    </fail>
+    <loadresource property="build.sha256.bytes">
+      <propertyresource name="build.sha256"/>
+      <filterchain>
+        <tokenfilter>
+          <replaceregex pattern="([0-9a-f]{2})" replace="(byte) 0x\1, " flags="g"/>
+        </tokenfilter>
+      </filterchain>
+    </loadresource>
     <echo file="${build.sourcepath}/BuildProfile.java">package com.makina.security.openfips201;
 
 final class BuildProfile {
   static final byte[] PLATFORM_ID = { ${build.platform.tag-bytes} };
+  static final byte[] BUILD_SHA256 = { ${build.sha256.bytes} };
   private BuildProfile() {}
 }
 </echo>
@@ -276,6 +308,7 @@ vci.suite=${vci.suite}
 attestation.enabled=${attestation.enabled}
 fips.mode=${fips.mode}
 platform.id=${build.platform.id}
+build.sha256=${build.sha256}
 </echo>
   </target>
 

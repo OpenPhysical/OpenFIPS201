@@ -77,10 +77,13 @@ class IssuerSamIssuanceTest extends IssuerSamTestSupport {
       int cursor = 70 + opidLength;
       assertArrayEquals(
           ski(point(issued.f9.getPublic())), Arrays.copyOfRange(entry, cursor, cursor + 20));
+      assertArrayEquals(CAP_SHA256, Arrays.copyOfRange(entry, cursor + 20, cursor + 52));
+      assertArrayEquals(CPLC_SHA256, Arrays.copyOfRange(entry, cursor + 52, cursor + 84));
       assertArrayEquals(
           sha256(f9.toASN1Structure().getTBSCertificate().getEncoded("DER")),
-          Arrays.copyOfRange(entry, cursor + 20, cursor + 52));
-      assertEquals(entry.length, cursor + 52);
+          Arrays.copyOfRange(entry, cursor + 84, cursor + 116));
+      assertEquals(entry.length, cursor + 116);
+      assertEquals(203, entry.length);
       assertTrue(verify(publicKey(samPoint), entry, issued.signature), "entry signature");
       prevHead = sha256(entry);
     }
@@ -202,12 +205,75 @@ class IssuerSamIssuanceTest extends IssuerSamTestSupport {
     Extension issuance = f9.getExtension(new ASN1ObjectIdentifier("1.3.6.1.4.1.57923.20.10.10.2"));
     assertFalse(issuance.isCritical());
     ASN1Sequence value = ASN1Sequence.getInstance(issuance.getExtnValue().getOctets());
-    assertEquals(BigInteger.ONE, ASN1Integer.getInstance(value.getObjectAt(0)).getValue());
+    assertEquals(6, value.size());
+    assertEquals(BigInteger.valueOf(2), ASN1Integer.getInstance(value.getObjectAt(0)).getValue());
     assertEquals(BigInteger.valueOf(seq), ASN1Integer.getInstance(value.getObjectAt(1)).getValue());
     assertEquals(
         BigInteger.valueOf(seq + 1), ASN1Integer.getInstance(value.getObjectAt(2)).getValue());
     assertArrayEquals(prevHead, DEROctetString.getInstance(value.getObjectAt(3)).getOctets());
-    assertTrue(f9.getEncoded().length <= 736);
+    assertArrayEquals(CAP_SHA256, DEROctetString.getInstance(value.getObjectAt(4)).getOctets());
+    assertArrayEquals(CPLC_SHA256, DEROctetString.getInstance(value.getObjectAt(5)).getOctets());
+    assertArrayEquals(
+        issuanceExtensionDer(seq, seq + 1, prevHead, CAP_SHA256, CPLC_SHA256),
+        issuance.getExtnValue().getOctets(),
+        "issuance extension v2 DER");
+    assertTrue(f9.getEncoded().length <= 0x2F8);
+  }
+
+  /**
+   * Golden DER of the F9 issuance extension v2 value, written out field by field: {@code 30 L {02
+   * 01 02, 02 L issuanceSeq, 02 L eventSeq, 04 20 prevChainHead, 04 20 capSha256, 04 20
+   * cplcSha256}} with minimal positive INTEGER encodings.
+   */
+  static byte[] issuanceExtensionDer(
+      long issuanceSeq, long eventSeq, byte[] prevHead, byte[] capSha256, byte[] cplcSha256) {
+    byte[] body =
+        concat(
+            hex("020102"),
+            tlv(0x02, BigInteger.valueOf(issuanceSeq).toByteArray()),
+            tlv(0x02, BigInteger.valueOf(eventSeq).toByteArray()),
+            tlv(0x04, prevHead),
+            tlv(0x04, capSha256),
+            tlv(0x04, cplcSha256));
+    return tlv(0x30, body);
+  }
+
+  @Test
+  void issuanceExtensionGoldenEncoding() throws Exception {
+    // issuanceSeq 1 and eventSeq 2 (the first ISSUE after GENESIS).
+    byte[] head = new byte[32];
+    Arrays.fill(head, (byte) 0x11);
+    byte[] cap = new byte[32];
+    Arrays.fill(cap, (byte) 0x22);
+    byte[] cplc = new byte[32];
+    Arrays.fill(cplc, (byte) 0x33);
+    byte[] expected =
+        hex(
+            "306F"
+                + "020102"
+                + "020101"
+                + "020102"
+                + "0420"
+                + "1111111111111111111111111111111111111111111111111111111111111111"
+                + "0420"
+                + "2222222222222222222222222222222222222222222222222222222222222222"
+                + "0420"
+                + "3333333333333333333333333333333333333333333333333333333333333333");
+    assertArrayEquals(expected, issuanceExtensionDer(1, 2, head, cap, cplc));
+
+    Params params = Params.variant(root, 0);
+    byte[] genesis = personalize(params);
+    Issued issued = issueOne();
+    X509CertificateHolder f9 = new X509CertificateHolder(issued.certificate);
+    byte[] actual =
+        f9.getExtension(new ASN1ObjectIdentifier("1.3.6.1.4.1.57923.20.10.10.2"))
+            .getExtnValue()
+            .getOctets();
+    assertArrayEquals(
+        issuanceExtensionDer(1, 2, sha256(entryAndSignature(genesis)[0]), CAP_SHA256, CPLC_SHA256),
+        actual);
+    assertEquals(0x30, actual[0] & 0xFF);
+    assertEquals(0x6F, actual[1] & 0xFF);
   }
 
   static X509CertificateHolder childCertificate(

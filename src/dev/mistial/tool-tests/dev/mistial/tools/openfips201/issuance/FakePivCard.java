@@ -40,7 +40,17 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 /** A PIV card in software: on-card F9, proof of possession, F9 load and attestation leaves. */
 final class FakePivCard implements PivIssuanceClient {
+  /** The CPLC data the card serves, as hex. */
+  static final String CPLC =
+      "4790503347905033000000000000000000000000000000000000000000000000000000000000000000000000";
+
+  /** The build identity the card's attestation leaves carry ({@code build.sha256}). */
+  static final byte[] BUILD_SHA256 =
+      IssuanceCrypto.sha256("fake PIV applet build".getBytes(StandardCharsets.US_ASCII));
+
   final List<String> calls = new ArrayList<String>();
+  String cplc = CPLC;
+  byte[] buildSha256 = BUILD_SHA256;
   byte[] kdd = {0, 0, 0x42, 0x42, 0x4A, 0x43, 0x45, 0x4E, 0x42, 0x42};
   byte[] finalKdd;
   KeyPair f9;
@@ -51,7 +61,7 @@ final class FakePivCard implements PivIssuanceClient {
   public CardIdentity readIdentity() {
     calls.add("identity");
     byte[] value = finalKdd != null && calls.contains("install") ? finalKdd : kdd;
-    return new CardIdentity("CPLC", Collections.<String, String>emptyMap(), value);
+    return new CardIdentity(cplc, Collections.<String, String>emptyMap(), value);
   }
 
   @Override
@@ -140,7 +150,7 @@ final class FakePivCard implements PivIssuanceClient {
         false,
         new DERSequence(
             new ASN1Encodable[] {
-              new ASN1Integer(1),
+              new ASN1Integer(OpenPhysicalExtensions.PIV_LEAF_VERSION),
               new DEROctetString(new byte[] {1, 11, 0, 0}),
               octet(OpenPhysicalExtensions.BUILD_FLAG_ATTESTATION),
               octet(0x27),
@@ -151,7 +161,8 @@ final class FakePivCard implements PivIssuanceClient {
               octet(0x00),
               new ASN1Enumerated(OpenPhysicalExtensions.ORIGIN_GENERATED),
               octet(0x01),
-              octet(0x09)
+              octet(0x09),
+              new DEROctetString(buildSha256)
             }));
     byte[] encoded =
         leaf.build(new JcaContentSignerBuilder("SHA256withECDSA").build(f9.getPrivate()))

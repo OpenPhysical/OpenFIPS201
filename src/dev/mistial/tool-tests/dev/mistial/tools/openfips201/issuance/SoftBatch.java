@@ -178,6 +178,11 @@ final class SoftBatch {
     return new IssuanceLedger(batch.directory().resolve(batch.ledger));
   }
 
+  /** The SHA-256 the test CAP file is recorded with. */
+  static final String CAP_SHA256 =
+      dev.mistial.tools.openfips201.common.HexUtil.format(
+          IssuanceCrypto.sha256("test.cap".getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+
   CardIssuanceOrchestrator.Inputs inputs() {
     CardIssuanceOrchestrator.Inputs inputs = new CardIssuanceOrchestrator.Inputs();
     inputs.batch = batch;
@@ -185,7 +190,11 @@ final class SoftBatch {
     inputs.samCertificate = sam.certificate.clone();
     Map<String, String> properties = new LinkedHashMap<String, String>();
     properties.put("attestation.enabled", "true");
-    inputs.cap = new CapInfo(Paths.get("test.cap"), "00", "00", properties);
+    properties.put(
+        "build.sha256",
+        dev.mistial.tools.openfips201.common.HexUtil.format(FakePivCard.BUILD_SHA256)
+            .toLowerCase(java.util.Locale.ROOT));
+    inputs.cap = new CapInfo(Paths.get("test.cap"), CAP_SHA256, "00", properties);
     inputs.keyDeriver = custody.keyDeriver();
     inputs.target = "zmq:card";
     inputs.samTarget = "zmq:sam";

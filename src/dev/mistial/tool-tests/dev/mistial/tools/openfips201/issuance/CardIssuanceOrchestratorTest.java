@@ -7,6 +7,7 @@
 
 package dev.mistial.tools.openfips201.issuance;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -275,6 +276,58 @@ class CardIssuanceOrchestratorTest {
     assertEquals(IssuanceLedger.RECEIPT, lines.get(lines.size() - 1).type());
     assertEquals(sha256(result.receipt), lines.get(lines.size() - 1).string("sha256"));
     assertTrue(verifyLedger().valid());
+  }
+
+  @Test
+  void issuanceBindsTheCapAndCplcHashes() throws Exception {
+    CardIssuanceOrchestrator.Result result = produce(new FakePivCard(), NONE);
+    assertEquals(CardIssuanceOrchestrator.EXIT_OK, result.exitCode);
+    IssuanceReceipt receipt = IssuanceReceipt.read(result.receipt);
+    byte[] cplcSha256 = IssuanceCrypto.sha256(HexUtil.parse(FakePivCard.CPLC));
+    assertEquals(HexUtil.format(cplcSha256), receipt.card.cplcSha256);
+    SamLedgerEntry entry = soft.ledger().issueLine(1).samEntry().entry;
+    assertArrayEquals(HexUtil.parse(SoftBatch.CAP_SHA256), entry.capSha256());
+    assertArrayEquals(cplcSha256, entry.cplcSha256());
+  }
+
+  @Test
+  void cardWithoutCplcBurnsNothing() throws Exception {
+    FakePivCard card = new FakePivCard();
+    card.cplc = "unavailable";
+    CardIssuanceOrchestrator.Result result = produce(card, NONE);
+
+    assertEquals(CardIssuanceOrchestrator.EXIT_FAILED, result.exitCode);
+    IssuanceReceipt receipt = IssuanceReceipt.read(result.receipt);
+    assertFalse(receipt.burned);
+    assertTrue(receipt.failure.redactedMessage.contains("CPLC"), receipt.failure.redactedMessage);
+    assertEquals(0, soft.sam.issued);
+  }
+
+  @Test
+  void capWithoutBuildIdentityIsRefusedBeforeAnyReceipt() throws Exception {
+    CardIssuanceOrchestrator.Inputs inputs = soft.inputs();
+    inputs.cap.properties.remove("build.sha256");
+    IllegalStateException refused =
+        assertThrows(
+            IllegalStateException.class,
+            () ->
+                new CardIssuanceOrchestrator(inputs, soft.sam, new FakePivCard(), NONE).produce());
+    assertTrue(refused.getMessage().contains("build.sha256"), refused.getMessage());
+    assertEquals(0, soft.sam.issued);
+  }
+
+  @Test
+  void leafOfAnotherBuildFailsTheProof() throws Exception {
+    FakePivCard card = new FakePivCard();
+    card.buildSha256 = IssuanceCrypto.sha256(new byte[] {1});
+    CardIssuanceOrchestrator.Result result = produce(card, NONE);
+
+    assertEquals(CardIssuanceOrchestrator.EXIT_BURNED, result.exitCode);
+    IssuanceReceipt receipt = IssuanceReceipt.read(result.receipt);
+    assertEquals(IssuanceStage.PROOF_VERIFIED.name(), receipt.failure.stage);
+    assertTrue(
+        receipt.failure.redactedMessage.contains("leaf.expect-build"),
+        receipt.failure.redactedMessage);
   }
 
   @Test

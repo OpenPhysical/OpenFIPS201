@@ -64,6 +64,9 @@ final class AttestationTestChains {
     int samBatch = 4711;
 
     long issuanceSeq = 1;
+    int issuanceVersion = OpenPhysicalExtensions.F9_ISSUANCE_VERSION;
+    byte[] capSha256 = CAP_SHA256;
+    byte[] cplcSha256 = CPLC_SHA256;
     byte[] f9AuthorityKeyId;
     boolean f9IssuerUtf8;
     boolean samExpiresBeforeAt;
@@ -73,6 +76,20 @@ final class AttestationTestChains {
     int leafKeyReference = 0x9A;
     String leafCommonName;
     int leafOrigin = 2;
+    int leafVersion = OpenPhysicalExtensions.PIV_LEAF_VERSION;
+    byte[] buildSha256 = BUILD_SHA256;
+  }
+
+  /** Default measurements the test chains record. */
+  static final byte[] CAP_SHA256 = filled(0xCA);
+
+  static final byte[] CPLC_SHA256 = filled(0xC1);
+  static final byte[] BUILD_SHA256 = filled(0xB5);
+
+  private static byte[] filled(int value) {
+    byte[] out = new byte[32];
+    Arrays.fill(out, (byte) value);
+    return out;
   }
 
   /** A built chain: keys and exact DER encodings. */
@@ -183,10 +200,12 @@ final class AttestationTestChains {
         OpenPhysicalExtensions.F9_ISSUANCE,
         false,
         seq(
-            new ASN1Integer(1),
+            new ASN1Integer(o.issuanceVersion),
             new ASN1Integer(o.issuanceSeq),
             new ASN1Integer(o.issuanceSeq + 1),
-            new DEROctetString(new byte[32])));
+            new DEROctetString(new byte[32]),
+            new DEROctetString(o.capSha256),
+            new DEROctetString(o.cplcSha256)));
     chain.f9 = sign(f9, chain.samKey.getPrivate());
 
     Date leafEnd =
@@ -200,7 +219,7 @@ final class AttestationTestChains {
         OpenPhysicalExtensions.PIV_LEAF,
         false,
         seq(
-            new ASN1Integer(1),
+            new ASN1Integer(o.leafVersion),
             new DEROctetString(new byte[] {1, 4, 0, 0}),
             octet(OpenPhysicalExtensions.BUILD_FLAG_ATTESTATION),
             octet(0x27),
@@ -211,7 +230,8 @@ final class AttestationTestChains {
             octet(0x00),
             new ASN1Enumerated(o.leafOrigin),
             octet(0x7F),
-            octet(0x7F)));
+            octet(0x7F),
+            new DEROctetString(o.buildSha256)));
     chain.leaf = sign(leaf, chain.f9Key.getPrivate());
     return chain;
   }

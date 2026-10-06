@@ -96,6 +96,10 @@ public final class IssuanceReceipt {
 
   public static final class Card {
     public String cplc;
+
+    /** SHA-256 of the CPLC data octets, as the SAM binds it into the F9 issuance extension. */
+    public String cplcSha256;
+
     public Map<String, String> cplcFields;
     public String kddInitial;
     public String kddFinal;

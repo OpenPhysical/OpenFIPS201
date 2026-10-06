@@ -161,12 +161,13 @@ class PIVAttestationStateTest {
   void loadRejectsOversizeCertificateBeforeParsing() throws Exception {
     PIVAttestation attestation = new PIVAttestation(crypto);
     PIVKeyObjectECC authority = generatedAuthority(attestation);
+    short oversize = (short) (PIVAttestation.LENGTH_AUTHORITY_CERT_MAX + 1);
     ISOException thrown =
         assertThrows(
             ISOException.class,
             () ->
                 attestation.loadAuthorityCertificate(
-                    authority, new byte[0x2E1], (short) 0, (short) 0x2E1));
+                    authority, new byte[oversize], (short) 0, oversize));
     assertEquals(ISO7816.SW_FILE_FULL, thrown.getReason());
     assertEquals(PIVAttestation.STATE_GENERATED, attestation.getAuthorityState());
   }

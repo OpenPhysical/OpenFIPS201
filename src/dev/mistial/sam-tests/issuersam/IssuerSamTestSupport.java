@@ -59,6 +59,10 @@ abstract class IssuerSamTestSupport {
   static final AID SAM_AID = new AID(SAM_AID_BYTES, (short) 0, (byte) SAM_AID_BYTES.length);
   static final byte[] PIN = "13572468".getBytes();
   static final long INITIAL_TS = 1_790_000_000_000L;
+  /** Host-measured SHA-256 of the installed PIV CAP that ISSUE binds by default. */
+  static final byte[] CAP_SHA256 = sha256("test PIV CAP".getBytes());
+  /** Host-measured SHA-256 of the card CPLC that ISSUE binds by default. */
+  static final byte[] CPLC_SHA256 = sha256("test card CPLC".getBytes());
 
   static final byte LC_INSTALLED = (byte) 0x5A;
   static final byte LC_PARAMS_SET = (byte) 0x69;
@@ -310,10 +314,19 @@ abstract class IssuerSamTestSupport {
   ResponseAPDU issueResponse(KeyPair f9, byte[] nonce, byte[] validity) {
     byte[] point = point(f9.getPublic());
     byte[] pop = sign(f9.getPrivate(), concat("OPF9POP".getBytes(), nonce, point));
-    return transmit(0x84, 0x2A, 0x00, 0xF9, issueData(point, pop, validity));
+    return transmitChained(0x84, 0x2A, 0x00, 0xF9, issueData(point, pop, validity));
   }
 
+  /** ISSUE command data with the default host measurements {@link #CAP_SHA256} and CPLC. */
   static byte[] issueData(byte[] point, byte[] pop, byte[] validity) {
+    return concat(
+        issueDataWithoutMeasurements(point, pop, validity),
+        tlv(0x94, CAP_SHA256),
+        tlv(0x95, CPLC_SHA256));
+  }
+
+  /** The F9 request elements alone: {@code 86 F9pub | 9E PoP | 93 Validity}. */
+  static byte[] issueDataWithoutMeasurements(byte[] point, byte[] pop, byte[] validity) {
     return concat(tlv(0x86, point), tlv(0x9E, pop), tlv(0x93, validity));
   }
 

@@ -265,6 +265,8 @@ public final class CardIssuanceOrchestrator {
     receipt.cap.loadFileHash = inputs.cap.loadFileHash;
     receipt.cap.loaded = inputs.capLoaded;
     receipt.cap.properties.putAll(inputs.cap.properties);
+    // The proof leaf is checked against the build identity after the OPID is burned.
+    buildSha256(inputs.cap);
     receipt.sam.ski = batch.sam.ski;
     if (run.reissue != null) {
       receipt.reissueOf = run.reissue.receiptPath.getFileName().toString();
@@ -283,6 +285,9 @@ public final class CardIssuanceOrchestrator {
     receipt.card.cplc = initial.cplc;
     receipt.card.cplcFields = initial.cplcFields;
     receipt.card.kddInitial = HexUtil.format(initial.kdd());
+    byte[] cplcSha256 = cplcSha256(initial);
+    receipt.card.cplcSha256 = HexUtil.format(cplcSha256);
+    byte[] capSha256 = HexUtil.parse(inputs.cap.sha256);
     if (run.reissue != null) {
       reissue(run, initial);
     }
@@ -306,7 +311,7 @@ public final class CardIssuanceOrchestrator {
     advance(receipt, run, IssuanceStage.ISSUE_REQUESTED);
     byte[] validity = validity(StrictDer.parseCertificate(inputs.samCertificate), new Date());
     run.issueRequested = true;
-    byte[] raw = sam.issue(point, pop, validity);
+    byte[] raw = sam.issue(point, pop, validity, capSha256, cplcSha256);
 
     hooks.before(IssuanceStage.ISSUED);
     receipt.burned = true;
@@ -367,6 +372,9 @@ public final class CardIssuanceOrchestrator {
                 .f9Certificate(certificate)
                 .leaf(proof.leaf())
                 .expectOpid(opid)
+                .expectCapSha256(capSha256)
+                .expectCplcSha256(cplcSha256)
+                .expectBuildSha256(buildSha256(inputs.cap))
                 .build());
     if (!Arrays.equals(
         IssuanceCrypto.point(StrictDer.parseCertificate(proof.leaf()).getPublicKey()),
@@ -578,6 +586,13 @@ public final class CardIssuanceOrchestrator {
         entry.tbsHash())) {
       throw new IllegalStateException("The F9 certificate TBS differs from the SAM entry");
     }
+    byte[] capSha256 = HexUtil.parse(inputs.cap.sha256);
+    byte[] cplcSha256 = HexUtil.parse(receipt.card.cplcSha256);
+    if (!Arrays.equals(entry.capSha256(), capSha256)
+        || !Arrays.equals(entry.cplcSha256(), cplcSha256)) {
+      throw new IllegalStateException(
+          "The SAM entry binds other CAP or CPLC hashes than the ones sent in ISSUE");
+    }
     require(
         "f9",
         receipt,
@@ -586,11 +601,35 @@ public final class CardIssuanceOrchestrator {
             .samCertificate(inputs.samCertificate)
             .f9Certificate(certificate)
             .expectOpid(opid)
+            .expectCapSha256(capSha256)
+            .expectCplcSha256(cplcSha256)
             .build());
     sam.decipher(opid.toPrinted()).requireIssuance(inputs.batch.opid.batch, entry.issuanceSeq);
     receipt.f9.ski = HexUtil.format(entry.f9Ski());
     receipt.f9.subject = parsed.getSubject().toString();
     return opid;
+  }
+
+  /**
+   * SHA-256 of the CPLC data octets the card served. The SAM binds it into the F9 certificate, so a
+   * card without CPLC data cannot be issued.
+   */
+  static byte[] cplcSha256(PivIssuanceClient.CardIdentity identity) {
+    if (identity.cplc == null || !identity.cplc.matches("([0-9A-Fa-f]{2})+")) {
+      throw new IllegalStateException(
+          "The card serves no CPLC data; its SHA-256 is bound into the F9 certificate");
+    }
+    return IssuanceCrypto.sha256(HexUtil.parse(identity.cplc));
+  }
+
+  /** The {@code build.sha256} build identity of {@code cap}'s properties (32 octets). */
+  static byte[] buildSha256(CapInfo cap) {
+    String value = cap.properties.get("build.sha256");
+    if (value == null || !value.matches("[0-9A-Fa-f]{64}")) {
+      throw new IllegalStateException(
+          "CAP " + cap.path + " properties carry no build.sha256 build identity");
+    }
+    return HexUtil.parse(value);
   }
 
   private static VerificationReport require(

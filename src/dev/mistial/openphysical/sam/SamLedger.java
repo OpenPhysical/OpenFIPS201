@@ -37,7 +37,8 @@ import javacard.framework.Util;
  * <pre>
  * "OPSAMLE1"(8) | type(1) | samSki(20) | eventSeq(4) | prevHead(32) | payload
  *  GENESIS 01: sha256(samCert)(32) | paramsDigest(32) | quota(4) | lastTs(8)  (prevHead = 0^32, eventSeq = 1)
- *  ISSUE   02: issuanceSeq(4) | opidLen(1) = 17 | opid(17) | f9Ski(20) | tbsHash(32)
+ *  ISSUE   02: issuanceSeq(4) | opidLen(1) = 17 | opid(17) | f9Ski(20) | capSha256(32)
+ *              | cplcSha256(32) | tbsHash(32)
  *  TOPUP   03: ts(8) | added(4) | newQuota(4)
  *  TERM    04: issued(4) | quota(4)
  * </pre>
@@ -285,8 +286,13 @@ final class SamLedger {
   }
 
   /**
-   * ISSUE F9: {@code 86 41 F9pub | 9E L PoP | 93 L Validity}, each exactly once, in this order,
-   * with nothing trailing. Fails closed; nothing is consumed before the commit in step 12.
+   * ISSUE F9: {@code 86 41 F9pub | 9E L PoP | 93 L Validity | 94 20 capSha256 | 95 20 cplcSha256},
+   * each exactly once, in this order, with nothing trailing. Fails closed; nothing is consumed
+   * before the commit in step 12.
+   *
+   * <p>capSha256 is the host-measured SHA-256 of the PIV CAP file installed on the card and
+   * cplcSha256 the SHA-256 of the card's CPLC data. The SAM cannot measure either; it binds both,
+   * as supplied, into the F9 issuance extension and the ISSUE ledger entry.
    *
    * <p>The caller has checked lifecycle, secure channel and operator PIN (step 1).
    *
@@ -315,10 +321,15 @@ final class SamLedger {
     short pop = DERValidator.derContentOffset(buffer, popTag, popEnd);
     if (popEnd >= end || buffer[popEnd] != (byte) 0x93) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     short validityEnd = DERValidator.derObjectEnd(buffer, popEnd, end);
-    if (validityEnd != end) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     short validity = DERValidator.derContentOffset(buffer, popEnd, validityEnd);
     short validityLength = (short) (validityEnd - validity);
     if (validityLength > SamConst.LENGTH_VALIDITY_MAX) ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    short capSha256 = expectPrimitive(buffer, validityEnd, end, (byte) 0x94, SamConst.LENGTH_HASH);
+    short cplcTag = (short) (capSha256 + SamConst.LENGTH_HASH);
+    short cplcSha256 = expectPrimitive(buffer, cplcTag, end, (byte) 0x95, SamConst.LENGTH_HASH);
+    if ((short) (cplcSha256 + SamConst.LENGTH_HASH) != end) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
 
     // Step 4: the point is on P-256 and differs from the SAM and root keys.
     Util.arrayCopyNonAtomic(buffer, point, scratch, SamConst.S_POP_POINT, SamConst.LENGTH_POINT);
@@ -432,10 +443,14 @@ final class SamLedger {
             scratch,
             SamConst.S_NEXT_SEQ,
             scratch,
-            SamConst.S_NEXT_EVENT);
+            SamConst.S_NEXT_EVENT,
+            buffer,
+            capSha256,
+            cplcSha256);
     crypto.digest(io, tbs, (short) (writer.getOffset() - tbs), scratch, SamConst.S_HASH_TBS);
 
-    // Step 11: the entry (overwrites the dead POP region) and newHead.
+    // Step 11: the entry (overwrites the dead POP region and, after f9Ski is copied, HASH_AUX)
+    // and newHead. tbsHash stays the last field: step 13 signs it from the persistent entry.
     short base = SamConst.S_ENTRY;
     short cursor = writeHeader(scratch, base, SamConst.ENTRY_ISSUE);
     cursor =
@@ -444,11 +459,13 @@ final class SamLedger {
     cursor = Util.arrayCopyNonAtomic(scratch, SamConst.S_OPID, scratch, cursor, opidLength);
     cursor =
         Util.arrayCopyNonAtomic(scratch, SamConst.S_HASH_AUX, scratch, cursor, SamConst.LENGTH_SKI);
+    cursor = Util.arrayCopyNonAtomic(buffer, capSha256, scratch, cursor, SamConst.LENGTH_HASH);
+    cursor = Util.arrayCopyNonAtomic(buffer, cplcSha256, scratch, cursor, SamConst.LENGTH_HASH);
     cursor =
         Util.arrayCopyNonAtomic(
             scratch, SamConst.S_HASH_TBS, scratch, cursor, SamConst.LENGTH_HASH);
     short entryLength = (short) (cursor - base);
-    crypto.digest(scratch, base, entryLength, scratch, SamConst.S_HASH_AUX);
+    crypto.digest(scratch, base, entryLength, scratch, SamConst.S_ISSUE_HEAD);
 
     // Step 12: the only burn point.
     state.commitIssue(
@@ -460,7 +477,7 @@ final class SamLedger {
         base,
         entryLength,
         scratch,
-        SamConst.S_HASH_AUX);
+        SamConst.S_ISSUE_HEAD);
 
     // Steps 13-16: any failure from here on is 6500 with the OPID burned.
     short responseLength = (short) 0;
