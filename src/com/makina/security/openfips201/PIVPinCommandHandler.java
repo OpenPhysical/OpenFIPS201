@@ -314,12 +314,14 @@ final class PIVPinCommandHandler {
 
     // Read the Pairing Code Reference Data Container (Tag 0x5FC123) defined in
     // SP 800-73-5 Part 1 Section 3.3.8 / Table 44.
+    // SP 800-73-5 Part 2 Section 3.2.1: "If any key reference value is specified that CANNOT be
+    // verified by the PIV Card Application, then the PIV Card Application SHALL return the status
+    // word '6A 88'." Absent or malformed reference data leaves key reference '98' unverifiable.
     PIVDataObject object = dataStore.find(PIV.ID_DATA_PAIRING_CODE_REFERENCE, ZERO, (short) 3);
-    if (object == null || !object.isInitialised()) ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
-    if (!PIVDataCommandHandler.isValidPairingCodeContainer(object)) {
-      // The pairing code reference data exists but cannot be used: ISO/IEC 7816-4 Table 7 '6984'
-      // (reference data not usable).
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if (object == null
+        || !object.isInitialised()
+        || !PIVDataCommandHandler.isValidPairingCodeContainer(object)) {
+      ISOException.throwIt(SW_REFERENCE_NOT_FOUND);
     }
 
     // SP 800-73-5 Part 2 / SP 800-85A-4 AS05.16A-R4 require 63 00 for a

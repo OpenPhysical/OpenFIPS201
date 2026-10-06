@@ -483,6 +483,27 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
         "Part 2 Table 2 permits plaintext pairing-code VERIFY on contact");
   }
 
+  @Test
+  void malformedPairingCodeReferenceMakesKeyReference98Unverifiable() {
+    configureVciMode((byte) 0x02);
+    // Table 44 requires the pairing code under tag 99; tag 98 leaves the container unusable.
+    createPairingCodeReferenceData((byte) 0x98);
+    withMockedScp(
+        () -> {
+          createDiscoveryObject();
+          assertSw(0x9000, selectApplet(), "SELECT before stored Discovery policy");
+          assertSw(
+              0x9000,
+              transmit(0x84, 0xDB, 0x3F, 0xFF, hex("7E124F0BA0000003080000100001005F2F024800")),
+              "Store pairing-required Discovery policy");
+        });
+
+    assertSw(
+        0x6A88,
+        transmit(0x00, 0x20, 0x00, 0x98, hex("3132333435363738")),
+        "SP 800-73-5 Part 2 Section 3.2.1: an unverifiable key reference returns 6A88");
+  }
+
   private void configureVciMode(final byte mode) {
     withMockedScp(
         new Runnable() {
@@ -582,6 +603,10 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
   }
 
   private void createPairingCodeReferenceData() {
+    createPairingCodeReferenceData((byte) 0x99);
+  }
+
+  private void createPairingCodeReferenceData(final byte pairingCodeTag) {
     withMockedScp(
         new Runnable() {
           @Override
@@ -619,7 +644,7 @@ class OpenFIPS201VciConformanceTest extends OpenFIPS201TestSupport {
                     hex("5C035FC123"),
                     tlv(
                         (byte) 0x53,
-                        concat(tlv((byte) 0x99, hex("3132333435363738")), hex("FE00"))));
+                        concat(tlv(pairingCodeTag, hex("3132333435363738")), hex("FE00"))));
             assertSw(
                 0x9000,
                 transmit(0x84, 0xDB, 0x3F, 0xFF, content),
