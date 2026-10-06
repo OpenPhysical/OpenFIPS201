@@ -32,9 +32,6 @@ import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
-import javax.crypto.Cipher;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 import org.bouncycastle.asn1.ASN1EncodableVector;
 import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.DERBitString;
@@ -47,7 +44,9 @@ import org.bouncycastle.asn1.x9.X9ObjectIdentifiers;
 import org.bouncycastle.crypto.BlockCipher;
 import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.macs.CMac;
+import org.bouncycastle.crypto.modes.CBCBlockCipher;
 import org.bouncycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.ParametersWithIV;
 import org.bouncycastle.math.ec.ECPoint;
 
 /**
@@ -678,17 +677,21 @@ final class VciSupport {
     return out;
   }
 
+  /**
+   * AES-CBC without padding over block-aligned, ISO-padded SM data. SP 800-73-5 Part 2 Section
+   * 4.2.2 gives every command and response a fresh IV derived from the encryption counter.
+   */
   private static byte[] aesCbc(boolean encrypt, byte[] key, byte[] iv, byte[] input) {
-    try {
-      Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
-      cipher.init(
-          encrypt ? Cipher.ENCRYPT_MODE : Cipher.DECRYPT_MODE,
-          new SecretKeySpec(key, "AES"),
-          new IvParameterSpec(iv));
-      return cipher.doFinal(input);
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
+    if (input.length % 16 != 0) {
+      throw new IllegalArgumentException("CBC input must be a multiple of the AES block size");
     }
+    BlockCipher cbc = CBCBlockCipher.newInstance(AESEngine.newInstance());
+    cbc.init(encrypt, new ParametersWithIV(new KeyParameter(key), iv));
+    byte[] out = new byte[input.length];
+    for (int offset = 0; offset < input.length; offset += 16) {
+      cbc.processBlock(input, offset, out, offset);
+    }
+    return out;
   }
 
   private static byte[] isoPad(byte[] input) {
