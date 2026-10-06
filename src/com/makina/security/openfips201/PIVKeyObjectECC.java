@@ -120,6 +120,30 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
   }
 
   /**
+   * Validates a public point presented for import as {@link #ELEMENT_ECC_POINT}.
+   *
+   * <p>The point is checked by the same {@link ECPointValidator} rule that GENERAL AUTHENTICATE key
+   * agreement and OPACITY apply to a peer point: the uncompressed encoding {@code 04 || X || Y}
+   * (ANSI X9.62, SEC 1 Section 2.3.3), coordinates in {@code [0, p-1]} and the curve equation (SP
+   * 800-56A Section 5.6.2.3.3 partial public-key validation).
+   *
+   * @param buffer the buffer holding the encoded point
+   * @param offset the first octet of the encoded point
+   * @param length the length of the encoded point
+   * @param validator the canonical point validator
+   * @return true if the point is a valid public key on this key's curve
+   * @throws ISOException {@link ISO7816#SW_WRONG_LENGTH} if {@code length} is not the uncompressed
+   *     encoding length for this key's curve
+   */
+  boolean isValidPublicPoint(
+      byte[] buffer, short offset, short length, ECPointValidator validator) {
+    if (length != marshaledPubKeyLen) {
+      ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+    return validator.isValid(buffer, offset, length, params);
+  }
+
+  /**
    * Updates the elements of the keypair with new values.
    *
    * <p>Notes:
@@ -127,7 +151,7 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
    * <ul>
    *   <li>If the card does not support ObjectDeletion, repeatedly calling this method may exhaust
    *       NV RAM.
-   *   <li>The ELEMENT_ECC_POINT element must be formatted as an octet string as per ANSI X9.62.
+   *   <li>The ELEMENT_ECC_POINT element must have been accepted by {@link #isValidPublicPoint}.
    *   <li>The ELEMENT_ECC_SECRET must be formatted as a big-endian, right-aligned big number.
    *   <li>Updating only one element may render the card in a non-deterministic state
    * </ul>
@@ -142,14 +166,10 @@ final class PIVKeyObjectECC extends PIVKeyObjectPKI {
 
     switch (element) {
       case ELEMENT_ECC_POINT:
+        // The encoding, coordinate range and curve membership are the caller's precondition,
+        // established by isValidPublicPoint() before the element is written.
         if (length != marshaledPubKeyLen) {
           ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
-          return; // Keep static analyser happy
-        }
-
-        // Only uncompressed points are supported
-        if (buffer[offset] != ECPointValidator.POINT_UNCOMPRESSED) {
-          ISOException.throwIt(ISO7816.SW_WRONG_DATA);
           return; // Keep static analyser happy
         }
 

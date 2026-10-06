@@ -260,6 +260,7 @@ final class PIV {
             dataStore,
             chainBuffer,
             secureMessaging,
+            ecPointValidator,
             scratch
             // #if ATTESTATION_ENABLED
             ,

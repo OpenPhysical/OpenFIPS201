@@ -93,6 +93,7 @@ class PIVOpacitySelfTestBehaviorTest {
     assertEquals(field, PIVOpacity.FIELD_LENGTH);
     assertEquals((short) (cs7 ? 32 : 16), PIVOpacity.SESSION_KEY_LENGTH);
     assertEquals((short) (cs7 ? 24 : 16), PIVOpacity.NONCE_LENGTH);
+    assertEquals(ECPointValidator.encodedLength(field), PIVOpacity.POINT_LENGTH);
     assertEquals((byte) (cs7 ? 0x0D : 0x09), PIV.OPACITY_KDF_ALG_ID);
     assertEquals(cs7 ? PIV.ID_ALG_ECC_CS7 : PIV.ID_ALG_ECC_CS2, PIV.ID_ALG_ECC_SM);
 

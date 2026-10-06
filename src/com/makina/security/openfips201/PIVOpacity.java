@@ -23,6 +23,9 @@ final class PIVOpacity {
   static final short FIELD_LENGTH = (short) 48;
   // #endif
   static final short SESSION_KEY_LENGTH = (short) (FIELD_LENGTH - (short) 16);
+  // Equal to ECPointValidator.encodedLength(FIELD_LENGTH), the single definition of the
+  // uncompressed encoding. The Java Card converter accepts only constant initializers in a static
+  // initializer, so the value is written as the compile-time constant that method returns.
   static final short POINT_LENGTH = (short) (FIELD_LENGTH * (short) 2 + (short) 1);
   static final short NONCE_LENGTH = (short) (FIELD_LENGTH / (short) 2);
 

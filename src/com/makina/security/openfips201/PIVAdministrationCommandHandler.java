@@ -24,6 +24,7 @@ final class PIVAdministrationCommandHandler {
   private final PIVDataStore dataStore;
   private final ChainBuffer chainBuffer;
   private final PIVSecureMessaging secureMessaging;
+  private final ECPointValidator ecPointValidator;
   private final byte[] scratch;
   // #if ATTESTATION_ENABLED
   private final PIVAttestation attestation;
@@ -36,6 +37,7 @@ final class PIVAdministrationCommandHandler {
       PIVDataStore dataStore,
       ChainBuffer chainBuffer,
       PIVSecureMessaging secureMessaging,
+      ECPointValidator ecPointValidator,
       byte[] scratch
           // #if ATTESTATION_ENABLED
           ,
@@ -48,6 +50,7 @@ final class PIVAdministrationCommandHandler {
     this.dataStore = dataStore;
     this.chainBuffer = chainBuffer;
     this.secureMessaging = secureMessaging;
+    this.ecPointValidator = ecPointValidator;
     this.scratch = scratch;
     // #if ATTESTATION_ENABLED
     this.attestation = attestation;
@@ -738,8 +741,20 @@ final class PIVAdministrationCommandHandler {
         // clears the key after any transaction has closed, so the cleared state is what persists.
         short failure = ZERO;
         try {
-          key.updateElement(elementTag, scratch, elementOffset, elementLength);
-          if (elementTag != PIVKeyObject.ELEMENT_CLEAR) {
+          // An imported public point passes the same canonical validation as a peer point in key
+          // agreement (SP 800-56A Section 5.6.2.3.3). A point that is not on the key's curve is
+          // an "Incorrect parameter in command data field" (SP 800-73-5 Part 2 Section 3.2.2,
+          // '6A80') and clears the import like any other refused key material. A wrong length is
+          // rejected with '6700' before the key is touched.
+          if (elementTag == PIVKeyObjectECC.ELEMENT_ECC_POINT
+              && key instanceof PIVKeyObjectECC
+              && !((PIVKeyObjectECC) key)
+                  .isValidPublicPoint(scratch, elementOffset, elementLength, ecPointValidator)) {
+            failure = ISO7816.SW_WRONG_DATA;
+          } else {
+            key.updateElement(elementTag, scratch, elementOffset, elementLength);
+          }
+          if (failure == ZERO && elementTag != PIVKeyObject.ELEMENT_CLEAR) {
             if (importedKey.isLastImportedPart(elementTag)
                 && !importedKey.pairwiseConsistencyTest(scratch, ZERO)) {
               // An inconsistent imported pair is incorrect command data: ISO/IEC 7816-4 Table 7
