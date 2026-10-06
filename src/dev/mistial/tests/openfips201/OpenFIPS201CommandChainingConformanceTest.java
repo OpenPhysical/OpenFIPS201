@@ -69,6 +69,28 @@ class OpenFIPS201CommandChainingConformanceTest extends OpenFIPS201TestSupport {
     assertArrayEquals(template, collectResponse(first, "GET RESPONSE completes the APT"));
   }
 
+  /**
+   * SP 800-73-5 Part 2 Section 3.1.1 returns the Application Property Template in response to
+   * SELECT. A SELECT sent without an Le field (ISO/IEC 7816-4 Section 5.1 case 3, as many host
+   * stacks send it) still delivers the complete template, directly or by '61 XX' and GET RESPONSE,
+   * and never a truncated template with '90 00'.
+   */
+  @Test
+  void selectWithoutLeDeliversTheWholeApplicationPropertyTemplate() {
+    byte[] template = selectApplet().getData();
+    assertEquals((byte) 0x61, template[0], "SELECT with Le=00 returns the APT");
+
+    ResponseAPDU response =
+        transmit(new CommandAPDU(0x00, 0xA4, 0x04, 0x00, OPENFIPS201_AID_BYTES));
+    assertTrue(
+        response.getSW() == 0x9000 || response.getSW1() == 0x61,
+        "SELECT without Le must succeed or announce the pending APT, was " + swHex(response));
+    assertArrayEquals(
+        template,
+        collectResponse(response, "SELECT without Le"),
+        "SELECT without Le must deliver the whole APT");
+  }
+
   @Test
   void getResponseRequiresItsHeaderAndAPendingResponse() {
     assertSw(
