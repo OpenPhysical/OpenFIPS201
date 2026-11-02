@@ -576,7 +576,7 @@ final class Config {
       byte retriesContactless = config[CONFIG_PIN_RETRIES_CONTACTLESS];
       if (reader.match(TAG_PIN_RETRIES_CONTACT)) {
         byte value = reader.toByte();
-        if (value < (byte) 0 || value > LIMIT_PIN_MAX_RETRIES) {
+        if (!isPinRetryLimitValid(value)) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         retriesContact = value;
@@ -587,7 +587,7 @@ final class Config {
       if (reader.match(TAG_PIN_RETRIES_CONTACTLESS)) {
         byte value = reader.toByte();
         // Pre-condition - Boundary check
-        if (value < (byte) 0 || value > LIMIT_PIN_MAX_RETRIES) {
+        if (!isPinRetryLimitValid(value)) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         // Pre-condition - Cannot be greater than RETRIES_CONTACT
@@ -797,6 +797,13 @@ final class Config {
         ISOException.throwIt(ISO7816.SW_FUNC_NOT_SUPPORTED);
       }
     }
+  }
+
+  private static boolean isPinRetryLimitValid(byte value) {
+    // FIPS 201-3 requires a usable PIN activation path. A zero retry limit would install the
+    // mandatory application PIN permanently blocked; non-FIPS profiles may remain PIN-less.
+    byte minimumRetries = FipsPolicy.ENABLED ? (byte) 1 : (byte) 0;
+    return value >= minimumRetries && value <= LIMIT_PIN_MAX_RETRIES;
   }
 
   /**

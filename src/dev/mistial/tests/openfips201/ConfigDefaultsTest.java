@@ -219,6 +219,31 @@ class ConfigDefaultsTest {
   }
 
   @Test
+  void fipsProfileRequiresPositivePinRetryLimits() {
+    byte[][] zeroRetryPolicies = {
+      pinRetryPolicy((byte) 0, (byte) 0), new byte[] {(byte) 0xA0, 0x03, (byte) 0x87, 0x01, 0x00}
+    };
+
+    for (byte[] policy : zeroRetryPolicies) {
+      Config config = new Config();
+      if (FipsPolicy.ENABLED) {
+        assertThrows(RuntimeException.class, () -> update(config, policy));
+      } else {
+        update(config, policy);
+      }
+    }
+
+    if (FipsPolicy.ENABLED) {
+      Config config = new Config();
+      for (byte retries : new byte[] {1, Config.LIMIT_PIN_MAX_RETRIES}) {
+        update(config, pinRetryPolicy(retries, retries));
+        assertEquals(retries, config.readValue(Config.CONFIG_PIN_RETRIES_CONTACT));
+        assertEquals(retries, config.readValue(Config.CONFIG_PIN_RETRIES_CONTACTLESS));
+      }
+    }
+  }
+
+  @Test
   void rejectsAConfigurationPolicyNestedInsideAnotherPolicy() {
     Config config = new Config();
     assertThrows(
@@ -265,5 +290,11 @@ class ConfigDefaultsTest {
       reader.init(encoded, (short) 0, (short) encoded.length);
       config.update(reader);
     }
+  }
+
+  private static byte[] pinRetryPolicy(byte contact, byte contactless) {
+    return new byte[] {
+      (byte) 0xA0, 0x06, (byte) 0x86, 0x01, contact, (byte) 0x87, 0x01, contactless
+    };
   }
 }
