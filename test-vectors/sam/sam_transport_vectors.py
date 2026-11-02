@@ -24,6 +24,11 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 PREFIX = b"OPSAMKT1"
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 def point(public_key):
     return public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
 
@@ -32,7 +37,7 @@ def kdf(z, transport_pub, host_pub, iin_ascii):
     shared_info = PREFIX + transport_pub + host_pub + iin_ascii
     direct = hashlib.sha256(z + b"\x00\x00\x00\x01" + shared_info).digest()
     library = X963KDF(algorithm=hashes.SHA256(), length=32, sharedinfo=shared_info).derive(z)
-    assert direct == library
+    require(direct == library, "independent X9.63 KDF implementations disagree")
     return direct
 
 
@@ -42,11 +47,11 @@ def end_to_end(transport_scalar, host_scalar, iin, fpe_key):
     transport_pub = point(transport.public_key())
     host_pub = point(host.public_key())
     z = host.exchange(ec.ECDH(), transport.public_key())
-    assert z == transport.exchange(ec.ECDH(), host.public_key())
+    require(z == transport.exchange(ec.ECDH(), host.public_key()), "ECDH parties derived different secrets")
     iin_ascii = ("%04d" % iin).encode("ascii")
     kek = kdf(z, transport_pub, host_pub, iin_ascii)
     wrapped = aes_key_wrap(kek, fpe_key)
-    assert aes_key_unwrap(kek, wrapped) == fpe_key
+    require(aes_key_unwrap(kek, wrapped) == fpe_key, "AES key-wrap round trip failed")
     return {
         "transportPrivHex": "%064X" % transport_scalar,
         "transportPubHex": transport_pub.hex().upper(),
@@ -67,7 +72,7 @@ def main():
     rfc_wrapped = bytes.fromhex(
         "28C9F404C4B810F4CBCCB35CFB87F8263F5786E2D80ED326CBC7F0E71A99F43BFB988B9B7A02DD21"
     )
-    assert aes_key_wrap(rfc_kek, rfc_key) == rfc_wrapped
+    require(aes_key_wrap(rfc_kek, rfc_key) == rfc_wrapped, "RFC 3394 known-answer test failed")
 
     fpe_key = bytes.fromhex("2B7E151628AED2A6ABF7158809CF4F3CEF4359D8D580AA4F7F036D6F04FC6A94")
     cases = [

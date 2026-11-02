@@ -40,6 +40,11 @@ G = (
 )
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 def add(p1, p2):
     if p1 is None:
         return p2
@@ -70,9 +75,12 @@ def encode(point):
 
 
 def decode(data):
-    assert len(data) == 65 and data[0] == 4
+    require(len(data) == 65 and data[0] == 4, "invalid uncompressed P-256 point")
     x, y = int.from_bytes(data[1:33], "big"), int.from_bytes(data[33:], "big")
-    assert (y * y - (x * x * x + A * x + 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B)) % P == 0
+    require(
+        (y * y - (x * x * x + A * x + 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B)) % P == 0,
+        "P-256 point is not on the curve",
+    )
     return (x, y)
 
 
@@ -81,7 +89,7 @@ def ecdh(d, peer):
     library = ec.derive_private_key(d, ec.SECP256R1()).exchange(
         ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), peer)
     )
-    assert z == library
+    require(z == library, "independent ECDH implementations disagree")
     return z
 
 
@@ -92,14 +100,14 @@ def public(d):
         .public_key()
         .public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
     )
-    assert point == library
+    require(point == library, "independent public-key implementations disagree")
     return point
 
 
 def x963(z, shared_info):
     direct = hashlib.sha256(z + b"\x00\x00\x00\x01" + shared_info).digest()
     library = X963KDF(algorithm=hashes.SHA256(), length=32, sharedinfo=shared_info).derive(z)
-    assert direct == library
+    require(direct == library, "independent X9.63 KDF implementations disagree")
     return direct
 
 
@@ -108,7 +116,8 @@ def kw(kek, key):
     n = len(key) // 8
     a = bytes.fromhex("A6A6A6A6A6A6A6A6")
     r = [key[8 * i : 8 * i + 8] for i in range(n)]
-    encryptor = Cipher(algorithms.AES(kek), modes.ECB()).encryptor()
+    # RFC 3394 uses the AES block primitive directly; ECB supplies that primitive here.
+    encryptor = Cipher(algorithms.AES(kek), modes.ECB()).encryptor()  # nosec B305  # NOSONAR
     for j in range(6):
         for i in range(n):
             b = encryptor.update(a + r[i])
@@ -116,7 +125,7 @@ def kw(kek, key):
             a = (int.from_bytes(b[:8], "big") ^ t).to_bytes(8, "big")
             r[i] = b[8:]
     out = a + b"".join(r)
-    assert out == aes_key_wrap(kek, key)
+    require(out == aes_key_wrap(kek, key), "independent AES key-wrap implementations disagree")
     return out
 
 
@@ -128,7 +137,7 @@ def case(name, recipient_d, ephemeral_d, key, shared_info_of, extra):
     recipient_pub = public(recipient_d)
     ephemeral_pub = public(ephemeral_d)
     z = ecdh(ephemeral_d, recipient_pub)
-    assert z == ecdh(recipient_d, ephemeral_pub)
+    require(z == ecdh(recipient_d, ephemeral_pub), "ECDH parties derived different secrets")
     shared_info = shared_info_of(recipient_pub, ephemeral_pub)
     kek = x963(z, shared_info)
     entry = {
@@ -155,8 +164,10 @@ def main():
     rfc_kek = bytes(range(32))
     rfc_key = bytes.fromhex("00112233445566778899AABBCCDDEEFF000102030405060708090A0B0C0D0E0F")
     rfc_wrapped = kw(rfc_kek, rfc_key)
-    assert rfc_wrapped.hex().upper() == (
-        "28C9F404C4B810F4CBCCB35CFB87F8263F5786E2D80ED326CBC7F0E71A99F43BFB988B9B7A02DD21"
+    require(
+        rfc_wrapped.hex().upper()
+        == "28C9F404C4B810F4CBCCB35CFB87F8263F5786E2D80ED326CBC7F0E71A99F43BFB988B9B7A02DD21",
+        "RFC 3394 known-answer test failed",
     )
 
     fpe_key = bytes.fromhex("2B7E151628AED2A6ABF7158809CF4F3CEF4359D8D580AA4F7F036D6F04FC6A94")
@@ -206,8 +217,8 @@ def main():
     if os.path.exists(sam_kat):
         with open(sam_kat) as handle:
             first = json.load(handle)["endToEnd"][0]
-        assert first["wrappedHex"] == sam[0]["wrappedHex"], "host and SAM vectors disagree"
-        assert first["kekHex"] == sam[0]["kekHex"]
+        require(first["wrappedHex"] == sam[0]["wrappedHex"], "host and SAM wrapped-key vectors disagree")
+        require(first["kekHex"] == sam[0]["kekHex"], "host and SAM KEK vectors disagree")
 
     out = {
         "schema": "openphysical.host-keytransport-vectors/1",
