@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # Qlty coverage upload (OIDC)
 
 concurrency:
   group: quality-${{ github.ref }}
@@ -117,6 +118,17 @@ jobs:
       # attestation profiles plus the host tool, and enforces each line, branch, and class floor.
       - name: Enforce coverage ratchets
         run: tools/ant/bin/ant -f build/build.xml coverage
+
+      # One upload: the three applet profile reports plus the host-tool report. Their paths are
+      # relative to src/ (the applet report reads preprocessed copies of src/com/...).
+      - name: Upload coverage to Qlty
+        if: ${{ !github.event.pull_request.head.repo.fork }}
+        uses: qltysh/qlty-action/coverage@v2
+        env:
+          JACOCO_SOURCE_PATH: src
+        with:
+          oidc: true
+          files: build/coverage/*/*jacoco.xml
 
       - name: Upload coverage reports
         if: always()
