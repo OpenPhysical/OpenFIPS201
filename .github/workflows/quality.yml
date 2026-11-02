@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write # Qlty coverage upload (OIDC)
 
 concurrency:
   group: quality-${{ github.ref }}
@@ -45,6 +44,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install vector validation dependency
+        run: python -m pip install cryptography
+
+      - name: Check optimized cryptographic vector validation
+        run: python -m unittest discover -s test-vectors/sam -p 'test_*.py' -v
 
       - uses: actions/setup-java@v6
         with:
@@ -89,6 +98,9 @@ jobs:
     name: Coverage ratchets
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # Qlty coverage upload (OIDC)
 
     steps:
       - uses: actions/checkout@v7
