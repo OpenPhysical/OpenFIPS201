@@ -220,9 +220,7 @@ class ConfigDefaultsTest {
 
   @Test
   void fipsProfileRequiresPositivePinRetryLimits() {
-    byte[][] zeroRetryPolicies = {
-      pinRetryPolicy((byte) 0, (byte) 0), new byte[] {(byte) 0xA0, 0x03, (byte) 0x87, 0x01, 0x00}
-    };
+    byte[][] zeroRetryPolicies = {pinRetryPolicy((byte) 0, (byte) 0)};
 
     for (byte[] policy : zeroRetryPolicies) {
       Config config = new Config();
@@ -241,6 +239,16 @@ class ConfigDefaultsTest {
         assertEquals(retries, config.readValue(Config.CONFIG_PIN_RETRIES_CONTACTLESS));
       }
     }
+  }
+
+  @Test
+  void zeroContactlessPinRetriesPreservesContactAttempts() {
+    Config config = new Config();
+    byte contactRetries = config.readValue(Config.CONFIG_PIN_RETRIES_CONTACT);
+    update(config, new byte[] {(byte) 0xA0, 0x03, (byte) 0x87, 0x01, 0x00});
+    assertEquals(contactRetries, config.readValue(Config.CONFIG_PIN_RETRIES_CONTACT));
+    assertEquals(0, config.readValue(Config.CONFIG_PIN_RETRIES_CONTACTLESS));
+    assertEquals(contactRetries, config.getIntermediatePINRetries());
   }
 
   @Test

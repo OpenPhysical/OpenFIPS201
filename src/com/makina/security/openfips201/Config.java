@@ -586,8 +586,8 @@ final class Config {
       // Retries Contactless
       if (reader.match(TAG_PIN_RETRIES_CONTACTLESS)) {
         byte value = reader.toByte();
-        // Pre-condition - Boundary check
-        if (!isPinRetryLimitValid(value)) {
+        // Zero reserves every PIN attempt for the contact interface.
+        if (value < (byte) 0 || value > LIMIT_PIN_MAX_RETRIES) {
           ISOException.throwIt(ISO7816.SW_WRONG_DATA);
         }
         // Pre-condition - Cannot be greater than RETRIES_CONTACT
